@@ -1,0 +1,70 @@
+schema_version = 1
+id = "minecraft"
+name = "Minecraft: Java Edition"
+runtime = "docker"
+data_dirs = ["/data"]                 # R9 備份範圍(頂層)
+
+[docker]
+image = "itzg/minecraft-server"
+image_digest = "sha256:..."           # R11 鎖 digest(或 tag)
+
+[[variants]]
+id = "paper"
+[variants.env]
+TYPE = "PAPER"
+
+[[ports]]                              # R2 衝突鍵 (bind_ip, protocol, host_port)
+name = "game"
+container = 25565
+host_port = 25565                      # 可為 0=動態
+bind_ip = "0.0.0.0"                    # wildcard 與具體 IP 視為重疊
+protocol = "tcp"
+required = true
+
+[[ports]]
+name = "rcon"
+container = 25575
+host_port = 25575
+bind_ip = "127.0.0.1"
+protocol = "tcp"
+
+[[params]]
+key = "MEMORY"
+label = "記憶體上限"
+type = "string"
+default = "2G"
+
+[[params]]
+key = "EULA"
+label = "接受 Minecraft EULA"
+type = "bool"
+required = true                        # R2 未接受不得建立
+
+[[secrets]]                            # R12 SecretRef:輸入即入金鑰庫,不進 params_json
+key = "RCON_PASSWORD"
+label = "RCON 密碼"
+
+[[command_protocols]]                  # R7 tagged union
+protocol_id = "mc-rcon"
+kind = "rcon"                          # raw console
+host_port_ref = "rcon"
+password_ref = "RCON_PASSWORD"         # 指向 [[secrets]]
+
+[hooks]                                # R3/R8/R9 生命週期映射
+stop = { protocol_id = "mc-rcon", command = "stop" }
+announce = { protocol_id = "mc-rcon", command = "say {msg}" }
+
+[health]                               # R8 探針
+kind = "tcp"                           # tcp | rcon | rest | docker
+port_ref = "game"
+
+[players_query]                        # R6
+kind = "rcon"
+command = "list"
+
+[mods]                                 # R11 itzg 唯一擁有者
+owner = "image-native"
+plugin_dir = "/data/plugins"
+modpack_env = ["MODRINTH", "AUTO_CURSEFORGE"]
+manual_formats = ["mrpack", "curseforge-zip"]
+manual_mount = "/modpacks"             # 手動檔掛載處,交由 itzg 對應 env 取用

@@ -9,7 +9,8 @@ vendor/
 # Wails 建置產出
 build/bin/
 build/windows/installer/
-frontend/dist/
+frontend/dist/*
+!frontend/dist/gitkeep
 frontend/node_modules/
 node_modules/
 

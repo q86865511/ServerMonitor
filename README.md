@@ -4,7 +4,7 @@
 
 ## 狀態
 
-規格階段:功能規格已核可(見 `specs/game-server-manager/`),尚未進入實作。
+實作進行中(/pipeline)。規格 rev.3 已核可(見 `specs/game-server-manager/`)。後端核心 **T1–T7 完成**:共享型別、持久化(SQLite)、Docker 執行後端、節點代理 HTTP/WS API、管理核心與內建 Minecraft/Palworld 範本(build / test / 真 Docker 整合測試皆綠)。桌面 GUI 與其餘生命週期功能(T8–T16)開發中。
 
 ## 特色(規劃中)
 
@@ -24,14 +24,19 @@ Go + Wails(桌面)+ web 前端 + Docker。
 ## 需求環境
 
 - Windows 11
-- Docker Desktop(WSL2)
-- Go 1.2x、Wails CLI(開發用)
+- Docker Desktop(WSL2)— 執行遊戲容器與真 Docker 整合測試
+- Go 1.26+、Wails CLI v2(開發用)、Node 18+/npm(前端)
 
-## 安裝與執行(骨架建立後補正)
+## 安裝與執行
+
+需先安裝 Go 1.26+ 與 Wails CLI v2(`go install github.com/wailsapp/wails/v2/cmd/wails@latest`)。
 
 ```
-wails dev     # 開發模式
-wails build   # 產出可執行檔
+go build ./...               # 編譯全部套件
+go test ./...                # 單元/整合測試(免 Docker)
+go test -tags docker ./...   # 真 Docker 整合測試(需 Docker daemon)
+wails dev                    # 開發模式(GUI)
+wails build                  # 產出 Windows 可執行檔
 ```
 
 ## 規格文件

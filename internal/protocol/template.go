@@ -1,0 +1,148 @@
+package protocol
+
+import (
+	"fmt"
+
+	"github.com/pelletier/go-toml/v2"
+)
+
+// GameTemplate 是版本化的宣告式遊戲範本(R1)。新增「沿用既有 adapter」的遊戲
+// 主要是新增一份 templates/*.toml,而非改核心。欄位對齊 design「遊戲範本 schema」。
+//
+// 可選頂層區段(Docker/Health/PlayersQuery/Mods)以指標表示,方便日後範本引擎
+// (T7)區分「未提供」與「零值」。範本合法性驗證(缺欄位/版本/ID/adapter 不存在→
+// 拒載並記 TEMPLATE_LOAD_FAILED)不在本套件,屬 core 範本引擎職責。
+type GameTemplate struct {
+	SchemaVersion    int               `toml:"schema_version"`
+	ID               string            `toml:"id"`
+	Name             string            `toml:"name"`
+	Runtime          string            `toml:"runtime"` // 首版:"docker"
+	DataDirs         []string          `toml:"data_dirs"`
+	Docker           *DockerImage      `toml:"docker"`
+	Variants         []Variant         `toml:"variants"`
+	Ports            []PortSpec        `toml:"ports"`
+	Params           []ParamSpec       `toml:"params"`
+	Secrets          []SecretSpec      `toml:"secrets"`
+	CommandProtocols []CommandProtocol `toml:"command_protocols"`
+	Hooks            Hooks             `toml:"hooks"`
+	Health           *HealthProbe      `toml:"health"`
+	PlayersQuery     *PlayersQuery     `toml:"players_query"`
+	Mods             *ModsSpec         `toml:"mods"`
+}
+
+// DockerImage 對應 [docker]:鎖定映像來源(R11 鎖 tag 或 digest)。
+type DockerImage struct {
+	Image       string `toml:"image"`
+	ImageDigest string `toml:"image_digest"`
+}
+
+// Variant 對應 [[variants]]:一種可選的伺服器變體(如 Paper/Forge),env 於建立時透傳。
+type Variant struct {
+	ID  string            `toml:"id"`
+	Env map[string]string `toml:"env"`
+}
+
+// PortSpec 對應 [[ports]]:埠宣告,含 host binding。
+// 衝突鍵為 (bind_ip, protocol, host_port);host_port 可為 0 表示動態分配(R2)。
+type PortSpec struct {
+	Name      string `toml:"name"`
+	Container int    `toml:"container"`
+	HostPort  int    `toml:"host_port"` // 0 = 動態
+	BindIP    string `toml:"bind_ip"`   // wildcard(0.0.0.0)與具體 IP 視為重疊
+	Protocol  string `toml:"protocol"`  // tcp | udp
+	Required  bool   `toml:"required"`
+}
+
+// ParamSpec 對應 [[params]]:使用者可填參數的宣告。
+// Default 型別依 Type 而定(string/bool/int...),故以 any 承接 TOML 原生值。
+type ParamSpec struct {
+	Key      string `toml:"key"`
+	Label    string `toml:"label"`
+	Type     string `toml:"type"` // string | bool | int | ...
+	Default  any    `toml:"default"`
+	Required bool   `toml:"required"`
+}
+
+// SecretSpec 對應 [[secrets]]:敏感輸入的宣告。輸入即入金鑰庫、不進 params_json(R12)。
+type SecretSpec struct {
+	Key   string `toml:"key"`
+	Label string `toml:"label"`
+}
+
+// CommandProtocol 對應 [[command_protocols]],是 kind 判別的 tagged union(R7)。
+// 以「欄位超集 + kind 判別」建模:kind="rcon" 用 HostPortRef/PasswordRef(raw console);
+// kind="rest" 用 Auth/Actions(具名動作)。Legacy 供 Palworld RCON 標記(首版不啟用)。
+type CommandProtocol struct {
+	ProtocolID string `toml:"protocol_id"`
+	Kind       string `toml:"kind"` // "rcon" | "rest"
+
+	// rcon 欄位
+	HostPortRef string `toml:"host_port_ref"` // 指向 [[ports]].name
+	PasswordRef string `toml:"password_ref"`  // 指向 [[secrets]].key
+	Legacy      bool   `toml:"legacy"`        // Palworld RCON legacy:首版不啟用
+
+	// rest 欄位
+	Auth    string          `toml:"auth"` // 如 "basic"
+	Actions []CommandAction `toml:"actions"`
+}
+
+// CommandAction 對應 rest 協定的 [[command_protocols.actions]]:一個具名 REST 動作(R7)。
+// 憑證/埠參照可於動作層覆寫協定層設定。
+type CommandAction struct {
+	ActionID    string `toml:"action_id"`
+	Method      string `toml:"method"` // GET | POST | ...
+	Path        string `toml:"path"`   // 如 /v1/api/players
+	Input       string `toml:"input"`  // typed input(型別或 schema 名)
+	Output      string `toml:"output"` // typed output
+	HostPortRef string `toml:"host_port_ref"`
+	PasswordRef string `toml:"password_ref"`
+	Auth        string `toml:"auth"`
+}
+
+// Hooks 對應 [hooks]:生命週期指令映射(R3/R8/R9)。核心不需硬編遊戲語意。
+type Hooks struct {
+	Stop     *Hook `toml:"stop"`
+	Announce *Hook `toml:"announce"`
+	Quiesce  *Hook `toml:"quiesce"`
+	Resume   *Hook `toml:"resume"`
+}
+
+// Hook 以 (protocol_id, action_id 或 raw command) 映射一個生命週期動作。
+// rcon 協定用 Command(自由字串,可含 {msg} 佔位);rest 協定用 ActionID。
+type Hook struct {
+	ProtocolID string `toml:"protocol_id"`
+	Command    string `toml:"command"`
+	ActionID   string `toml:"action_id"`
+}
+
+// HealthProbe 對應 [health]:健康/就緒探針(R8)。未定義時以容器 running 為就緒。
+type HealthProbe struct {
+	Kind    string `toml:"kind"`     // tcp | rcon | rest | docker
+	PortRef string `toml:"port_ref"` // 指向 [[ports]].name
+}
+
+// PlayersQuery 對應 [players_query]:玩家數查詢方式(R6)。不支援者省略,GUI 顯示「不適用」。
+type PlayersQuery struct {
+	Kind     string `toml:"kind"` // rcon | rest
+	Command  string `toml:"command"`
+	ActionID string `toml:"action_id"`
+}
+
+// ModsSpec 對應 [mods]:模組/模組包設定(R11)。itzg 為 /data 的唯一安裝擁有者。
+type ModsSpec struct {
+	Owner         string   `toml:"owner"` // 如 "image-native"
+	PluginDir     string   `toml:"plugin_dir"`
+	ModpackEnv    []string `toml:"modpack_env"`    // 如 ["MODRINTH", "AUTO_CURSEFORGE"]
+	ManualFormats []string `toml:"manual_formats"` // 如 ["mrpack", "curseforge-zip"]
+	ManualMount   string   `toml:"manual_mount"`   // 手動檔掛載處,交由 itzg 對應 env 取用
+}
+
+// ParseTemplate 將範本 TOML 位元組解析為 GameTemplate。
+// 本函式只負責解析語法,不做語意驗證(缺欄位/版本/adapter 檢查屬 core 範本引擎)。
+func ParseTemplate(data []byte) (*GameTemplate, error) {
+	var t GameTemplate
+	if err := toml.Unmarshal(data, &t); err != nil {
+		return nil, fmt.Errorf("解析遊戲範本失敗: %w", err)
+	}
+	return &t, nil
+}

@@ -2,26 +2,28 @@
 
 ## 目前狀態
 
-規格三件套經 Codex 三輪審查(兩輪深修 + 一輪聚焦複審)定稿為 rev.3,複審判定可進 pipeline;專案文件已初始化。依裁示止於 spec-review,尚未進入實作。
+已進入 /pipeline 實作。**T1–T7 完成並通過驗證**(骨架/型別/持久化/RuntimeBackend+Mock/DockerBackend/代理 server/核心骨幹;Palworld、備份 spike 完成),依裁示暫停於 T7 做 commit/push。T8–T16 待續。規格為 rev.3(Codex 三輪審查定稿)。
 
 ## 已完成
 
+- [2026-07-13] 🚀 R1 實作 T1–T7(/pipeline):Go+Wails 骨架與版本鎖定、`internal/protocol` 全型別+SecretRef、持久化/事件基礎(SQLite/遷移/quarantine/port_reservations/EventLog/keyring)、`RuntimeBackend` 介面+MockBackend(含 Events)、`DockerBackend`(真 Docker 整合測試綠)、代理 HTTP/WS server(bearer/Origin/冪等)、核心骨幹(NodeClient/NodeRegistry/範本引擎+內建 minecraft·palworld/InstanceService 原子建立+wildcard 埠+分階段回滾)。三套件 build/vet/gofmt/test/`-race`/docker 全綠;5 依賴鎖版。Palworld spike(REST 12 端點、RCON legacy、映像 2.5.1)、備份 spike(停機 bind-mount 快照可行)落檔於 `specs/game-server-manager/spikes/`。
 - [2026-07-13] 📄 R1 規格深修(rev.3):依 Codex 第二輪二審(3 解決/10 部分/9 高),把高+中嚴重補進規格——埠 host binding+預留、RuntimeBackend 補 Events、restart 單一所有者、SecretRef 型別、完整狀態轉移表、備份 BackupID/停機快照、事件封套+碼表、精確參數與版本下限、任務重排 + Palworld/備份/模組 spike 前置 gate。Codex 第三輪聚焦複審:9 高中 7 關閉、2 部分,修掉 2 阻擋項(啟動就緒條件四處對齊、備份 spike 掛入 T4 並修正 spike 任務編號)後判定可進 pipeline。
 - [2026-07-13] 📄 R1 規格二審與修訂(rev.2):Codex 對三件套二審(15 高/12 中/2 低)。已修訂:修正非法 TOML schema、補全代理 API 契約與 `RuntimeBackend`(List/Inspect/Remove/Archive/Restore、ExecProcess 與遊戲指令分離)、驗收可測化、新增 R13 啟動對帳/單一實例與 R14 結構化事件記錄、代理 bearer 認證;並依裁決改 Palworld REST 為主/RCON legacy、CurseForge 改 itzg 原生。
 - [2026-07-13] 📄 R1 規格與專案初始化:完成 game-server-manager 規格三件套(requirements / design / tasks)並核可落檔於 `specs/game-server-manager/`;初始化 PROGRESS/CLAUDE/README 與 git。
 
 ## 進行中
 
-(無)
+- /pipeline 實作暫停於 T7(依使用者裁示先 commit/push),之後續派 T8。
 
 ## 待辦
 
-> 完整任務見 `specs/game-server-manager/tasks.md`(16 項,標 HARD/NORMAL)。近期三項:
+> 完整任務見 `specs/game-server-manager/tasks.md`(16 項)。**T1–T7 已完成。** 近期:
 
-- [ ] T1 骨架 + 共享型別 + 版本鎖定 + SecretRef
-- [ ] T2 持久化 + 事件基礎(SQLite/遷移/quarantine/port_reservations/EventLog/keyring)
-- [ ] T3 `RuntimeBackend` 介面(+Events)+ `MockBackend`
-- [ ] (前置 spike)Palworld REST/RCON 查證、備份原子性、itzg/CurseForge 矩陣
+- [ ] T8 狀態機 + 對帳 + 單一實例
+- [ ] T9 指令 adapter(Minecraft RCON / Palworld REST)
+- [ ] T10 監控聚合 + log 背壓 + 磁碟/線上
+- [ ] T11 排程 + 自動重啟/崩潰復原 + 健康探針
+- [ ] (餘)T12 備份/還原、T13 告警、T14 模組+spike(含模組 spike)、T15 GUI、T16 E2E/文件
 
 ## 已知問題
 
@@ -36,3 +38,4 @@
 - [2026-07-13] 首版取捨:告警只做 Discord webhook;模組包含 Modrinth/CurseForge 串接;Palworld REST+RCON 皆做。
 - [2026-07-13] rev.2(依 Codex 二審修訂):Palworld 改「REST 具名動作為主、RCON 標 legacy(需查證)」;CurseForge 改「itzg 原生 AUTO_CURSEFORGE + 手動」,自建下載器延後;新增 R13 啟動對帳/單一實例、R14 結構化事件記錄;代理 API 加 bearer token 認證;備份改經 RuntimeBackend Archive/Restore;鎖定依賴版本(Wails v2 stable 等)。
 - [2026-07-13] rev.3(依 Codex 兩輪二審深修):restart 由 core 單一編排(agent 不開 /restart);Docker 事件納入 `RuntimeBackend.Events`;敏感值改 `SecretRef` 型別(輸入即入金鑰庫+redaction);備份首版=停機快照+bind mount、agent 擁有備份根+opaque `BackupID`;首版不支援線上 update(改參數=重建);Palworld/備份/模組三個 spike 設為對應功能前置 gate;依賴版本鎖定給具體下限。
+- [2026-07-13] 開發環境:本機經 winget 裝 Go 1.26.5、`go install` 裝 Wails v2.13.0(WebView2 / Node 24 已備、`wails doctor` 通過);Docker Desktop 29.4.1。**注意:winget 裝的 Go/Wails 不在本 session 既有 shell 的 PATH**,執行 go/wails 前需 `export PATH="/c/Program Files/Go/bin:$HOME/go/bin:$PATH"`。鎖版:docker v27.5.1(go-connections **必須** v0.5.0,v0.7.0 會壞 Windows 編譯)、gorilla/websocket v1.5.3、modernc/sqlite v1.34.5、go-keyring v0.2.8、go-toml/v2。

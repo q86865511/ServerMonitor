@@ -12,14 +12,20 @@
 
 ## 技術棧
 
-Go(核心/代理)+ Wails(桌面)+ web 前端(Svelte/React)+ Docker(執行後端)。
+Go(核心/代理)+ Wails v2(桌面)+ Svelte-TS 前端 + Docker(執行後端,官方 SDK)。
 
-## 常用指令(骨架建立後補正)
+## 常用指令
 
-- 開發:`wails dev`
-- 建置:`wails build`
-- 測試:`go test ./...`
-- 真 Docker 整合測試:`go test -tags docker ./...`(TODO:骨架建立後確認 build tag 名)
+> **PATH 注意**:本機 Go/Wails 經 winget/`go install` 安裝,可能不在既有 shell 的 PATH。跑 go/wails 前先 `export PATH="/c/Program Files/Go/bin:$HOME/go/bin:$PATH"`(Bash)。
+
+- 編譯:`go build ./...`
+- 單元/整合測試(免 Docker):`go test ./...`
+- 真 Docker 整合測試:`go test -tags docker ./...`(需 Docker daemon;build tag 為 `docker`)
+- 開發(GUI):`wails dev`｜建置:`wails build`
+
+## 依賴版本(已鎖定,勿升級)
+
+Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 會壞 Windows 編譯)｜gorilla/websocket v1.5.3｜modernc/sqlite v1.34.5｜go-keyring v0.2.8｜go-toml/v2。
 
 ## 架構約定
 

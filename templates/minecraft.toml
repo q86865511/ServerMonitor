@@ -1,0 +1,80 @@
+# Minecraft: Java Edition 內建範本(R1/R11)。
+# 對齊 design.md「遊戲範本 schema」;新增沿用同 adapter 的遊戲=加一份此類檔案,不改核心。
+schema_version = 1
+id = "minecraft"
+name = "Minecraft: Java Edition"
+runtime = "docker"
+data_dirs = ["/data"]                 # R9 備份範圍(頂層)
+
+[docker]
+# R11 映像鎖:itzg 官方映像,鎖 java21 tag。
+# 若需真正不可變鎖定,於部署時以 `docker buildx imagetools inspect itzg/minecraft-server:java21`
+# 取 sha256 digest 填入 image_digest。
+image = "itzg/minecraft-server:java21"
+image_digest = ""
+
+[[variants]]
+id = "paper"
+[variants.env]
+TYPE = "PAPER"
+
+[[variants]]
+id = "vanilla"
+[variants.env]
+TYPE = "VANILLA"
+
+[[ports]]                              # R2 衝突鍵 (bind_ip, protocol, host_port)
+name = "game"
+container = 25565
+host_port = 25565                      # 可為 0=動態
+bind_ip = "0.0.0.0"                    # wildcard 與具體 IP 視為重疊
+protocol = "tcp"
+required = true
+
+[[ports]]
+name = "rcon"
+container = 25575
+host_port = 25575
+bind_ip = "127.0.0.1"                  # RCON 僅綁 loopback
+protocol = "tcp"
+
+[[params]]
+key = "MEMORY"
+label = "記憶體上限"
+type = "string"
+default = "2G"
+
+[[params]]
+key = "EULA"
+label = "接受 Minecraft EULA"
+type = "bool"
+required = true                        # R2 未接受不得建立(不暗中預設)
+
+[[secrets]]                            # R12 SecretRef:輸入即入金鑰庫,不進 params_json
+key = "RCON_PASSWORD"
+label = "RCON 密碼"
+
+[[command_protocols]]                  # R7 tagged union
+protocol_id = "mc-rcon"
+kind = "rcon"                          # raw console
+host_port_ref = "rcon"
+password_ref = "RCON_PASSWORD"         # 指向 [[secrets]]
+
+[hooks]                                # R3/R8/R9 生命週期映射
+stop = { protocol_id = "mc-rcon", command = "stop" }
+announce = { protocol_id = "mc-rcon", command = "say {msg}" }
+
+[health]                               # R8 探針
+kind = "tcp"                           # tcp | rcon | rest | docker
+port_ref = "game"
+
+[players_query]                        # R6
+kind = "rcon"
+command = "list"
+
+[mods]                                 # R11 itzg 唯一擁有者
+owner = "image-native"
+plugin_dir = "/data/plugins"
+modpack_env = ["MODRINTH", "AUTO_CURSEFORGE"]
+manual_formats = ["mrpack", "curseforge-zip"]
+manual_mount = "/modpacks"             # 手動檔掛載處,交由 itzg 對應 env 取用

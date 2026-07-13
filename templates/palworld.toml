@@ -1,0 +1,119 @@
+# Palworld 專用伺服器內建範本(R1/R7)。
+# 事實來源:specs/game-server-manager/spikes/palworld-spike.md(REST 具名動作、埠、env、
+# 映像、資料路徑皆取自該 spike;以 spike 原文為準)。
+#
+# 對 spike 第 4 節 command_protocols 提案的「微調」(spike 明示可採用或微調):
+#   - 具名動作以既有 schema 的 action_id/method/path 表達;path 內含 REST base "/v1/api"。
+#   - REST 的 username="admin"、各動作 body 樣板、優雅關機 waittime、health/players 的 action
+#     等「指令 adapter 細節」不落本範本,由 T9 的 PalworldRestAdapter 依 spike 實作
+#     (T7 只需範本可載入且 command_protocol/health kind 通過 adapter 存在性驗證)。
+schema_version = 1
+id = "palworld"
+name = "Palworld Dedicated Server"
+runtime = "docker"
+data_dirs = ["/palworld"]              # spike:資料/存檔目錄(容器內),對應 R9 備份根
+
+[docker]
+# spike 鎖定:社群主流映像 thijsvanloef/palworld-server-docker,semver tag 2.5.1(勿用 latest)。
+# digest 待部署時以 `docker buildx imagetools inspect ...:2.5.1` 落定填入 image_digest。
+image = "thijsvanloef/palworld-server-docker:2.5.1"
+image_digest = ""
+
+# ── 埠(spike 第 3 節;對齊 R2 衝突鍵 (bind_ip, protocol, host_port)) ──
+[[ports]]
+name = "game"
+container = 8211
+host_port = 8211
+bind_ip = "0.0.0.0"
+protocol = "udp"
+required = true
+
+[[ports]]
+name = "query"
+container = 27015
+host_port = 27015
+bind_ip = "0.0.0.0"
+protocol = "udp"
+
+[[ports]]
+name = "rest"
+container = 8212
+host_port = 8212
+bind_ip = "127.0.0.1"                  # spike/官方警告:REST 不可暴露公網
+protocol = "tcp"
+
+[[ports]]
+name = "rcon"
+container = 25575
+host_port = 25575
+bind_ip = "127.0.0.1"                  # legacy,首版不啟用
+protocol = "tcp"
+
+# ── 參數(spike env;key 即容器 env 變數名) ──
+[[params]]
+key = "SERVER_NAME"
+label = "伺服器名稱"
+type = "string"
+default = "Palworld Server"
+
+[[params]]
+key = "REST_API_ENABLED"
+label = "啟用 REST API"
+type = "bool"
+default = true                         # spike:REST 為主
+
+[[params]]
+key = "RCON_ENABLED"
+label = "啟用 RCON(legacy)"
+type = "bool"
+default = false                        # spike:RCON 已 deprecated,維持關閉
+
+# ── 機密(R12 SecretRef;同時是 REST Basic Auth 的密碼) ──
+[[secrets]]
+key = "ADMIN_PASSWORD"
+label = "Admin 密碼(含 REST API 認證)"
+
+# ── 指令協定:REST(主;spike 第 1.2 節具名動作) ──
+[[command_protocols]]
+protocol_id = "palworld-rest"
+kind = "rest"
+host_port_ref = "rest"
+password_ref = "ADMIN_PASSWORD"
+auth = "basic"
+actions = [
+  { action_id = "info",     method = "GET",  path = "/v1/api/info" },
+  { action_id = "metrics",  method = "GET",  path = "/v1/api/metrics" },
+  { action_id = "players",  method = "GET",  path = "/v1/api/players" },
+  { action_id = "settings", method = "GET",  path = "/v1/api/settings" },
+  { action_id = "announce", method = "POST", path = "/v1/api/announce" },
+  { action_id = "save",     method = "POST", path = "/v1/api/save" },
+  { action_id = "shutdown", method = "POST", path = "/v1/api/shutdown" },
+  { action_id = "stop",     method = "POST", path = "/v1/api/stop" },
+  { action_id = "kick",     method = "POST", path = "/v1/api/kick" },
+  { action_id = "ban",      method = "POST", path = "/v1/api/ban" },
+  { action_id = "unban",    method = "POST", path = "/v1/api/unban" },
+]
+
+# ── 指令協定:RCON(legacy,首版不啟用、不列驗收) ──
+[[command_protocols]]
+protocol_id = "palworld-rcon"
+kind = "rcon"
+legacy = true
+host_port_ref = "rcon"
+password_ref = "ADMIN_PASSWORD"
+
+# ── 生命週期 hooks(R3/R8/R9;REST 以 action_id 引用) ──
+# stop 用 shutdown(倒數 + 公告)符合 R3 優雅停機語意;stop 動作留給硬停 fallback(T9)。
+[hooks]
+stop = { protocol_id = "palworld-rest", action_id = "shutdown" }
+announce = { protocol_id = "palworld-rest", action_id = "announce" }
+
+# ── 健康探針(R8,kind=rest) ──
+[health]
+kind = "rest"
+port_ref = "rest"
+
+# ── 線上玩家查詢(R6) ──
+[players_query]
+kind = "rest"
+action_id = "players"
