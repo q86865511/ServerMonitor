@@ -25,9 +25,9 @@
 | 常數 | 預設 | 用途 |
 |---|---|---|
 | 優雅停機寬限期 | 30 秒 | R3 停止:送停止指令後等待,逾時強停 |
-| 啟動就緒逾時 | 60 秒 | R3 啟動:輪詢至 Running,逾時判失敗 |
+| 啟動就緒逾時 | 60 秒 | R3 啟動:輪詢至就緒,逾時判失敗 |
 | 崩潰迴圈上限 | 5 分鐘內 3 次 | R8 超過則停止自動重試 + 告警 |
-| 健康探針:啟動寬限 / 週期 / 連續失敗門檻 | 60 秒 / 15 秒 / 3 次 | R8 判「running 但卡死」 |
+| 健康探針:就緒寬限 / 存活週期 / 連續失敗門檻 | 60 秒 / 15 秒 / 3 次 | R8 就緒(Starting→Running)與存活(判卡死) |
 | 告警 cooldown / 資源持續窗口 / 遲滯 | 5 分鐘 / 60 秒 / 門檻−10% 解除 | R10 去重與門檻 |
 | 告警重試 | 3 次,退避 base 2s cap 60s,遵守 429 `Retry-After`,5xx 重試、4xx 不重試 | R10 |
 | 備份保留 N | 7 份 | R9 保留策略 |
@@ -55,7 +55,7 @@
 常態:系統應提供啟動、停止、重建操作;同一實例操作序列化。
 
 驗收條件:
-- 啟動:輪詢至容器 `Running`;預設 60 秒逾時未達則標記 `Error` 並報明確錯誤。
+- 啟動:輪詢至**就緒**(容器達 running 且就緒探針通過;範本未定義探針時以容器 running 為就緒),就緒前維持 `Starting`;預設 60 秒就緒逾時未達則標記 `Error` 並報明確錯誤。
 - 停止(計畫性):標記 planned-stop token(含 operation generation)→ 送範本 `hooks.stop` 指令(若有)→ 寬限期 30 秒 → 逾時強停;狀態轉 `Stopped`。
 - 重建(restart)= **core 層編排**的 Stop→Start,持 per-instance lock,斷言仍是同一 runtime ID 回到 `Running`;**agent 不提供獨立 restart 端點**(避免繞過 lock/planned-stop)。
 - 對 `Running` 實例重複啟動為冪等:不重建容器,回報「已在執行」。
@@ -101,7 +101,7 @@
 
 驗收條件:
 - 維護每實例狀態機(狀態集與轉移表見 design);容器 `die` 事件需比對 planned-stop token(含 operation generation、TTL、consume、失敗清理):計畫停止/排程重啟/還原前停機**不**觸發自動重啟。
-- 「running 但卡死」由健康探針(啟動寬限 60s、週期 15s、連續失敗 3 次)判定並納入復原;單次瞬斷不誤判。
+- 就緒探針於就緒寬限 60 秒內判定 `Starting→Running`;之後存活探針(週期 15s、連續失敗 3 次)偵測「running 但卡死」並納入復原;單次瞬斷不誤判。
 - 崩潰後於重試間隔重啟;5 分鐘內 3 次達上限→停止自動重試 + `RESTART_GIVEUP` 告警,不無限重啟。
 - 排程重啟以 UTC 記錄(處理時區/DST);範本支援公告時,重啟前經 `hooks.announce` 發公告;同實例操作序列化,不與備份/還原互撞。
 - GUI 於排程重啟中途關閉後重開:依 desired 狀態收斂(定義:desired=Running 則對帳後補啟動)。
@@ -178,6 +178,6 @@
 
 ## 待查證(實作前以 spike 完成,不作為既定事實)
 
-- **Palworld spike(T7 前置 gate)**:官方 REST 端點/認證與 RCON 現況,鎖伺服器版本/映像 tag 或 digest。
-- **備份 spike**:Windows/Docker Desktop 下 bind mount 停機快照的一致性與原子切換;named volume 策略是否需要。
-- **模組 spike(T13 前置)**:itzg 各 loader/遊戲版本支援矩陣、`AUTO_CURSEFORGE` 實際 env 行為、CurseForge API 條款/金鑰/attribution。
+- **Palworld spike(T9 指令 adapter 前置;由 T6 執行)**:官方 REST 端點/認證與 RCON 現況,鎖伺服器版本/映像 tag 或 digest。
+- **備份 spike(T4 前置)**:Windows/Docker Desktop 下 bind mount 停機快照的一致性與原子切換;named volume 策略是否需要。
+- **模組 spike(T14 前置;由 T14 執行)**:itzg 各 loader/遊戲版本支援矩陣、`AUTO_CURSEFORGE` 實際 env 行為、CurseForge API 條款/金鑰/attribution。

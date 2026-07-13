@@ -166,7 +166,7 @@ type SecretRef struct{ Key string } // R12:值存金鑰庫;String()/MarshalJSON 
 | 從 | 事件 | 到 |
 |---|---|---|
 | Created | Start | Starting |
-| Starting | ready(探針) / 逾時 | Running / Error |
+| Starting | 就緒(容器 running 且就緒探針過;無探針則容器 running) / 就緒逾時 | Running / Error |
 | Running | Stop(planned) | Stopping → Stopped |
 | Running | die(無 planned token)或探針連續失敗 | Crashed |
 | Crashed | 重試未達上限 / 達上限 | Starting / Error(RESTART_GIVEUP) |
@@ -204,9 +204,9 @@ envelope:`{code, ts_utc, severity, instance_uuid?, node?, template_id?, details_
 
 ## 風險
 
-- Palworld REST/RCON 現況需查證 → **T7 前置 Palworld spike**,鎖版本/映像;REST 為主、RCON legacy。
-- 備份原子性(Windows/Docker Desktop、named volume)→ **備份 spike**;首版收斂為停機 + bind mount。
-- itzg 支援矩陣/`AUTO_CURSEFORGE` env/CurseForge 條款需查證 → **T13 前置模組 spike**;金鑰使用者自填。
+- Palworld REST/RCON 現況需查證 → **Palworld spike(T9 前置,由 T6 執行)**,鎖版本/映像;REST 為主、RCON legacy。
+- 備份原子性(Windows/Docker Desktop、named volume)→ **備份 spike(T4 前置)**;首版收斂為停機 + bind mount。
+- itzg 支援矩陣/`AUTO_CURSEFORGE` env/CurseForge 條款需查證 → **模組 spike(T14 前置)**;金鑰使用者自填。
 - Docker on Windows 需 WSL2;反作弊/Windows-only 容器不支援 → 已知邊界,未來原生後端。
 - Wails 複雜 UI 成本 → 成熟前端框架(Svelte/React)。
 - 版本相容(modernc 對 Go 版本要求)→ T1 一併鎖定驗證。
@@ -216,5 +216,5 @@ envelope:`{code, ts_utc, severity, instance_uuid?, node?, template_id?, details_
 - **單元**:R1 範本載入(有效/缺欄位/版本/ID/adapter 不存在)+ 「原樣解析 design 範本」golden test;R4 MockBackend(含 List/Inspect/Remove/Archive/Restore/Events)跑通;R7 協定/動作選擇;R8 狀態機轉移表 + planned-stop token TTL/consume;R10 fake clock 驗窗口/hysteresis/cooldown + 429/5xx;R12 遷移/integrity/quarantine/SecretRef redaction;R14 envelope/codes。
 - **整合(MockBackend,免 Docker)**:R2 建立各階段 failure injection + 埠衝突(wildcard)+ 併發;R3 啟停重建冪等 + 同 runtime ID + 60/30s;R4 core→agent→mock 崩潰路徑;R5 loopback+token 拒絕未授權 + Origin + 冪等鍵重播 + 錯誤碼;R8 planned-stop 不誤判 + 探針卡死 + 超上限;R9 archive/checksum/retention/原子還原/中斷 rollback;R10 producer→AlertSink→dispatcher 跨層;R13 對帳(孤兒/不一致/daemon 不可用/單一實例)。
 - **整合(真 Docker,build tag/`-short`)**:R2/R3 真 Minecraft;R6 CPU/RAM/資料磁碟/log/玩家數;R7 Minecraft RCON `list`;R11 Paper+外掛+itzg Modrinth+手動匯入。
-- **Spike(前置 gate)**:Palworld(T7 前)、備份原子性、模組矩陣/條款(T13 前);結論落檔。
+- **Spike(前置 gate)**:Palworld(T9 前,由 T6 執行)、備份(T4 前)、模組(T14 前);三者結論落檔。
 - **端到端/基準**:重啟後 R12/R13 對帳;GUI 全流程;T16 效能 benchmark 回填 NFR 門檻。
