@@ -1,70 +1,84 @@
 # game-server-manager — 技術設計(design.md)
 
-> 建立日期:2026-07-13｜狀態:已核可(2026-07-13),經 Codex 二審修訂(2026-07-13, rev.2)
+> 建立日期:2026-07-13｜狀態:已核可(2026-07-13),經 Codex 兩輪二審深修(rev.3)
 > 對照 requirements.md;每條 R# 出現在需求對應表。
 
 ## 架構概述
 
-四層,收斂為單一 **Wails 應用(Go 後端 + web 前端)**。Wails 的 Go 後端內含 **管理核心**(實例登錄、狀態機、排程器、監控聚合、告警分派、範本引擎、對帳)與 **本機節點代理**(代理 API 綁 127.0.0.1,含每次啟動的 bearer token);核心以 `NodeClient`(HTTP)呼叫本機代理,保留多節點接縫為真。代理以抽象 `RuntimeBackend`(首版 Docker/官方 Docker SDK)操作容器與資料封存,另以 `GameCommandAdapter` 就地執行遊戲指令(RCON/REST)。web 前端經 Wails bindings 呼叫 Go 後端。**遊戲範本** 為版本化宣告式檔案。
+四層,收斂為單一 **Wails v2 應用(Go 後端 + web 前端)**。Go 後端內含 **管理核心**(實例登錄、狀態機、對帳、排程器、監控聚合、告警、範本引擎、事件記錄)與 **本機節點代理**(代理 API 綁 127.0.0.1 + 每次啟動 bearer token);核心以 `NodeClient`(HTTP)呼叫代理。代理以 `RuntimeBackend`(Docker 官方 SDK)操作容器/封存/**事件監看**,以 `GameCommandAdapter` 執行遊戲指令。前端經 Wails bindings 呼叫。範本為版本化宣告式檔案。
 
-**生命週期(依裁決:僅 GUI 開啟時運作):** 監控、自動復原、排程備份/重啟、告警僅在應用開啟時運作;關閉應用會暫停自動化,但**遊戲容器由 Docker 獨立維持**——重開應用時經 **啟動對帳(R13)** 恢復 observed 狀態與事件訂閱。無隨 Windows 自啟的背景服務。遠端節點為未來獨立 Go 代理二進位(`cmd/agent`),首版只完成版本化 loopback 契約,不實作跨機部署。
+**生命週期(僅 GUI 開啟時運作):** 自動化僅在應用開啟時運作;關閉暫停自動化但容器由 Docker 維持,重開經 **R13 對帳** 恢復。遠端節點為未來 `cmd/agent`,首版只做版本化 loopback 契約。
 
-**建置形態(Go module + Wails,單一 repo):**
-- `internal/protocol` — 共享型別:版本化範本 schema、API DTO、代理 API 契約(struct + JSON tag)、事件型別。
-- `internal/agent` — 節點代理:`RuntimeBackend` 介面(Docker/Mock/未來 Native)、`GameCommandAdapter`、備份封存、Docker 事件監看、代理 HTTP/WS server(含 bearer 認證)。
-- `internal/core` — 管理核心:實例登錄、狀態機、對帳、範本引擎、排程器、監控聚合、告警、事件記錄、`NodeClient`。
-- `app`(Wails 專案根)— Go 後端組裝 core+本機 agent 並綁定前端;`frontend/` 為 web 前端(Svelte 或 React)。
-- (未來)`cmd/agent` — 遠端節點獨立代理二進位,複用 `internal/agent`。
+**建置形態(Go module + Wails v2,單一 repo):** `internal/protocol`(版本化 schema、DTO、事件型別、SecretRef)、`internal/agent`(RuntimeBackend、GameCommandAdapter、備份、事件監看、HTTP/WS server+認證)、`internal/core`(登錄、狀態機、對帳、範本引擎、排程、監控、告警、EventLog、NodeClient)、`app`(Wails 根)+`frontend/`、(未來)`cmd/agent`。
+
+## 相依版本鎖定(NFR;T1 於 go.mod 鎖定實際 patch)
+
+> 以下為**建議下限**;T1 對照上游當下穩定版與彼此相容性鎖定確切版本(尤其 modernc 對 Go 版本的要求)。
+
+- **Go**:1.23+(以 modernc 選定版之 go.mod 要求為準,必要時上調)。
+- **Wails**:v2.x stable(**非 v3 alpha**)。
+- **Docker client**:`github.com/docker/docker`(Moby)v27.x;**最低 Docker Engine API 1.44**。
+- **SQLite**:`modernc.org/sqlite` v1.34.x(純 Go,免 CGO)。
+- **金鑰庫**:`github.com/zalando/go-keyring` v0.2.x(Windows Credential Manager backend)。
+
+## 效能基準(NFR 可量測)
+
+於參考環境(記錄 CPU 型號/核數/RAM、Docker Desktop 版本)、取樣窗 60 秒下量測:閒置(0 實例)工具 CPU 平均 < 2%、working set < 200MB(基準值於 T16 benchmark 落定);每執行中實例監控開銷、與 log 高流量(如 1000 行/秒)下的 CPU/記憶體皆記錄且遠低於單一遊戲伺服器。實際門檻由 T16 benchmark 產出後回填。
 
 ## 需求對應表
 
 | 需求 | 設計元素 | 說明 |
 |---|---|---|
-| R1 | `internal/core` 範本引擎 + `protocol.GameTemplate`(含 `schema_version`)+ `templates/*.toml` | 版本化宣告式範本;缺欄位/版本不符/ID 重複拒載並記事件;標示所需 adapter 是否存在 |
-| R2 | core `InstanceService.Create`(原子+回滾) + agent `RuntimeBackend.Create` + Docker 標籤 | 驗證必填/EULA/埠衝突鍵→拉映像→建容器(`Created`)→寫 DB;任一步失敗回滾不留孤兒 |
-| R3 | agent `RuntimeBackend.{Start,Stop,Status}` + core Restart 編排 + per-instance lock | 優雅停機(停止指令+寬限期+逾時強停);啟動輪詢至 Running/逾時報錯;重啟同容器;冪等 |
-| R4 | `internal/agent` `RuntimeBackend` 介面(+List/Inspect/Remove/Archive/Restore/ExecProcess)+ `GameCommandAdapter` | 生命週期與封存經介面;遊戲指令另走 adapter;Mock 跑通(含 core→agent→mock) |
-| R5 | core `NodeClient`(HTTP+bearer) + agent HTTP/WS server(loopback+token+Origin) + `NodeRegistry` | 版本化契約(OpenAPI);未帶 token 拒絕;代理無回應→標離線 |
-| R6 | agent stats 輪詢 + Docker stats + 資料磁碟採集 + 探針 + `MetricsHub`(WS 推送,背壓) | ≤5s 推 CPU/RAM;資料磁碟用量走宿主路徑/helper;線上狀態走探針;log 有界緩衝 |
-| R7 | agent `GameCommandAdapter`:`RconAdapter` + `PalworldRestAdapter` + 範本 `command_protocols[]` | RCON=raw console;REST=具名動作;Palworld REST 為主、RCON legacy 不啟用 |
-| R8 | core 狀態機(desired/observed)+ planned-stop token + `RestartPolicy` + 健康探針 + `Scheduler` | 區分計畫停止/崩潰;窗內超上限停+告警;卡死經探針;排程 UTC;操作序列化 |
-| R9 | core `Scheduler` + agent `RuntimeBackend.{Archive,Restore}` + `RetentionPolicy` + checksum | 一致快照(save hook/停機);備份清單+checksum;還原=停機→驗證→原子切換→復原原狀態 |
-| R10 | core `AlertDispatcher` + `DiscordWebhookChannel` + 門檻窗口/hysteresis/cooldown | 四類事件固定 payload;資源門檻去重;重試遵守 429/5xx;無管道僅記錄 |
-| R11 | 範本 `variants`/`mods(owner=image-native)` + itzg `MODRINTH`/`AUTO_CURSEFORGE` + 手動格式 | itzg 為唯一安裝擁有者;工具不解壓 /data;支援矩陣;不相容前置檢查 |
-| R12 | core SQLite(`modernc.org/sqlite`)+ migrations + integrity check + quarantine + `go-keyring` 參照 | 重啟重現;毀損隔離不覆寫;敏感值存金鑰庫;遊戲 runtime 設定為明確例外 |
-| R13 | core `Reconciler`(啟動 List/Inspect 對帳)+ Docker label(UUID)+ single-instance lock | DB↔容器對帳;孤兒標記;重開恢復事件訂閱;拒絕第二實例接管 |
-| R14 | core `EventLog`(結構化,SQLite events 表)+ 查詢 API + 輪替 | event code/時間/severity/關聯;其他 R# 的「已記錄」以 event code 判定 |
+| R1 | `core` 範本引擎 + `protocol.GameTemplate`(`schema_version`)+ `templates/*.toml` + adapter 註冊表 | 版本化宣告式;缺欄位/版本/ID/adapter 不存在→拒載記事件 |
+| R2 | `core.InstanceService.Create`(分階段+journal+回滾)+ `port_reservations`(唯一約束)+ Docker 標籤 | 埠鍵 (bind_ip,protocol,host_port)+wildcard 規則;併發不同時過;失敗回滾 |
+| R3 | `RuntimeBackend.{Start,Stop,Status}` + core Restart 編排 + per-instance lock + planned-stop token | 停機 hooks.stop+30s 寬限;啟動 60s 逾時;restart=Stop+Start 同容器;agent 無 /restart |
+| R4 | `agent.RuntimeBackend`(+List/Inspect/Remove/Archive/Restore/**Events**)+ `MockBackend` | 事件納入介面;Restore 回傳新 runtime ID;core→agent→mock 崩潰路徑可測 |
+| R5 | `core.NodeClient`(HTTP+bearer)+ agent server(loopback+token+Origin)+ OpenAPI 契約 | {id}=UUID;無 restart/無 update;冪等鍵+TTL;錯誤碼表;未授權拒絕 |
+| R6 | agent stats+資料磁碟採集+探針 + `MetricsHub`(WS,背壓) | CPU% 正規化;資料磁碟走宿主路徑;log 有界緩衝<200ms |
+| R7 | 範本 `command_protocols[]`(tagged union)+`hooks` + `GameCommandAdapter`(`RconAdapter`/`PalworldRestAdapter`) | rcon=raw、rest=具名 actions;hooks 映射;Palworld RCON legacy |
+| R8 | `core` 狀態機(轉移表)+ planned-stop token(generation/TTL)+ `RestartPolicy` + 探針 + `Scheduler` | 區分死因;卡死經探針(60/15/3);超上限停+告警;排程 UTC;GUI 關閉後收斂 |
+| R9 | `RuntimeBackend.{Archive,Restore}` + `BackupID`(agent 擁有根)+ `RetentionPolicy` + journal | 首版停機快照+bind mount;checksum;原子還原回傳新 runtime ID;中斷 crash-safe |
+| R10 | `core.AlertDispatcher` + `DiscordWebhookChannel` + 窗口/hysteresis/cooldown/dedup + 重試表 | 四類事件固定 payload;fake clock 可測;429/5xx 策略 |
+| R11 | 範本 `variants`/`mods(owner=image-native)` + itzg env + 手動格式 + 支援矩陣 | itzg 唯一擁有者;工具不解壓 /data;映像鎖 tag/digest |
+| R12 | `core` SQLite+遷移+integrity+quarantine + `protocol.SecretRef` + fallback 診斷 | 毀損不覆寫;SecretRef 金鑰庫+redaction;runtime 明文例外政策 |
+| R13 | `core.Reconciler`(daemon-unavailable≠empty)+ 標籤 + single-instance lock | 孤兒/不一致;離線 summary;重建訂閱 |
+| R14 | `core.EventLog`(envelope+code 目錄+retention)+ 查詢 + fallback | envelope 欄位;必備 codes;filter/rotation 可測 |
 
 ## 介面與資料模型
 
-**遊戲範本 schema(`protocol.GameTemplate`,合法 TOML,擴充性核心):**
+**遊戲範本 schema(合法 TOML;含 host binding、tagged-union 協定、hooks、SecretRef 參照):**
 ```toml
 schema_version = 1
 id = "minecraft"
 name = "Minecraft: Java Edition"
 runtime = "docker"
-data_dirs = ["/data"]              # R9 備份範圍(頂層,非在 [mods] 之下)
+data_dirs = ["/data"]                 # R9 備份範圍(頂層)
 
 [docker]
 image = "itzg/minecraft-server"
+image_digest = "sha256:..."           # R11 鎖 digest(或 tag)
 
-[[variants]]                        # R11
+[[variants]]
 id = "paper"
 [variants.env]
 TYPE = "PAPER"
 
-[[ports]]                           # R2 衝突鍵 (bind_ip, protocol, container)
+[[ports]]                              # R2 衝突鍵 (bind_ip, protocol, host_port)
 name = "game"
 container = 25565
+host_port = 25565                      # 可為 0=動態
+bind_ip = "0.0.0.0"                    # wildcard 與具體 IP 視為重疊
 protocol = "tcp"
 required = true
 
 [[ports]]
 name = "rcon"
 container = 25575
+host_port = 25575
+bind_ip = "127.0.0.1"
 protocol = "tcp"
 
-[[params]]                          # R2 建立時使用者填
+[[params]]
 key = "MEMORY"
 label = "記憶體上限"
 type = "string"
@@ -74,103 +88,133 @@ default = "2G"
 key = "EULA"
 label = "接受 Minecraft EULA"
 type = "bool"
-required = true                     # R2 未接受不得建立,不暗中預設
+required = true                        # R2 未接受不得建立
 
-[[command_protocols]]               # R7 可多種
-kind = "rcon"                       # raw console
+[[secrets]]                            # R12 SecretRef:輸入即入金鑰庫,不進 params_json
+key = "RCON_PASSWORD"
+label = "RCON 密碼"
+
+[[command_protocols]]                  # R7 tagged union
+protocol_id = "mc-rcon"
+kind = "rcon"                          # raw console
 host_port_ref = "rcon"
-password_param = "RCON_PASSWORD"
+password_ref = "RCON_PASSWORD"         # 指向 [[secrets]]
 
-[health]                            # R8 健康探針
-kind = "tcp"                        # tcp | rcon | rest | docker
+[hooks]                                # R3/R8/R9 生命週期映射
+stop = { protocol_id = "mc-rcon", command = "stop" }
+announce = { protocol_id = "mc-rcon", command = "say {msg}" }
+
+[health]                               # R8 探針
+kind = "tcp"                           # tcp | rcon | rest | docker
 port_ref = "game"
 
-[players_query]                     # R6
+[players_query]                        # R6
 kind = "rcon"
 command = "list"
 
-[mods]                              # R11 itzg 原生為唯一擁有者
-owner = "image-native"              # 工具不另解壓 /data
+[mods]                                 # R11 itzg 唯一擁有者
+owner = "image-native"
 plugin_dir = "/data/plugins"
 modpack_env = ["MODRINTH", "AUTO_CURSEFORGE"]
 manual_formats = ["mrpack", "curseforge-zip"]
+manual_mount = "/modpacks"             # 手動檔掛載處,交由 itzg 對應 env 取用
 ```
-Palworld 範本以 `[[command_protocols]]` 定義 `kind = "rest"`(具名動作:players/announce/kick/save/shutdown,Basic Auth)為主,另一組 `kind = "rcon"; legacy = true`(首版不啟用,待查證)。
+Palworld 範本:`[[command_protocols]]` 一組 `kind="rest"`(`actions[]`:players GET /v1/api/players、announce POST /v1/api/announce、shutdown…,`auth="basic"`,`password_ref="ADMIN_PASSWORD"`),另一組 `kind="rcon"; legacy=true`(首版不啟用)。
 
-**`RuntimeBackend` 與 `GameCommandAdapter` 介面(R4/R7,`internal/agent`):**
+**`RuntimeBackend` / `GameCommandAdapter`(R4/R7,`internal/agent`):**
 ```go
 type RuntimeBackend interface {
-  Create(ctx context.Context, spec InstanceSpec) (RuntimeID, error)
-  Start(ctx context.Context, id RuntimeID) error
-  Stop(ctx context.Context, id RuntimeID, opts StopOpts) error     // 優雅停機
-  Status(ctx context.Context, id RuntimeID) (RuntimeStatus, error)
-  List(ctx context.Context) ([]RuntimeRef, error)                  // R13 對帳
-  Inspect(ctx context.Context, id RuntimeID) (RuntimeInfo, error)
-  Remove(ctx context.Context, id RuntimeID) error
-  Logs(ctx context.Context, id RuntimeID, opts LogOpts) (LogStream, error)
-  ExecProcess(ctx context.Context, id RuntimeID, cmd ExecCmd) (ExecResult, error) // 容器內程序,非遊戲指令
-  Stats(ctx context.Context, id RuntimeID) (ResourceStats, error)
-  Archive(ctx context.Context, id RuntimeID, dst string) (ArchiveInfo, error)     // R9 備份
-  Restore(ctx context.Context, id RuntimeID, src string) error                    // R9 還原
+  Create(ctx, spec InstanceSpec) (RuntimeID, error)
+  Start(ctx, id RuntimeID) error
+  Stop(ctx, id RuntimeID, opts StopOpts) error          // 優雅停機(hooks.stop + grace)
+  Status(ctx, id RuntimeID) (RuntimeStatus, error)
+  List(ctx) ([]RuntimeRef, error)                        // R13
+  Inspect(ctx, id RuntimeID) (RuntimeInfo, error)
+  Remove(ctx, id RuntimeID, opts RemoveOpts) error       // 預設留 data/backups,purge 才刪
+  Logs(ctx, id RuntimeID, opts LogOpts) (LogStream, error)
+  ExecProcess(ctx, id RuntimeID, cmd ExecCmd) (ExecResult, error)   // 容器內程序,非遊戲指令
+  Stats(ctx, id RuntimeID) (ResourceStats, error)
+  Archive(ctx, id RuntimeID) (BackupID, error)           // R9 一致快照(呼叫端先 planned-stop)
+  Restore(ctx, id RuntimeID, b BackupID) (RuntimeID, error) // 回傳新 runtime ID
+  Events(ctx, since Cursor) (EventStream, error)          // R4/R8 die/health;reconnect+cursor+漏事件對帳
 }
-// Restart = core 層 Stop+Start 編排,非介面方法。
+// Restart = core 層 Stop+Start 編排(持 lock),非介面方法,agent 亦不開 /restart。
 // 遊戲指令與 RuntimeBackend 分離:
 type GameCommandAdapter interface {
-  Send(ctx context.Context, target CommandTarget, cmd GameCommand) (CommandResult, error)
+  Send(ctx, target CommandTarget, cmd GameCommand) (CommandResult, error)
 }
-// 實作:RconAdapter(Minecraft/Palworld-legacy)、PalworldRestAdapter(具名動作)。
+// 實作:RconAdapter、PalworldRestAdapter。
+type SecretRef struct{ Key string } // R12:值存金鑰庫;String()/MarshalJSON 一律 redact,不可回顯
 ```
-實作:`DockerBackend`(官方 `github.com/docker/docker/client`)、`MockBackend`(測試)、未來 `NativeBackend`(SteamCMD)。
+實作:`DockerBackend`(`github.com/docker/docker/client`)、`MockBackend`(含 Events)、未來 `NativeBackend`。
 
-**節點代理 API 契約(R5,core↔agent,版本化 + bearer 認證):**
+**節點代理 API 契約(R5,版本化 OpenAPI + bearer;`{id}`=instance UUID):**
 所有 HTTP/WS 需 `Authorization: Bearer <每次啟動 token>`;WS 檢查 Origin。端點:
-- `GET /instances`、`POST /instances`、`GET /instances/{id}`、`DELETE /instances/{id}`
-- `POST /instances/{id}/{start,stop,restart}`(restart=編排)
+- `GET /instances`、`POST /instances`、`GET /instances/{id}`、`DELETE /instances/{id}`(**無 PUT/PATCH**,首版不支援 update;**無 /restart**,restart 由 core 編排)
+- `POST /instances/{id}/start`、`POST /instances/{id}/stop`
 - `GET /instances/{id}/status`、`WS /instances/{id}/stats`、`WS /instances/{id}/logs`
-- `WS /events`(容器/狀態事件串流,供 R8/R13)
-- `POST /instances/{id}/command`(遊戲指令,經 `GameCommandAdapter`)
+- `WS /events`(RuntimeBackend.Events 轉發,供 R8/R13)
+- `POST /instances/{id}/command`(經 GameCommandAdapter)
 - `GET /instances/{id}/backups`、`POST /instances/{id}/backup`、`POST /instances/{id}/restore`
 - `GET /health`
 
-契約以 OpenAPI(或等價)版本化,定義 request/response、錯誤碼與冪等鍵。
+寫入端點接受 `Idempotency-Key`(TTL 10 分鐘,重播回原結果);錯誤以統一碼表(`ERR_PORT_CONFLICT`、`ERR_NOT_FOUND`、`ERR_LOCKED`、`ERR_UNAUTHORized` 等)。
 
-**狀態機與對帳(R8/R13):** 每實例維護 `desired`(Running/Stopped)與 `observed` 狀態、planned-stop token、per-instance lock;`Reconciler` 於啟動時 `List`/`Inspect` 對帳 DB 與容器(以 UUID Docker label 關聯),處理孤兒與不一致;應用以 lockfile/named mutex 確保單一實例。
+**狀態機(R8;desired ∈ {Running, Stopped}):**
+狀態集:`Created`、`Starting`、`Running`、`Stopping`、`Stopped`、`BackingUp`、`Restoring`、`Crashed`、`Error`、`Offline`(節點層)。轉移(摘):
 
-**持久化(R12/R14):** SQLite(`modernc.org/sqlite`,純 Go 免 CGO)+ 遷移(schema 版本)+ `PRAGMA integrity_check`;毀損進 quarantine 不覆寫。表:`instances`(uuid, template_id, variant, params_json, node_id, runtime_id, desired_state, observed_state)、`schedules`、`settings`、`backups`(uuid, instance_uuid, ts, checksum, path)、`events`(code, ts_utc, severity, instance_uuid, message)。敏感值於 DB 存金鑰庫參照,實體以 `go-keyring` 存 Windows 認證管理員。
+| 從 | 事件 | 到 |
+|---|---|---|
+| Created | Start | Starting |
+| Starting | ready(探針) / 逾時 | Running / Error |
+| Running | Stop(planned) | Stopping → Stopped |
+| Running | die(無 planned token)或探針連續失敗 | Crashed |
+| Crashed | 重試未達上限 / 達上限 | Starting / Error(RESTART_GIVEUP) |
+| Running/Stopped | backup | BackingUp → 原狀態 |
+| any(非忙) | restore | Restoring → 依原 desired(Stopped/Starting) |
+| any | 節點不可達 | Offline → 對帳後收斂 |
+
+每操作帶 operation generation;planned-stop token 有 TTL(如 2×寬限期)、被對應 die 事件 consume、逾時或啟動失敗即清除,避免 stale token 遮蔽下次真崩潰。
+
+**事件封套與碼表(R14):**
+envelope:`{code, ts_utc, severity, instance_uuid?, node?, template_id?, details_json}`。必備 codes:`TEMPLATE_LOAD_FAILED`、`INSTANCE_CREATED`、`INSTANCE_CREATE_FAILED`、`INSTANCE_STARTED`、`INSTANCE_STOPPED`、`INSTANCE_CRASHED`、`INSTANCE_RESTARTED`、`RESTART_GIVEUP`、`HEALTH_PROBE_FAILED`、`BACKUP_STARTED/COMPLETED/FAILED`、`RESTORE_STARTED/COMPLETED/FAILED`、`ALERT_SENT/FAILED`、`RECONCILE_ORPHAN`、`RECONCILE_MISMATCH`、`NODE_OFFLINE`、`DB_QUARANTINE`。當 SQLite 不可用時,事件寫入 **fallback 診斷檔**(NDJSON)。
+
+**持久化(R12):** SQLite(`modernc.org/sqlite`)+ 遷移(schema 版本)+ `PRAGMA integrity_check`;毀損 quarantine(改名保留)不覆寫。表:`instances`(uuid, template_id, variant, params_json, node, runtime_id, desired_state, observed_state, op_generation)、`port_reservations`(bind_ip, protocol, host_port UNIQUE, instance_uuid)、`schedules`、`settings`、`backups`(backup_id, instance_uuid, ts_utc, checksum)、`events`(envelope 欄位)。SecretRef 於 DB 僅存 key 名,值在 `go-keyring`。
 
 ## 關鍵流程
 
-1. **建立(R2)**:GUI→core `Create`→驗證必填/EULA/埠衝突→`NodeClient` POST→agent `DockerBackend.Create`(Docker SDK 拉映像+建容器,`Created`,打 UUID label)→core 寫 DB;任一步失敗回滾(移除容器/不留 DB 紀錄)。
-2. **監控+log(R6)**:GUI 開實例→core 訂閱 agent stats/log WS→背壓後轉推 GUI;agent 每 ≤5s 推 stats,資料磁碟走宿主路徑,線上狀態走探針,依範本跑 `players_query`。
-3. **崩潰復原(R8)**:agent 監看 Docker events→容器 die→core 比對 planned-stop 意圖與健康探針→非計畫退出/卡死才 `RestartPolicy` 退避重試→窗內超上限→停止+`AlertDispatcher`;操作序列化。
-4. **指令(R7)**:GUI console→core→agent `command`→`GameCommandAdapter`(Minecraft RCON / Palworld REST 具名動作)→回顯;Palworld RCON legacy 不啟用。
-5. **備份/還原(R9)**:排程 tick→core→agent `Archive`(一致快照:save hook/停機→打包+checksum)→`RetentionPolicy` 修剪;還原=停機→staging 驗證→原子切換→恢復原 desired 狀態。
-6. **啟動對帳(R13)**:應用啟動→single-instance lock→agent `List`/`Inspect`→與 DB 對帳(孤兒/不一致處理)→重建事件訂閱。
+1. **建立(R2)**:驗證必填/EULA/SecretRef 入庫→DB 預留埠(唯一約束)→寫建立 journal→拉映像→建容器(打 `gsm.*` 標籤)→寫 DB 完成→清 journal;任一步失敗回滾(釋放預留、移除容器、不留完成紀錄)。
+2. **監控(R6)**:core 訂閱 agent stats/log/events WS→背壓轉推;資料磁碟走宿主路徑;線上走探針。
+3. **崩潰復原(R8)**:agent `Events` die→core 比對 planned-stop token 與探針→真崩潰才 `RestartPolicy` 退避→超上限停+告警;操作序列化。
+4. **指令(R7)**:GUI→core→agent `command`→`GameCommandAdapter`(rcon raw / rest 具名動作)→回顯。
+5. **備份/還原(R9)**:排程→planned-stop→`Archive`(一致快照+checksum,agent 擁有根,回 `BackupID`)→`RetentionPolicy`;還原=planned-stop→staging 驗證→原子切換→`Restore` 回新 runtime ID→依原 desired 收斂;全程 journal 保證 crash-safe。
+6. **啟動對帳(R13)**:single-instance lock→agent `List`/`Inspect`(區分 daemon 不可用 vs 空)→對帳(孤兒/不一致/journal 未完成的建立)→重建事件訂閱→離線期 summary。
 
 ## 取捨與替代方案
 
-- **技術選型(已裁決)** — Go 全棧:Wails 桌面 + Go 核心/代理,Docker 用官方 SDK。架構(四層/介面/schema)與語言無關,選型只換函式庫。
-- **相依版本鎖定(依二審)** — 明訂:Go 版本、**Wails v2 stable**(非 v3 alpha)、Docker client 模組 `github.com/docker/docker/client` 及版本 + 最低 Engine API、`modernc.org/sqlite` 版本(留意其對 Go 版本要求)、`github.com/zalando/go-keyring` 版本。
-- **核心↔代理走 HTTP(即使單機,loopback+token)** — Pterodactyl 模式讓多節點接縫為真;加 bearer token 與 Origin 檢查修補「同機任何程序可控制」的洞。首版只做版本化 loopback 契約,不做 `cmd/agent`/跨機 TLS/節點註冊。
-- **生命週期:僅 GUI 開啟時運作(已裁決)** — 核心+代理內嵌於 Wails;代價是關閉時自動化暫停(容器仍由 Docker 維持),以 R13 對帳彌補重開落差。日後要 24/7 可加選裝背景服務(未來 spec)。
-- **模組安裝擁有者=itzg 原生(依二審)** — 首版用 `MODRINTH`/`AUTO_CURSEFORGE` + 手動受限檔案;捨棄自建下載器以免與 itzg 爭奪 `/data` 互刪、且低估成本。自建串接延後。
-- **Palworld 指令:REST 具名動作為主、RCON legacy(依二審)** — REST 是固定具名動作非自由指令台;RCON 現況需查證,首版不綁。
-- **宣告式範本檔** — 擴充=加檔;捨棄「每款遊戲寫程式碼」。
+- **技術選型(已裁決)**:Go 全棧 + Wails v2 + 官方 Docker SDK。
+- **核心↔代理走 loopback HTTP+token**:Pterodactyl 模式讓多節點接縫為真 + 修補「同機任何程序可控制」;首版只做版本化 loopback,不做跨機。
+- **restart 單一所有者**:由 core 編排,agent 不開 /restart,避免繞過 lock/planned-stop(依二審 H3)。
+- **事件納入 RuntimeBackend**:die/health 經介面而非直碰 SDK,使 Mock/未來 Native 可等價替換(依二審 H2)。
+- **備份首版=停機快照 + bind mount**:一致性最穩;named volume 原子交換列 spike;agent 擁有備份根、對外 opaque BackupID(依二審 H6)。
+- **SecretRef 型別**:輸入即入金鑰庫、統一 redaction;runtime 明文為明確例外(依二審 H7)。
+- **模組 itzg 唯一擁有者**:不與 itzg 爭 /data(依二審 H10/rev.2)。
+- **首版不支援 update**:改參數=移除重建,明確排除(依二審 H3)。
+- **宣告式範本檔**:擴充=加檔。
 
 ## 風險
 
-- Palworld REST 端點/認證與 RCON 現況隨版本演進且需查證 → 先做 time-boxed spike 並鎖 Palworld 伺服器版本/映像(tag 或 digest);REST 為主,RCON 標 legacy。
-- CurseForge API 條款/金鑰限制 → 首版倚賴 itzg `AUTO_CURSEFORGE`(`CF_API_KEY` 可由使用者自填)+ 手動受限檔案;正式發布前查證條款與 attribution。
-- Docker on Windows 需 WSL2;含反作弊/Windows-only 遊戲 Linux 容器不支援 → 選 Docker 的已知邊界,未來原生後端緩解。
-- 備份 Docker named volume:Windows agent 無法直接打包 → 明定 bind mount 或以 helper container/volume mount 封存,取一致快照。
-- GUI 關閉期的孤兒/重複容器 → R13 對帳 + UUID label + idempotency key + single-instance lock。
-- Wails 複雜 UI 開發成本 → 前端用成熟框架(Svelte/React)。
-- 監控磁碟語意誤用(Docker block I/O≠資料容量) → 以宿主路徑/helper 採集資料用量。
+- Palworld REST/RCON 現況需查證 → **T7 前置 Palworld spike**,鎖版本/映像;REST 為主、RCON legacy。
+- 備份原子性(Windows/Docker Desktop、named volume)→ **備份 spike**;首版收斂為停機 + bind mount。
+- itzg 支援矩陣/`AUTO_CURSEFORGE` env/CurseForge 條款需查證 → **T13 前置模組 spike**;金鑰使用者自填。
+- Docker on Windows 需 WSL2;反作弊/Windows-only 容器不支援 → 已知邊界,未來原生後端。
+- Wails 複雜 UI 成本 → 成熟前端框架(Svelte/React)。
+- 版本相容(modernc 對 Go 版本要求)→ T1 一併鎖定驗證。
 
 ## 測試策略
 
-- **單元**:R1 範本載入(有效/缺欄位/版本不符/ID 重複/adapter 標示)+ 「原樣解析 design 範例」golden test、R4 MockBackend(含 List/Inspect/Remove/Archive/Restore)跑通、R7 adapter 選擇、R10 mock Discord(payload+去重+429/5xx 重試+無管道)、R12 遷移/integrity/quarantine、R14 event code/欄位。
-- **整合(MockBackend,免 Docker)**:R2 建立原子性/回滾/埠衝突/EULA、R3 啟停重啟冪等+同容器、R4 core→agent→mock、R5 loopback+token 拒絕未授權+斷線標離線、R8 planned-stop 不誤判+崩潰重啟+超上限停+探針卡死、R9 archive/checksum/retention/原子還原+復原原狀態、R13 對帳(孤兒/不一致/單一實例)。
-- **整合(真 Docker,build tag/`-short` 切換)**:R2/R3 建真 Minecraft、R6 CPU/RAM/資料磁碟/log 串流/玩家數、R7 Minecraft RCON `list`、R11 Paper+外掛+itzg Modrinth 模組包+手動匯入。
-- **Palworld spike(先做,鎖版本)**:查證並驗 REST 具名動作;RCON legacy 不列首版驗收。
-- **端到端**:重啟應用後 R12/R13 狀態重現與對帳;GUI 走一輪建立→啟動→監控→下指令→備份→設告警。
+- **單元**:R1 範本載入(有效/缺欄位/版本/ID/adapter 不存在)+ 「原樣解析 design 範本」golden test;R4 MockBackend(含 List/Inspect/Remove/Archive/Restore/Events)跑通;R7 協定/動作選擇;R8 狀態機轉移表 + planned-stop token TTL/consume;R10 fake clock 驗窗口/hysteresis/cooldown + 429/5xx;R12 遷移/integrity/quarantine/SecretRef redaction;R14 envelope/codes。
+- **整合(MockBackend,免 Docker)**:R2 建立各階段 failure injection + 埠衝突(wildcard)+ 併發;R3 啟停重建冪等 + 同 runtime ID + 60/30s;R4 core→agent→mock 崩潰路徑;R5 loopback+token 拒絕未授權 + Origin + 冪等鍵重播 + 錯誤碼;R8 planned-stop 不誤判 + 探針卡死 + 超上限;R9 archive/checksum/retention/原子還原/中斷 rollback;R10 producer→AlertSink→dispatcher 跨層;R13 對帳(孤兒/不一致/daemon 不可用/單一實例)。
+- **整合(真 Docker,build tag/`-short`)**:R2/R3 真 Minecraft;R6 CPU/RAM/資料磁碟/log/玩家數;R7 Minecraft RCON `list`;R11 Paper+外掛+itzg Modrinth+手動匯入。
+- **Spike(前置 gate)**:Palworld(T7 前)、備份原子性、模組矩陣/條款(T13 前);結論落檔。
+- **端到端/基準**:重啟後 R12/R13 對帳;GUI 全流程;T16 效能 benchmark 回填 NFR 門檻。
