@@ -1,0 +1,29 @@
+# Go
+/bin/
+*.exe
+*.exe~
+*.test
+*.out
+vendor/
+
+# Wails 建置產出
+build/bin/
+build/windows/installer/
+frontend/dist/
+frontend/node_modules/
+node_modules/
+
+# 應用資料 / 本地
+*.db
+*.sqlite
+*.sqlite3
+data/
+backups/
+*.log
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.local
