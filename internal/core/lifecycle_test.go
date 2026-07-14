@@ -332,6 +332,83 @@ func TestOrchestrator_ExpiredTokenDoesNotMaskCrash(t *testing.T) {
 	}
 }
 
+// ---- 卡死復原:先強制停止 running 容器再標 Crashed(R8)----
+
+func TestOrchestrator_RecoverStuckForceStops(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	rec := h.createInstance(t, "rs-stuck")
+	h.startInstance(t, "rs-stuck")
+
+	// 卡死復原:應先強制停止仍在 running 的容器,再標 Crashed 交 hook 一次。
+	h.orch.RecoverStuck("rs-stuck")
+
+	if got := h.state(t, "rs-stuck"); got != protocol.InstanceStateCrashed {
+		t.Fatalf("RecoverStuck 後 observed = %s, 期望 Crashed", got)
+	}
+	// 代理確實收到強制停止:mock 容器轉為非 running。
+	st, err := h.backend.Status(context.Background(), rec.RuntimeID)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.Running {
+		t.Errorf("RecoverStuck 應強制停止卡死容器, 但 mock 仍 running")
+	}
+	if h.crashCount() != 1 {
+		t.Fatalf("crashHook 應觸發一次, 得 %d", h.crashCount())
+	}
+	if n := h.countEvents(t, protocol.EventHealthProbeFailed); n != 1 {
+		t.Errorf("HEALTH_PROBE_FAILED = %d, 期望 1", n)
+	}
+	if n := h.countEvents(t, protocol.EventInstanceCrashed); n != 1 {
+		t.Errorf("INSTANCE_CRASHED = %d, 期望 1", n)
+	}
+
+	// 強制停止產生的 die 到達 → 由 planned-stop token consume,不二次進 crashHook/重記事件。
+	h.orch.HandleRuntimeEvent(context.Background(), "local", protocol.RuntimeEvent{
+		ID: rec.RuntimeID, Kind: protocol.RuntimeEventDie, ExitCode: intPtr(0), TsUTC: time.Now(),
+	})
+	if h.crashCount() != 1 {
+		t.Errorf("停止的 die 不應二次觸發 crashHook, 得 %d", h.crashCount())
+	}
+	if n := h.countEvents(t, protocol.EventInstanceCrashed); n != 1 {
+		t.Errorf("停止的 die 不應二次記 INSTANCE_CRASHED, 得 %d", n)
+	}
+
+	// 復原後 Start 對「已停」容器一致有效(非 no-op)→ 回 Running。
+	if err := h.orch.Start(context.Background(), "rs-stuck"); err != nil {
+		t.Fatalf("RecoverStuck 後 Start: %v", err)
+	}
+	if got := h.state(t, "rs-stuck"); got != protocol.InstanceStateRunning {
+		t.Errorf("復原後 Start observed = %s, 期望 Running", got)
+	}
+}
+
+// ---- 重複 die 去重:已 Crashed 時不二次計數(R8;#7 第二道防線)----
+
+func TestOrchestrator_HandleDieIdempotentWhenCrashed(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	rec := h.createInstance(t, "dd-1")
+	h.startInstance(t, "dd-1")
+
+	ec := 1
+	die := protocol.RuntimeEvent{
+		ID: rec.RuntimeID, Kind: protocol.RuntimeEventDie, ExitCode: &ec, TsUTC: time.Now(),
+	}
+	// 卡死後旋即真 die:第一則標 Crashed,第二則(已 Crashed)應去重。
+	h.orch.HandleRuntimeEvent(context.Background(), "local", die)
+	h.orch.HandleRuntimeEvent(context.Background(), "local", die)
+
+	if got := h.state(t, "dd-1"); got != protocol.InstanceStateCrashed {
+		t.Fatalf("observed = %s, 期望 Crashed", got)
+	}
+	if n := h.countEvents(t, protocol.EventInstanceCrashed); n != 1 {
+		t.Errorf("重複 die 應去重, INSTANCE_CRASHED = %d 期望 1", n)
+	}
+	if h.crashCount() != 1 {
+		t.Errorf("重複 die 不應二次觸發 crashHook, 得 %d", h.crashCount())
+	}
+}
+
 // ---- 併發序列化(R3)----
 
 func TestOrchestrator_ConcurrentSameInstanceSerialized(t *testing.T) {

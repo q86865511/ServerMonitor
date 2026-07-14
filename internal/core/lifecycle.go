@@ -20,6 +20,7 @@ const (
 	defaultReadyPoll     = 500 * time.Millisecond // 就緒輪詢間隔
 	defaultReconnectBase = 500 * time.Millisecond // 事件流重連退避起始
 	defaultReconnectMax  = 30 * time.Second       // 事件流重連退避上限
+	defaultRecoverGrace  = 5 * time.Second        // 卡死復原強制停止的短寬限期(遊戲已卡死,不久候)
 )
 
 // ErrStartTimeout 表示啟動輪詢至就緒逾時(R3;實例標記 Error)。
@@ -412,6 +413,12 @@ func (o *Orchestrator) handleDie(ev protocol.RuntimeEvent) {
 	if o.tokens.consume(uuid) {
 		return // 計畫停止對應的 die:狀態已由 Stop 收斂為 Stopped,無需處理。
 	}
+	// 去重(第二道防線,配合 planned-stop token):已觀測為 Crashed/Error 表示此崩潰已被記錄
+	// (例:RecoverStuck 已標 Crashed,或前一則 die 已處理)。此時「卡死後旋即真 die」等重複事件
+	// 只會二次計數並多觸發一次 crashHook,故直接跳過,不重記 INSTANCE_CRASHED、不再交棒。
+	if rec.ObservedState == protocol.InstanceStateCrashed || rec.ObservedState == protocol.InstanceStateError {
+		return
+	}
 	// 非計畫崩潰:標 Crashed、記 INSTANCE_CRASHED、交棒 crashHook(T11 自動重啟)。
 	if terr := o.transition(&rec, protocol.InstanceStateCrashed); terr != nil {
 		// 來源狀態不允許轉 Crashed(如已 Stopped):以權威覆寫確保觀測到崩潰。
@@ -448,6 +455,98 @@ func (o *Orchestrator) handleExternalStart(ev protocol.RuntimeEvent) {
 	default:
 		// Starting / Running / 忙碌狀態:交由既有編排收斂。
 	}
+}
+
+// ---- T11 接線:存活探針復原 / 排程共用鎖 / 崩潰迴圈放棄 ----
+
+// RecoverStuck 由存活探針判定「running 但卡死」時觸發(R8):於 per-instance lock 內,若實例仍
+// Running(非操作進行中/已停)則:先「強制停止仍在執行的容器」(卡死的是 running 容器,直接標
+// Crashed 後續 Start 對其為 docker no-op、探針續失敗;故須先停),再標 Crashed、記 INSTANCE_CRASHED、
+// 交棒 crashHook——與 die 事件相同的復原路徑,故沿用 RestartPolicy 的自動重啟/上限判斷。持鎖確保
+// 不與 Start/Stop/Restart/備份互撞;非 Running 即跳過(避免遮蔽正在進行的計畫操作)。
+//
+// 強制停止發放 planned-stop token:使停止產生的 die 被事件迴圈 consume、不二次進 crashHook;並跳過
+// hooks.stop(遊戲已卡死,rcon stop hook 大概率逾時,直接以短寬限停)。代理停止失敗(節點離線等)→
+// 記於 INSTANCE_CRASHED 詳情、仍標 Crashed 交 hook(重試時 Start 自身會失敗,走重試鏈)。
+func (o *Orchestrator) RecoverStuck(uuid string) {
+	lock := o.lockFor(uuid)
+	lock.Lock()
+	defer lock.Unlock()
+
+	rec, err := o.store.GetInstance(uuid)
+	if err != nil {
+		return
+	}
+	if rec.ObservedState != protocol.InstanceStateRunning {
+		return // 已非 Running:計畫操作進行中或已停止,不介入。
+	}
+	o.record(protocol.EventHealthProbeFailed, protocol.SeverityError, rec, map[string]any{
+		"reason": "liveness_stuck",
+	})
+	details := map[string]any{"source": "liveness_probe"}
+	if stopErr := o.forceStopForRecovery(&rec); stopErr != nil {
+		details["force_stop_error"] = stopErr.Error()
+	}
+	if terr := o.transition(&rec, protocol.InstanceStateCrashed); terr != nil {
+		_ = o.forceObserved(&rec, protocol.InstanceStateCrashed)
+	}
+	o.record(protocol.EventInstanceCrashed, protocol.SeverityError, rec, details)
+	if o.crashHook != nil {
+		o.crashHook(uuid, nil)
+	}
+}
+
+// forceStopForRecovery 於卡死復原時強制停止仍在執行的容器(呼叫端須已持 per-instance lock)。
+// 發放 planned-stop token(遞增 op generation、TTL=2×短寬限),使停止觸發的 die 落在有效窗口內被
+// consume,不誤判崩潰、不二次進 crashHook;以短寬限直接呼叫代理 Stop、不執行 hooks.stop。回傳代理
+// Stop 的錯誤:失敗(節點離線等)→清除 token(不會有對應 die,避免 stale token 遮蔽後續真崩潰)。
+func (o *Orchestrator) forceStopForRecovery(rec *InstanceRecord) error {
+	rec.OpGeneration++
+	token := newUUIDv4()
+	o.tokens.issue(rec.UUID, token, rec.OpGeneration, 2*defaultRecoverGrace)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*defaultRecoverGrace)
+	defer cancel()
+	aerr := o.registry.Call(rec.Node, func(c *NodeClient) error {
+		return c.Stop(ctx, rec.UUID, protocol.StopInstanceRequest{
+			GraceSeconds:     int(defaultRecoverGrace / time.Second),
+			PlannedStopToken: token,
+		})
+	})
+	if aerr != nil {
+		o.tokens.clear(rec.UUID)
+	}
+	return aerr
+}
+
+// RunLocked 於某實例的 per-instance lock 內執行 fn(供 Scheduler 的排程備份與生命週期操作共用
+// 同一把鎖,序列化不互撞,R8)。注意:fn 內不得再呼叫會取用同一實例鎖的 Orchestrator 方法
+// (Start/Stop/Restart),否則自我死結。
+func (o *Orchestrator) RunLocked(uuid string, fn func() error) error {
+	lock := o.lockFor(uuid)
+	lock.Lock()
+	defer lock.Unlock()
+	return fn()
+}
+
+// markGiveup 於崩潰迴圈達上限(RESTART_GIVEUP)時把實例標 Error(狀態機 Crashed→Error 邊)。
+// 由 RestartPolicy 於「放棄決策」時經 after 於 per-instance lock 之外派發呼叫:放棄可能源自崩潰
+// (原持鎖)或重試失敗(原不持鎖)兩條路徑,兩者都在 after 內不持該實例鎖,故此處「自行取用
+// per-instance lock」統一序列化這個 read-modify-write,與並行的 Start/Stop/Restart/handleDie 互斥。
+// 切勿於已持該實例 lock 的路徑同步呼叫(sync.Mutex 非重入,會自我死結);一律經 after 派發即滿足。
+func (o *Orchestrator) markGiveup(uuid string) {
+	lock := o.lockFor(uuid)
+	lock.Lock()
+	defer lock.Unlock()
+
+	rec, err := o.store.GetInstance(uuid)
+	if err != nil {
+		return
+	}
+	if rec.ObservedState == protocol.InstanceStateError {
+		return
+	}
+	_ = o.forceObserved(&rec, protocol.InstanceStateError)
 }
 
 // runStopHook best-effort 執行 hooks.stop:無 hook 或成功→無事;失敗→記 HOOK_FAILED 警告事件,

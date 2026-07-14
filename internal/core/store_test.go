@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -78,6 +79,72 @@ func TestStore_MigrateAndReopen(t *testing.T) {
 	}
 	if len(schedules) != 1 || schedules[0].ID != "sch-1" || !schedules[0].Enabled {
 		t.Errorf("schedule 不符: %+v", schedules)
+	}
+}
+
+// TestStore_MigrationV2AddsLastFiredUTCOnOldDB 驗證 T11 雙審 #6 新增的 v2 遷移
+// (schedules.last_fired_utc)套用在「只跑過 v1」的舊庫上不會出錯,既有排程資料完整保留,
+// 且新欄位對舊資料為 NULL(ListSchedules 讀回 LastFiredUTC == nil)。
+func TestStore_MigrationV2AddsLastFiredUTCOnOldDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+
+	// 手刻只套用 v1 的舊庫(不經 Store.Open/applyMigrations,模擬升級前建立的資料庫)。
+	raw, err := sql.Open("sqlite", dsn(path))
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE schema_version (version INTEGER NOT NULL)`); err != nil {
+		t.Fatalf("建版本表: %v", err)
+	}
+	for _, m := range migrations {
+		if m.version != 1 {
+			continue // 只套用 v1,刻意不跑後續遷移
+		}
+		for _, stmt := range m.stmts {
+			if _, err := raw.Exec(stmt); err != nil {
+				t.Fatalf("套用 v1 遷移失敗: %v", err)
+			}
+		}
+		if _, err := raw.Exec(`INSERT INTO schema_version (version) VALUES (?)`, m.version); err != nil {
+			t.Fatalf("寫入 schema_version: %v", err)
+		}
+	}
+	if _, err := raw.Exec(`INSERT INTO schedules (id, instance_uuid, kind, spec_json, enabled) VALUES (?, ?, ?, ?, ?)`,
+		"legacy-sch", "uuid-legacy", "restart", `{"at":"04:30"}`, 1); err != nil {
+		t.Fatalf("插入舊排程資料: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("關閉手刻連線: %v", err)
+	}
+
+	// 以現行版本開庫:應自動套用 v2(ALTER TABLE ADD COLUMN),舊庫可正常開啟。
+	st, err := Open(path, Options{})
+	if err != nil {
+		t.Fatalf("Open 升級後的舊庫失敗: %v", err)
+	}
+	defer st.Close()
+
+	if q, _ := st.Quarantined(); q {
+		t.Errorf("正常升級不應觸發 quarantine")
+	}
+
+	recs, err := st.ListSchedules()
+	if err != nil {
+		t.Fatalf("ListSchedules: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "legacy-sch" {
+		t.Fatalf("舊排程資料應完整保留, 得 %+v", recs)
+	}
+	if recs[0].LastFiredUTC != nil {
+		t.Errorf("舊資料的 last_fired_utc 應為 NULL, 得 %v", recs[0].LastFiredUTC)
+	}
+
+	current, err := currentSchemaVersion(st.db)
+	if err != nil {
+		t.Fatalf("currentSchemaVersion: %v", err)
+	}
+	if current != schemaVersion() {
+		t.Errorf("schema 版本應已升至最新 %d, 得 %d", schemaVersion(), current)
 	}
 }
 

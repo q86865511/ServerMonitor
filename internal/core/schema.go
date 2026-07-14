@@ -83,6 +83,15 @@ var migrations = []migration{
 			`CREATE INDEX idx_events_ts ON events(ts_utc)`,
 		},
 	},
+	{
+		// v2(T11 雙審 #6):schedules 加 last_fired_utc,供跨程序(app 重啟)去重——
+		// 僅記憶體的 lastFired 在同分鐘重啟後會遺忘,導致重觸發。NULL=從未觸發,
+		// 既有資料相容(不需回填)。
+		version: 2,
+		stmts: []string{
+			`ALTER TABLE schedules ADD COLUMN last_fired_utc TEXT`,
+		},
+	},
 }
 
 // schemaVersion 是本二進位期望的最新 schema 版本。
