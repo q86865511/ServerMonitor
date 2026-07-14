@@ -327,7 +327,7 @@ func TestMockBackend_StatsExec(t *testing.T) {
 
 func TestNopCommandAdapter(t *testing.T) {
 	var a GameCommandAdapter = NopCommandAdapter{}
-	res, err := a.Send(context.Background(), CommandTarget{ProtocolID: "rcon", Kind: "rcon"}, protocol.GameCommand{Raw: "list"})
+	res, err := a.Send(context.Background(), protocol.CommandTarget{ProtocolID: "rcon", Kind: "rcon"}, protocol.GameCommand{Raw: "list"})
 	if err != nil {
 		t.Fatalf("Send: %v", err)
 	}

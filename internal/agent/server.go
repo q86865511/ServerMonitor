@@ -35,7 +35,7 @@ type Server struct {
 // Config 是 Server 的建構參數。Backend 必填;其餘可留零值採預設。
 type Config struct {
 	Backend        RuntimeBackend     // 必填:被包裝的執行後端
-	Commands       GameCommandAdapter // 遊戲指令轉接器;nil 用 NopCommandAdapter(T9 前)
+	Commands       GameCommandAdapter // 遊戲指令轉接器;nil 用 NewCommandDispatcher(依 Kind 選 rcon/rest)
 	Token          string             // bearer token;空字串則啟動時隨機產生(以利測試注入)
 	StatsInterval  time.Duration      // WS stats 推送週期;<=0 用預設 2s
 	IdempotencyTTL time.Duration      // 冪等鍵重播窗口;<=0 用 protocol.IdempotencyKeyTTL(10m)
@@ -69,7 +69,7 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 	commands := cfg.Commands
 	if commands == nil {
-		commands = NopCommandAdapter{}
+		commands = NewCommandDispatcher()
 	}
 	statsInterval := cfg.StatsInterval
 	if statsInterval <= 0 {
@@ -126,6 +126,8 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+base+"/instances/{id}/logs", s.handleLogsWS)
 	mux.HandleFunc("GET "+base+"/events", s.handleEventsWS)
 	mux.Handle("POST "+base+"/instances/{id}/command", s.idempotent(http.HandlerFunc(s.handleCommand)))
+	// 上傳具名 mount 檔(R11 手動模組包);上傳採覆寫、天然冪等,故不套冪等中介層。
+	mux.HandleFunc("PUT "+base+"/instances/{id}/mounts/{name}", s.handleUploadMount)
 	mux.HandleFunc("GET "+base+"/instances/{id}/backups", s.handleListBackups)
 	mux.Handle("POST "+base+"/instances/{id}/backup", s.idempotent(http.HandlerFunc(s.handleBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/restore", s.idempotent(http.HandlerFunc(s.handleRestore)))
@@ -311,14 +313,45 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	// 目標的埠/機密解析屬範本與核心職責;此處給最小目標,NopCommandAdapter 忽略之,T9 接上真轉接器。
-	target := CommandTarget{ProtocolID: req.Command.ProtocolID}
-	res, err := s.commands.Send(r.Context(), target, req.Command)
+	// 埠/機密/協定解析屬核心職責:core 已於 req.Target 帶入 kind/host/port/password/actions,
+	// 此處依 Kind 選 adapter 執行(見 commandDispatcher)。
+	res, err := s.commands.Send(r.Context(), req.Target, req.Command)
 	if err != nil {
 		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.CommandResponse{Result: res})
+}
+
+// handleUploadMount 接收 body=檔案位元組(application/octet-stream),寫入實例的具名 mount
+// 宿主目錄下的 <filename>(R11 手動模組包檔)。filename 由 query 帶入並 sanitize(拒路徑分隔/..);
+// 實例或 mount 不存在 → 404;成功回 201。上傳採覆寫,天然冪等。
+func (s *Server) handleUploadMount(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("id")
+	name := r.PathValue("name")
+	filename := r.URL.Query().Get("filename")
+	if err := validateMountFilename(filename); err != nil {
+		writeError(w, http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: "invalid filename"})
+		return
+	}
+	// 確認實例存在(未知 UUID → 404);mount 是否宣告由後端依 spec 判定(未宣告 → 404)。
+	if _, err := s.resolve(r.Context(), uuid); err != nil {
+		writeErr(w, err)
+		return
+	}
+	writer, ok := s.backend.(MountWriter)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, protocol.APIError{
+			Code: protocol.ErrInternal, Message: "backend does not support mount upload",
+		})
+		return
+	}
+	defer r.Body.Close()
+	if err := writer.WriteMountFile(r.Context(), uuid, name, filename, r.Body); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
 }
 
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
@@ -398,6 +431,8 @@ func apiErrorFor(err error) (int, protocol.APIError) {
 		return statusForCode(apiErr.Code), *apiErr
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound, protocol.APIError{Code: protocol.ErrNotFound, Message: err.Error()}
+	case errors.Is(err, ErrInvalidFilename):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrPortConflict):
 		return http.StatusConflict, protocol.APIError{Code: protocol.ErrPortConflict, Message: err.Error()}
 	case errors.Is(err, ErrLocked):

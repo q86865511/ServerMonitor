@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +63,9 @@ type MockBackend struct {
 
 	insts   map[protocol.RuntimeID]*mockInstance
 	backups map[protocol.BackupID]mockBackup
+
+	// mountFiles 記錄經 WriteMountFile 上傳的 mount 檔位元組(供測試斷言);鍵見 mountFileKey。
+	mountFiles map[string][]byte
 
 	history     []RuntimeEvent // 事件緩衝(cursor 遞增),供漏事件對帳
 	historyMax  int
@@ -338,6 +342,55 @@ func (m *MockBackend) Restore(ctx context.Context, id protocol.RuntimeID, b prot
 		health:    "none",
 	}
 	return newID, nil
+}
+
+// WriteMountFile 把上傳的檔案位元組記入記憶體(R11 手動模組包檔傳輸)。mount 未於實例 spec
+// 宣告 → ErrNotFound;filename 不安全 → ErrInvalidFilename。讀取在鎖外完成以免長時間持鎖。
+func (m *MockBackend) WriteMountFile(ctx context.Context, instanceUUID, mountName, filename string, r io.Reader) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := validateMountFilename(filename); err != nil {
+		return err
+	}
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst := m.findInstanceByUUIDLocked(instanceUUID)
+	if inst == nil || !specHasMount(inst.spec, mountName) {
+		return ErrNotFound
+	}
+	if m.mountFiles == nil {
+		m.mountFiles = make(map[string][]byte)
+	}
+	m.mountFiles[mountFileKey(instanceUUID, mountName, filename)] = data
+	return nil
+}
+
+// MountFile 回傳先前 WriteMountFile 寫入的位元組(供測試斷言);不存在回 nil,false。
+func (m *MockBackend) MountFile(instanceUUID, mountName, filename string) ([]byte, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	v, ok := m.mountFiles[mountFileKey(instanceUUID, mountName, filename)]
+	return v, ok
+}
+
+// findInstanceByUUIDLocked 以 spec.UUID 找出記憶體實例(呼叫端須持 m.mu)。
+func (m *MockBackend) findInstanceByUUIDLocked(uuid string) *mockInstance {
+	for _, inst := range m.insts {
+		if inst.spec.UUID == uuid {
+			return inst
+		}
+	}
+	return nil
+}
+
+// mountFileKey 以 NUL 分隔組出 mountFiles 的複合鍵(uuid/mount/filename)。
+func mountFileKey(uuid, mount, filename string) string {
+	return uuid + "\x00" + mount + "\x00" + filename
 }
 
 // Events 訂閱執行事件串流。since 語意見 RuntimeBackend.Events。

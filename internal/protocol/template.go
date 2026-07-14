@@ -37,9 +37,12 @@ type DockerImage struct {
 }
 
 // Variant 對應 [[variants]]:一種可選的伺服器變體(如 Paper/Forge),env 於建立時透傳。
+// Loader 宣告此變體的 loader 家族(如 paper/vanilla/forge/fabric/quilt/neoforge),供 R11
+// 模組包前置相容檢查:模組包只能套用在 [mods].modpack_loaders 允許的 loader 上(T14 增量)。
 type Variant struct {
-	ID  string            `toml:"id"`
-	Env map[string]string `toml:"env"`
+	ID     string            `toml:"id"`
+	Loader string            `toml:"loader"`
+	Env    map[string]string `toml:"env"`
 }
 
 // PortSpec 對應 [[ports]]:埠宣告,含 host binding。
@@ -82,8 +85,9 @@ type CommandProtocol struct {
 	Legacy      bool   `toml:"legacy"`        // Palworld RCON legacy:首版不啟用
 
 	// rest 欄位
-	Auth    string          `toml:"auth"` // 如 "basic"
-	Actions []CommandAction `toml:"actions"`
+	Auth     string          `toml:"auth"`     // 如 "basic"
+	Username string          `toml:"username"` // basic auth 帳號;可選,未填時 core 回退 "admin"(相容 Palworld 慣例)
+	Actions  []CommandAction `toml:"actions"`
 }
 
 // CommandAction 對應 rest 協定的 [[command_protocols.actions]]:一個具名 REST 動作(R7)。
@@ -108,11 +112,15 @@ type Hooks struct {
 }
 
 // Hook 以 (protocol_id, action_id 或 raw command) 映射一個生命週期動作。
-// rcon 協定用 Command(自由字串,可含 {msg} 佔位);rest 協定用 ActionID。
+// rcon 協定用 Command(自由字串,可含 {msg} 佔位);rest 協定用 ActionID + Args(靜態參數,
+// 隨動作固定送出,如 Palworld shutdown 的 waittime)。MessageKey 指定動態訊息(如 Announce 的
+// msg)要寫入 Args 的哪個欄位名,預設 "message"(對齊 Palworld REST announce/shutdown)。
 type Hook struct {
-	ProtocolID string `toml:"protocol_id"`
-	Command    string `toml:"command"`
-	ActionID   string `toml:"action_id"`
+	ProtocolID string            `toml:"protocol_id"`
+	Command    string            `toml:"command"`
+	ActionID   string            `toml:"action_id"`
+	Args       map[string]string `toml:"args"`
+	MessageKey string            `toml:"message_key"`
 }
 
 // HealthProbe 對應 [health]:健康/就緒探針(R8)。未定義時以容器 running 為就緒。
@@ -135,6 +143,11 @@ type ModsSpec struct {
 	ModpackEnv    []string `toml:"modpack_env"`    // 如 ["MODRINTH", "AUTO_CURSEFORGE"]
 	ManualFormats []string `toml:"manual_formats"` // 如 ["mrpack", "curseforge-zip"]
 	ManualMount   string   `toml:"manual_mount"`   // 手動檔掛載處,交由 itzg 對應 env 取用
+
+	// ModpackLoaders 是「允許套用模組包的變體 loader 集合」(T14 增量)。模組包(Modrinth/
+	// CurseForge)需 mod loader(forge/fabric/quilt/neoforge)或由 itzg 自管(vanilla);外掛平台
+	// (paper/bukkit)無法載入模組,故不列於此。前置檢查:選模組包但變體 loader 不在此集合 → 建立前擋。
+	ModpackLoaders []string `toml:"modpack_loaders"`
 }
 
 // ParseTemplate 將範本 TOML 位元組解析為 GameTemplate。

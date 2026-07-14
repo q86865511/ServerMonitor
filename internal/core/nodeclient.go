@@ -119,13 +119,22 @@ func (c *NodeClient) Status(ctx context.Context, uuid string) (protocol.RuntimeS
 	return out, err
 }
 
-// Command 送出遊戲指令(POST /instances/{id}/command)。冪等鍵由 do() 逐次呼叫自動產生
-// (同一實例的連續兩個不同指令不可共用冪等鍵,否則第二個會被重播為第一個的結果)。
-func (c *NodeClient) Command(ctx context.Context, uuid string, cmd protocol.GameCommand) (protocol.CommandResult, error) {
+// Command 送出遊戲指令(POST /instances/{id}/command)。target 由核心解析範本+埠+機密後帶入,
+// 供 agent 依 Kind 選 adapter。冪等鍵由 do() 逐次呼叫自動產生(同一實例的連續兩個不同指令
+// 不可共用冪等鍵,否則第二個會被重播為第一個的結果)。
+func (c *NodeClient) Command(ctx context.Context, uuid string, target protocol.CommandTarget, cmd protocol.GameCommand) (protocol.CommandResult, error) {
 	var out protocol.CommandResponse
 	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/command", "",
-		protocol.CommandRequest{Command: cmd}, &out)
+		protocol.CommandRequest{Command: cmd, Target: target}, &out)
 	return out.Result, err
+}
+
+// UploadMount 上傳一個具名 mount 檔(PUT /instances/{id}/mounts/{name}),body 為檔案位元組
+// (R11 手動模組包檔)。上傳採覆寫、天然冪等,故不帶冪等鍵。
+func (c *NodeClient) UploadMount(ctx context.Context, uuid, name, filename string, r io.Reader) error {
+	path := "/instances/" + url.PathEscape(uuid) + "/mounts/" + url.PathEscape(name) +
+		"?filename=" + url.QueryEscape(filename)
+	return c.doUpload(ctx, path, r)
 }
 
 // ListBackups 列舉某實例備份中繼(GET /instances/{id}/backups)。
@@ -229,6 +238,28 @@ func (c *NodeClient) do(ctx context.Context, method, path, idemKey string, body,
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("解碼回應失敗: %w", err)
 	}
+	return nil
+}
+
+// doUpload 以 PUT 送出 application/octet-stream 原始位元組(不經 JSON 編碼、不帶冪等鍵)。
+// 傳輸層失敗回 ErrNodeUnreachable;代理回 4xx/5xx 依統一碼表映射(見 mapError)。
+func (c *NodeClient) doUpload(ctx context.Context, path string, r io.Reader) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(path), r)
+	if err != nil {
+		return fmt.Errorf("建立請求失敗: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Content-Type", "application/octet-stream")
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return c.mapError(resp)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
 }
 

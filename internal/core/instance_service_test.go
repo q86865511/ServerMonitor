@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
@@ -64,6 +65,7 @@ type captureBackend struct {
 	lastSpec    protocol.InstanceSpec
 	createErr   error
 	createCount int
+	uploadErr   error // 注入 WriteMountFile 失敗,驗證手動模組包上傳失敗的回滾
 }
 
 func (b *captureBackend) Create(ctx context.Context, spec protocol.InstanceSpec) (protocol.RuntimeID, error) {
@@ -82,6 +84,17 @@ func (b *captureBackend) spec() protocol.InstanceSpec {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.lastSpec
+}
+
+// WriteMountFile 覆寫嵌入的 MockBackend:uploadErr 設定時注入失敗(驗證上傳失敗回滾)。
+func (b *captureBackend) WriteMountFile(ctx context.Context, uuid, name, filename string, r io.Reader) error {
+	b.mu.Lock()
+	ue := b.uploadErr
+	b.mu.Unlock()
+	if ue != nil {
+		return ue
+	}
+	return b.MockBackend.WriteMountFile(ctx, uuid, name, filename, r)
 }
 
 type svcHarness struct {

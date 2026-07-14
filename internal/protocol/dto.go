@@ -1,6 +1,9 @@
 package protocol
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // 識別碼型別(跨 core/agent 共享)。
 type (
@@ -60,9 +63,20 @@ type InstanceSpec struct {
 	Image      string            `json:"image"` // 鎖定映像(tag 或 digest)
 	Env        map[string]string `json:"env"`
 	Ports      []PortBinding     `json:"ports"`
-	DataDirs   []string          `json:"data_dirs"` // 需掛載的資料目錄(R9 備份範圍)
-	Labels     map[string]string `json:"labels"`    // gsm.uuid / gsm.managed-by / gsm.node / gsm.schema
+	DataDirs   []string          `json:"data_dirs"`        // 需掛載的資料目錄(R9 備份範圍)
+	Mounts     []MountSpec       `json:"mounts,omitempty"` // 非備份範圍的具名掛載(R11 手動模組包檔傳輸)
+	Labels     map[string]string `json:"labels"`           // gsm.uuid / gsm.managed-by / gsm.node / gsm.schema
 	Node       string            `json:"node"`
+}
+
+// MountSpec 描述一個「備份範圍之外」的具名掛載點(R11 手動模組包檔傳輸)。agent 為每個
+// Mount 於實例資料根下建 mounts/<Name>/ 宿主子目錄並 bind mount 到 ContainerPath,再經
+// PUT /instances/{id}/mounts/{name} 端點接收檔案位元組寫入其中。此 namespace 刻意排除於
+// Archive/Restore 的打包與還原範圍外——手動模組包檔屬「建立時提供的輸入」而非「執行產生的
+// 狀態」,不應隨備份漂移,且跨備份還原時保持原樣(見 DockerBackend.tarInstanceData)。
+type MountSpec struct {
+	Name          string `json:"name"`
+	ContainerPath string `json:"container_path"`
 }
 
 // RuntimeStatus 是 RuntimeBackend.Status 回傳的 runtime 層即時狀態。
@@ -229,9 +243,52 @@ type RemoveInstanceRequest struct {
 	Purge bool `json:"purge"`
 }
 
-// CommandRequest 是 POST /instances/{id}/command 的請求。
+// RestActionSpec 是一個 rest 具名動作的線上定義(R7):core 由範本 CommandAction 轉出,
+// 隨請求送達 agent,供 PalworldRestAdapter 依 action_id 選取並執行。刻意與範本層
+// CommandAction(TOML 結構)分離,使 wire 契約不相依範本內部欄位(如 input/output/ref)。
+type RestActionSpec struct {
+	ActionID string `json:"action_id"`
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+}
+
+// CommandTarget 描述一則遊戲指令的送達目標(R7)。由 core 解析範本 command_protocol、實例埠
+// 映射與金鑰庫密碼實值組出,隨請求越過 loopback 送達 agent 供 GameCommandAdapter 執行。
+//
+// Password 為**明文**——這是與 InstanceSpec.Env 同一個 R12「runtime 明文例外」:機密實值
+// 只在 loopback 信任域內注入,故 command 端點僅供本機呼叫、且此型別不做 redaction(有別於
+// SecretRef)。Kind=rcon 用 Host/Port/Password;Kind=rest 另用 Username/Actions。
+type CommandTarget struct {
+	ProtocolID string           `json:"protocol_id"`
+	Kind       string           `json:"kind"` // "rcon" | "rest"
+	Host       string           `json:"host"`
+	Port       int              `json:"port"`
+	Username   string           `json:"username,omitempty"` // rest basic auth 帳號(Palworld 固定 "admin")
+	Password   string           `json:"password,omitempty"` // 明文(loopback 例外):rcon 認證 / rest basic auth 密碼
+	Actions    []RestActionSpec `json:"actions,omitempty"`  // rest 具名動作定義
+}
+
+// String / GoString 遮罩 Password,避免 %v/%s/%#v(如誤入 log/錯誤訊息)洩漏明文機密。
+// 這與 wire 契約無關:JSON 序列化不走 Stringer 路徑,MarshalJSON 刻意不覆寫,故經
+// NodeClient 送達 agent 的請求主體仍為明文(R12 loopback 例外)。
+func (t CommandTarget) String() string   { return t.masked() }
+func (t CommandTarget) GoString() string { return t.masked() }
+
+// masked 回傳遮罩 Password 後的可讀表示;非空密碼一律顯示為 [REDACTED],不透露長度。
+func (t CommandTarget) masked() string {
+	pw := ""
+	if t.Password != "" {
+		pw = "[REDACTED]"
+	}
+	return fmt.Sprintf("CommandTarget{ProtocolID:%q Kind:%q Host:%q Port:%d Username:%q Password:%s Actions:%v}",
+		t.ProtocolID, t.Kind, t.Host, t.Port, t.Username, pw, t.Actions)
+}
+
+// CommandRequest 是 POST /instances/{id}/command 的請求。Target 由 core 解析範本+埠+機密後填入,
+// agent 依 Target.Kind 選 adapter 執行(不再由 agent 解析範本)。
 type CommandRequest struct {
-	Command GameCommand `json:"command"`
+	Command GameCommand   `json:"command"`
+	Target  CommandTarget `json:"target"`
 }
 
 // CommandResponse 是 POST /instances/{id}/command 的回應。

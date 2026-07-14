@@ -68,6 +68,10 @@ type Orchestrator struct {
 	// crashHook 於偵測到非計畫 die(崩潰)時呼叫,供 T11 接自動重啟;預設 nil(no-op)。
 	crashHook func(uuid string, exitCode *int)
 
+	// stopHook 於計畫停止「代理 Stop 之前」呼叫,執行範本 hooks.stop(讓伺服器優雅存檔退出,R3)。
+	// best-effort:回錯誤僅記 HOOK_FAILED、不阻擋停止流程;預設 nil(no-op)。
+	stopHook func(ctx context.Context, uuid string) error
+
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-instance 序列化鎖
 }
@@ -84,6 +88,9 @@ type OrchestratorConfig struct {
 	Grace        time.Duration    // <=0 用 30s
 	ReadyPoll    time.Duration    // <=0 用 500ms
 	CrashHook    func(uuid string, exitCode *int)
+	// StopHook 於計畫停止前 best-effort 執行 hooks.stop(見 Orchestrator.stopHook);nil 則不執行。
+	// 通常以 CommandService.RunStopHook 注入。
+	StopHook func(ctx context.Context, uuid string) error
 }
 
 // NewOrchestrator 建立 Orchestrator。
@@ -120,6 +127,7 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		grace:        grace,
 		readyPoll:    poll,
 		crashHook:    cfg.CrashHook,
+		stopHook:     cfg.StopHook,
 		locks:        make(map[string]*sync.Mutex),
 	}
 }
@@ -238,6 +246,10 @@ func (o *Orchestrator) stopLocked(ctx context.Context, uuid string) error {
 		o.tokens.clear(uuid)
 		return terr
 	}
+
+	// R3:代理 Stop 之前 best-effort 執行 hooks.stop(讓伺服器優雅存檔退出)。失敗僅記事件,
+	// 不阻擋後續強制停止(節點離線、無 hook、指令逾時皆不應卡住停止)。
+	o.runStopHook(ctx, &rec)
 
 	if aerr := o.registry.Call(rec.Node, func(c *NodeClient) error {
 		return c.Stop(ctx, uuid, protocol.StopInstanceRequest{
@@ -435,6 +447,20 @@ func (o *Orchestrator) handleExternalStart(ev protocol.RuntimeEvent) {
 		})
 	default:
 		// Starting / Running / 忙碌狀態:交由既有編排收斂。
+	}
+}
+
+// runStopHook best-effort 執行 hooks.stop:無 hook 或成功→無事;失敗→記 HOOK_FAILED 警告事件,
+// 不回傳錯誤(不阻擋停止流程,R3)。
+func (o *Orchestrator) runStopHook(ctx context.Context, rec *InstanceRecord) {
+	if o.stopHook == nil {
+		return
+	}
+	if err := o.stopHook(ctx, rec.UUID); err != nil {
+		o.record(EventHookFailed, protocol.SeverityWarning, *rec, map[string]any{
+			"hook":  "stop",
+			"error": err.Error(),
+		})
 	}
 }
 

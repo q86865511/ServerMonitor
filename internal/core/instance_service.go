@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -107,6 +108,7 @@ type CreateOptions struct {
 	Params     map[string]string // 非機密參數值(key 即容器 env 變數名,itzg 慣例)
 	Secrets    map[string]string // 機密值(範本 [[secrets]].key → 明文);寫入金鑰庫,不落 DB
 	Node       string            // 目標節點(可空,預設本機節點)
+	Modpack    *ModpackSource    // R11 模組包來源(可空;itzg 原生透傳,見 modpack.go)
 }
 
 // InstanceService 實作 R2「一鍵建立」的原子建立骨幹:驗證必填/EULA → 機密入庫 →
@@ -197,6 +199,10 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	if serr := validateSecrets(tmpl, opts.Secrets); serr != nil {
 		return InstanceRecord{}, serr
 	}
+	// R11 模組包前置檢查(型別相容/CF_API_KEY/手動檔格式);無副作用,失敗前不動任何狀態。
+	if merr := validateModpack(tmpl, opts.Variant, opts); merr != nil {
+		return InstanceRecord{}, merr
+	}
 
 	uuid := s.newUUID()
 	ports := buildPortReservations(tmpl, uuid)
@@ -262,6 +268,12 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 		return InstanceRecord{}, fmt.Errorf("代理建立容器失敗: %w", cerr)
 	}
 	containermade = true
+
+	// 5b. 手動模組包檔上傳(代理建容器後、寫 DB 前):讀本機 ModpackSource.Ref 送達 agent 掛載目錄。
+	//     上傳失敗走既有回滾(移除容器/釋放埠/刪機密/清 journal),不留半套。
+	if uerr := s.uploadModpackMount(ctx, node, uuid, tmpl, opts); uerr != nil {
+		return InstanceRecord{}, fmt.Errorf("上傳手動模組包檔失敗: %w", uerr)
+	}
 
 	// 測試縫:模擬「已建容器、寫 DB 前」失敗,驗證回滾移除孤兒容器。
 	if s.hookAfterAgentCreate != nil {
@@ -345,6 +357,23 @@ func (s *InstanceService) removeContainer(ctx context.Context, node, uuid string
 	})
 }
 
+// uploadModpackMount 於代理建容器後,把手動模組包本機檔上傳到 agent 的具名掛載目錄(R11)。
+// 非手動來源為 no-op;上傳到 modpack mount(檔名取 ref 基礎名,與 applyModpackEnv 的容器路徑對齊)。
+func (s *InstanceService) uploadModpackMount(ctx context.Context, node, uuid string, tmpl *protocol.GameTemplate, opts CreateOptions) error {
+	if tmpl.Mods == nil || !isManualModpack(opts.Modpack) {
+		return nil
+	}
+	f, err := os.Open(opts.Modpack.Ref)
+	if err != nil {
+		return fmt.Errorf("開啟模組包檔失敗: %w", err)
+	}
+	defer f.Close()
+	filename := modpackMountFilename(opts.Modpack.Ref)
+	return s.registry.Call(node, func(c *NodeClient) error {
+		return c.UploadMount(ctx, uuid, modpackMountName, filename, f)
+	})
+}
+
 // reservePorts 在序列化臨界區內做 wildcard 重疊檢查後逐一預留(R2)。
 // 檢查涵蓋「與既有 DB 預留」及「本批範本內部」的重疊;唯一約束為併發下的最終防線。
 func (s *InstanceService) reservePorts(ports []PortReservation) error {
@@ -391,6 +420,12 @@ func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTempla
 			env[sec.Key] = val
 		}
 	}
+	// R11 模組包 env(itzg 原生透傳):TYPE 由模組包機制接管(覆寫變體 TYPE),故置於機密注入之後。
+	applyModpackEnv(tmpl, opts.Modpack, env)
+
+	// 手動模組包檔改走 Mounts 具名掛載(不併入 DataDirs,#3:解除備份汙染);檔案位元組於
+	// Create 建容器後經 UploadMount 送達。DataDirs 維持範本原樣。
+	dataDirs := append([]string(nil), tmpl.DataDirs...)
 
 	return protocol.InstanceSpec{
 		UUID:       uuid,
@@ -399,7 +434,8 @@ func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTempla
 		Image:      resolveImage(tmpl.Docker),
 		Env:        env,
 		Ports:      buildPortBindings(tmpl),
-		DataDirs:   append([]string(nil), tmpl.DataDirs...),
+		DataDirs:   dataDirs,
+		Mounts:     modpackMounts(tmpl, opts.Modpack),
 		Labels: map[string]string{
 			labelManagedBy: managedByValue,
 			labelUUID:      uuid,

@@ -41,6 +41,11 @@ const (
 
 	// instanceSpecFile 是實例資料根下的 spec 快照檔(在 bind mount 之外,不入容器/備份)。
 	instanceSpecFile = "instance.json"
+
+	// mountsSubdir 是實例資料根下承載具名 mount(R11 手動模組包檔)的保留子目錄:
+	// 每個 spec.Mounts 條目對映 <dataRoot>/<uuid>/mounts/<name>/。此 namespace 排除於備份
+	// 打包/還原範圍外(見 tarInstanceData);data_dir 不得使用容器路徑 "/mounts"(保留名)。
+	mountsSubdir = "mounts"
 )
 
 // dockerAPI 是本後端用到的 Docker client 方法子集。以介面持有(而非具體 *client.Client)
@@ -154,13 +159,22 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		return "", fmt.Errorf("建立實例資料根失敗: %w", err)
 	}
 
-	mounts := make([]mount.Mount, 0, len(spec.DataDirs))
+	mounts := make([]mount.Mount, 0, len(spec.DataDirs)+len(spec.Mounts))
 	for _, d := range spec.DataDirs {
 		host := b.hostDirForContainerPath(spec.UUID, d)
 		if err := os.MkdirAll(host, 0o755); err != nil {
 			return "", fmt.Errorf("建立資料目錄 %s 失敗: %w", d, err)
 		}
 		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: host, Target: d})
+	}
+	// 具名 mount(R11 手動模組包檔):於 mounts/<name>/ 建宿主目錄並 bind mount;內容排除於備份範圍。
+	// MkdirAll 冪等,故 Restore 重建同 spec 時不會清掉先前上傳的檔案。
+	for _, mnt := range spec.Mounts {
+		host := b.hostDirForMount(spec.UUID, mnt.Name)
+		if err := os.MkdirAll(host, 0o755); err != nil {
+			return "", fmt.Errorf("建立掛載目錄 %s 失敗: %w", mnt.Name, err)
+		}
+		mounts = append(mounts, mount.Mount{Type: mount.TypeBind, Source: host, Target: mnt.ContainerPath})
 	}
 
 	exposed, portMap := buildPorts(spec.Ports)
@@ -322,6 +336,44 @@ func (b *DockerBackend) backupInstanceRoot(uuid string) string {
 // hostDirForContainerPath 將容器內 data_dir 路徑對映到實例資料根下的 host 子目錄。
 func (b *DockerBackend) hostDirForContainerPath(uuid, containerPath string) string {
 	return filepath.Join(b.instanceDataRoot(uuid), sanitizeDataDir(containerPath))
+}
+
+// hostDirForMount 將具名 mount 對映到實例資料根下的 mounts/<name>/ host 子目錄(備份範圍外)。
+func (b *DockerBackend) hostDirForMount(uuid, name string) string {
+	return filepath.Join(b.instanceDataRoot(uuid), mountsSubdir, sanitizeMountName(name))
+}
+
+// WriteMountFile 把上傳的檔案位元組寫入某實例的具名 mount 宿主目錄(R11 手動模組包檔傳輸)。
+// 以實例 spec 快照確認 mount 已宣告(否則 ErrNotFound);filename 防禦性再驗(ErrInvalidFilename);
+// 寫入採覆寫(O_TRUNC),故重試天然冪等。
+func (b *DockerBackend) WriteMountFile(ctx context.Context, instanceUUID, mountName, filename string, r io.Reader) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := validateMountFilename(filename); err != nil {
+		return err
+	}
+	spec, err := b.readInstanceSpec(instanceUUID)
+	if err != nil || !specHasMount(spec, mountName) {
+		return ErrNotFound
+	}
+	dir := b.hostDirForMount(instanceUUID, mountName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("建立掛載目錄失敗: %w", err)
+	}
+	dst := filepath.Join(dir, filename)
+	f, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("開啟掛載檔失敗: %w", err)
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return fmt.Errorf("寫入掛載檔失敗: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("關閉掛載檔失敗: %w", err)
+	}
+	return nil
 }
 
 // labelsFor 疊加權威 gsm.* 標籤到 spec.Labels 之上。

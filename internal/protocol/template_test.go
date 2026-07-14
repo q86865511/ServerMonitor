@@ -141,3 +141,39 @@ func TestParseTemplate_MinecraftGolden(t *testing.T) {
 		t.Errorf("Mods.ManualFormats = %v", tmpl.Mods.ManualFormats)
 	}
 }
+
+// TestParseTemplate_HookArgsMessageKeyUsername 驗證雙審修正 #6 新增的 schema 欄位:
+// Hook.Args(rest hook 靜態參數,如 Palworld shutdown 的 waittime)、Hook.MessageKey(動態訊息
+// 要寫入 Args 的欄位名)、CommandProtocol.Username(rest basic auth 帳號,可選)。
+func TestParseTemplate_HookArgsMessageKeyUsername(t *testing.T) {
+	data := []byte(`
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "x:1.0"
+[[command_protocols]]
+protocol_id = "rest-main"
+kind = "rest"
+auth = "basic"
+username = "customadmin"
+[hooks]
+stop = { protocol_id = "rest-main", action_id = "shutdown", args = { waittime = "30", message = "bye" } }
+announce = { protocol_id = "rest-main", action_id = "announce", message_key = "message" }
+`)
+	tmpl, err := ParseTemplate(data)
+	if err != nil {
+		t.Fatalf("ParseTemplate: %v", err)
+	}
+	if len(tmpl.CommandProtocols) != 1 || tmpl.CommandProtocols[0].Username != "customadmin" {
+		t.Fatalf("CommandProtocols[0].Username = %+v, 期望 customadmin", tmpl.CommandProtocols)
+	}
+	if tmpl.Hooks.Stop == nil || tmpl.Hooks.Stop.Args["waittime"] != "30" || tmpl.Hooks.Stop.Args["message"] != "bye" {
+		t.Fatalf("Hooks.Stop.Args = %+v, 期望 waittime=30 message=bye", tmpl.Hooks.Stop)
+	}
+	if tmpl.Hooks.Announce == nil || tmpl.Hooks.Announce.MessageKey != "message" {
+		t.Fatalf("Hooks.Announce.MessageKey = %+v, 期望 message", tmpl.Hooks.Announce)
+	}
+}

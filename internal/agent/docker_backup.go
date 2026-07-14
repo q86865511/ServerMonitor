@@ -244,7 +244,7 @@ func (b *DockerBackend) findBackup(uuid string, bid protocol.BackupID) (string, 
 	return "", backupRecord{}, ErrNotFound
 }
 
-// tarInstanceData 打包實例資料根下各 data_dir(排除 spec 快照與 .gsm-* 暫存),
+// tarInstanceData 打包實例資料根下各 data_dir(排除 spec 快照、mounts/ 具名掛載與 .gsm-* 暫存),
 // 邊寫邊算 sha256,回傳十六進位 checksum。
 func (b *DockerBackend) tarInstanceData(uuid, tarPath string) (string, error) {
 	root := b.instanceDataRoot(uuid)
@@ -274,6 +274,13 @@ func (b *DockerBackend) tarInstanceData(uuid, tarPath string) (string, error) {
 			top = rel[:i]
 		}
 		if rel == instanceSpecFile {
+			return nil
+		}
+		// 具名 mount(R11 手動模組包檔)排除於備份範圍:手動輸入不隨備份漂移,跨還原保持原樣。
+		if top == mountsSubdir {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if strings.HasPrefix(top, ".gsm-") {

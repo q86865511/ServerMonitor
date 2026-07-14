@@ -71,6 +71,65 @@ func recvEventKind(t *testing.T, s EventStream, want RuntimeEventKind, d time.Du
 }
 
 // 全鏈路整合測試。
+// TestDockerBackend_MountUpload 端到端(真 Docker):建立帶具名 mount 的容器,經 WriteMountFile
+// 上傳手動模組包檔,啟動後在容器內讀到該檔(bind mount 生效);且該檔排除於備份範圍(Archive
+// 後 backup tar 不含 mounts/)。對映 R11 手動模組包檔傳輸 seam。
+func TestDockerBackend_MountUpload(t *testing.T) {
+	b := newITestBackend(t)
+	defer b.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	uuid := "itest-mnt-" + shortRand()
+	spec := itestSpec(uuid)
+	spec.Mounts = []protocol.MountSpec{{Name: "modpack", ContainerPath: "/modpacks"}}
+
+	id, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer b.Remove(ctx, id, RemoveOpts{Purge: true})
+
+	// 上傳手動模組包檔到 mount。
+	const payload = "MRPACK-CONTENT-XYZ"
+	if err := b.WriteMountFile(ctx, uuid, "modpack", "world.mrpack", strings.NewReader(payload)); err != nil {
+		t.Fatalf("WriteMountFile: %v", err)
+	}
+
+	if err := b.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 容器內應讀得到上傳的檔(bind mount 生效)。
+	res, err := b.ExecProcess(ctx, id, ExecCmd{Cmd: []string{"cat", "/modpacks/world.mrpack"}})
+	if err != nil {
+		t.Fatalf("ExecProcess cat: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, payload) {
+		t.Fatalf("容器內未讀到上傳檔: exit=%d stdout=%q stderr=%q", res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	// 未宣告的 mount 上傳 → ErrNotFound。
+	if err := b.WriteMountFile(ctx, uuid, "nope", "x.bin", strings.NewReader("x")); err != ErrNotFound {
+		t.Fatalf("未宣告 mount 上傳 want ErrNotFound, got %v", err)
+	}
+
+	// mounts/ 排除於備份:Archive 後 backup tar 不含 mounts 條目。
+	_ = b.Stop(ctx, id, StopOpts{Grace: 5 * time.Second})
+	bid, err := b.Archive(ctx, id)
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	bkpDir := filepath.Join(b.backupInstanceRoot(uuid), string(bid))
+	names := tarEntryNames(t, filepath.Join(bkpDir, backupDataFile))
+	for _, n := range names {
+		if strings.HasPrefix(n, mountsSubdir+"/") {
+			t.Errorf("備份不應含 mounts/ 條目, 得 %q (全部=%v)", n, names)
+		}
+	}
+}
+
 func TestDockerBackend_Integration(t *testing.T) {
 	b := newITestBackend(t)
 	defer b.Close()

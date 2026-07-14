@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-已進入 /pipeline 實作。**T1–T8 完成並通過驗證**(T1-T7 後端核心+雙審修正;T8 狀態機/生命週期編排/啟動對帳/單一實例鎖)。下一波:T9 指令 adapter、T14 模組(可並行)。規格為 rev.3(Codex 三輪審查定稿)。
+已進入 /pipeline 實作。**T1–T9、T14 完成並勾銷(10/16)**:T9/T14 經雙審(9 成立+1 誤報)→ 使用者裁示修 #1–#9 → 三路並行修正 → 聚焦複審判定 9 項全關閉、無新矛盾;合併樹 build/test/-race/真 Docker 全綠。下一波:T10 監控、T11 排程/復原(可並行)。規格 rev.3。
 
 ## 已完成
 
+- [2026-07-14] 🚀 R1 實作 T9+T14+雙審修正(/pipeline):**T9** RCON adapter(哨兵法多封包聚合+auth id/type 核對)、Palworld REST adapter(具名動作+Basic Auth)、dispatcher、CommandService(範本→協定→金鑰→CommandTarget)、hooks.stop/announce 接線(schema 化 args/message_key/username);**T14** modpack spike 落檔、loader 矩陣前置檢查、itzg MODRINTH/AUTO_CURSEFORGE 透傳(CF_API_KEY=SecretRef)、手動 mrpack/cfzip 驗格式(拒 `..`/索引須合法 JSON)+**Mounts 傳輸 seam**(InstanceSpec.Mounts+agent PUT mounts 端點+上傳失敗回滾;mounts 排除備份範圍);minecraft.toml 鎖 VERSION=1.21.1(itzg LATEST 已需 Java25,實測);CommandTarget String/GoString 遮罩。雙審 9 成立+1 誤報→全修→聚焦複審 9 項全關閉無新矛盾。真 Docker:RCON 哨兵路徑 PASS、掛載上傳端到端 PASS、Modrinth 模組包生效 PASS。
 - [2026-07-14] 🚀 R1 實作 T8(/pipeline):狀態機(design 轉移表+非法轉移守衛)、生命週期編排 Orchestrator(Start 就緒輪詢/Stop planned-stop token/Restart 同容器斷言,per-instance lock 序列化)、事件消費迴圈(die 判死因——token 有效=planned、無/過期=Crashed+INSTANCE_CRASHED,stale 不遮蔽)、Reconciler(List 失敗≠空、孤兒/缺失/不一致、journal 未完成建立清理、summary)、single-instance lock(O_EXCL+PID stale 接管)。留 T11 縫(ReadinessProber/CrashHook)與 T15 縫(AcquireAppLock)。8 新檔;build/vet/test/-race/docker 整合全綠。
 - [2026-07-14] 🔧 R1 雙審修正(/pipeline 第 3-5 步):reviewer(opus)+Codex 雙審 T1-T7,13 項發現經逐條讀碼裁決 9 成立;使用者裁示全修。已修:A 冪等鍵誤用(NodeClient 改每呼叫隨機鍵;server 5xx 不快取)、B Restore 無回滾(swap 可反向回滾、舊資料延至 Create 成功後刪)、C events 斷線漏失(重連帶 Since+發 Resync)、D 跨實例還原(uuid 已知不 fallback 掃描)、E secret 必填驗證(非 legacy 協定引用即必填)、F channel 關閉空轉、H untar symlink 驗證、I 必填參數不回退 default。新增 15 個測試(含反向驗證);build/vet/gofmt/test/-race 全綠;`-tags docker` 整合測試已於 Docker Desktop 重啟後補跑通過(2026-07-14,`TestDockerBackend_Integration` PASS)。
 - [2026-07-13] 🚀 R1 實作 T1–T7(/pipeline):Go+Wails 骨架與版本鎖定、`internal/protocol` 全型別+SecretRef、持久化/事件基礎(SQLite/遷移/quarantine/port_reservations/EventLog/keyring)、`RuntimeBackend` 介面+MockBackend(含 Events)、`DockerBackend`(真 Docker 整合測試綠)、代理 HTTP/WS server(bearer/Origin/冪等)、核心骨幹(NodeClient/NodeRegistry/範本引擎+內建 minecraft·palworld/InstanceService 原子建立+wildcard 埠+分階段回滾)。三套件 build/vet/gofmt/test/`-race`/docker 全綠;5 依賴鎖版。Palworld spike(REST 12 端點、RCON legacy、映像 2.5.1)、備份 spike(停機 bind-mount 快照可行)落檔於 `specs/game-server-manager/spikes/`。
@@ -15,16 +16,16 @@
 
 ## 進行中
 
-- /pipeline 實作暫停於 T7(依使用者裁示先 commit/push),之後續派 T8。
+(無——T9/T14 批次已收尾,待指示續派 T10/T11)
 
 ## 待辦
 
 > 完整任務見 `specs/game-server-manager/tasks.md`(16 項)。**T1–T8 已完成。** 近期:
 
-- [ ] T9 指令 adapter(Minecraft RCON / Palworld REST)
-- [ ] T14 模組/模組包(itzg 原生;可與 T9 並行)
 - [ ] T10 監控聚合 + log 背壓 + 磁碟/線上
 - [ ] T11 排程 + 自動重啟/崩潰復原 + 健康探針(接 T8 的 ReadinessProber/CrashHook 縫)
+- [ ] T12 備份/還原、T13 告警、T15 GUI、T16 E2E/文件
+- [ ] (審查遺留)動態埠 host_port=0 支援時補 runtime 埠查詢;T15 組裝 Orchestrator/CommandService/AppLock 生產接線(listener 綁 127.0.0.1);Palworld shutdown waittime 為字串型別待真機查證;Paper 外掛/AUTO_CURSEFORGE 真機驗證併入 T16
 - [ ] (餘)T12 備份/還原、T13 告警、T14 模組+spike(含模組 spike)、T15 GUI、T16 E2E/文件
 - [ ] (審查遺留 J)T15/T16 組裝時:production listener 必須綁 127.0.0.1 並斷言(目前僅提供 Handler(),無監聽保證)
 

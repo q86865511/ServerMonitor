@@ -184,6 +184,72 @@ func TestFindBackup_NoCrossUUIDFallback(t *testing.T) {
 	}
 }
 
+// ---- #3:mounts/ 具名掛載排除於備份範圍 ----
+
+// tarInstanceData 應打包 data_dir 子目錄,但排除 instance.json、mounts/ 與 .gsm-* 暫存。
+func TestTarInstanceData_ExcludesMountsNamespace(t *testing.T) {
+	dataRoot := t.TempDir()
+	b := &DockerBackend{dataRoot: dataRoot}
+	uuid := "u-excl"
+	root := b.instanceDataRoot(uuid)
+
+	// data_dir 子目錄(應入備份)。
+	mkTree(t, root, "data", "world.dat", "WORLD")
+	// mounts/ 具名掛載(不應入備份)。
+	mkTree(t, filepath.Join(root, mountsSubdir), "modpack", "pack.mrpack", "MODPACK-BYTES")
+	// spec 快照與 .gsm 暫存(既有排除)。
+	if err := os.WriteFile(filepath.Join(root, instanceSpecFile), []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+
+	tarPath := filepath.Join(t.TempDir(), "data.tar")
+	if _, err := b.tarInstanceData(uuid, tarPath); err != nil {
+		t.Fatalf("tarInstanceData: %v", err)
+	}
+
+	names := tarEntryNames(t, tarPath)
+	if !containsPrefix(names, "data/") {
+		t.Errorf("備份應含 data/ 子目錄, 得 %v", names)
+	}
+	for _, n := range names {
+		if strings.HasPrefix(n, mountsSubdir+"/") || n == mountsSubdir+"/" {
+			t.Errorf("備份不應含 mounts/ 具名掛載, 得條目 %q (全部=%v)", n, names)
+		}
+		if n == instanceSpecFile {
+			t.Errorf("備份不應含 instance.json, 得 %v", names)
+		}
+	}
+}
+
+// tarEntryNames 讀回 tar 內所有條目名。
+func tarEntryNames(t *testing.T, tarPath string) []string {
+	t.Helper()
+	f, err := os.Open(tarPath)
+	if err != nil {
+		t.Fatalf("open tar: %v", err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	var names []string
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		names = append(names, hdr.Name)
+	}
+	return names
+}
+
+func containsPrefix(ss []string, prefix string) bool {
+	for _, s := range ss {
+		if strings.HasPrefix(s, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // ---- H:untar symlink Linkname 逃逸防護 ----
 
 func writeTar(t *testing.T, path string, build func(*tar.Writer)) {

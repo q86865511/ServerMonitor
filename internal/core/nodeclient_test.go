@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -132,7 +133,7 @@ type countingCommandAdapter struct {
 	calls int
 }
 
-func (a *countingCommandAdapter) Send(_ context.Context, _ agent.CommandTarget, cmd protocol.GameCommand) (protocol.CommandResult, error) {
+func (a *countingCommandAdapter) Send(_ context.Context, _ protocol.CommandTarget, cmd protocol.GameCommand) (protocol.CommandResult, error) {
 	a.mu.Lock()
 	a.calls++
 	n := a.calls
@@ -166,11 +167,11 @@ func TestNodeClient_Idempotency_DistinctCommandsBothReachBackend(t *testing.T) {
 		t.Fatalf("seed create: %v", err)
 	}
 
-	res1, err := c.Command(ctx, uuid, protocol.GameCommand{ProtocolID: "p", Raw: "say hi"})
+	res1, err := c.Command(ctx, uuid, protocol.CommandTarget{Kind: "rcon"}, protocol.GameCommand{ProtocolID: "p", Raw: "say hi"})
 	if err != nil {
 		t.Fatalf("Command 1: %v", err)
 	}
-	res2, err := c.Command(ctx, uuid, protocol.GameCommand{ProtocolID: "p", Raw: "save-all"})
+	res2, err := c.Command(ctx, uuid, protocol.CommandTarget{Kind: "rcon"}, protocol.GameCommand{ProtocolID: "p", Raw: "save-all"})
 	if err != nil {
 		t.Fatalf("Command 2: %v", err)
 	}
@@ -248,6 +249,35 @@ func TestNodeClient_Idempotency_ConsecutiveBackupsBothPersist(t *testing.T) {
 	}
 	if len(backups) != 2 {
 		t.Fatalf("應有 2 份備份(兩次呼叫都真正執行),得 %d 份", len(backups))
+	}
+}
+
+// TestNodeClient_UploadMount:上傳手動模組包檔到已宣告的 mount → 位元組落入 agent;
+// 未知實例 → ErrNodeNotFound。
+func TestNodeClient_UploadMount(t *testing.T) {
+	hs, backend := newAgentServer(t)
+	c := NewNodeClient(hs.URL, agentTestToken, nil)
+	ctx := context.Background()
+	const uuid = "mount-uuid"
+
+	spec := testSpec(uuid)
+	spec.Mounts = []protocol.MountSpec{{Name: "modpack", ContainerPath: "/modpacks"}}
+	if _, err := backend.Create(ctx, spec); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	payload := []byte("PK\x03\x04 fake modpack")
+	if err := c.UploadMount(ctx, uuid, "modpack", "world.mrpack", bytes.NewReader(payload)); err != nil {
+		t.Fatalf("UploadMount: %v", err)
+	}
+	got, ok := backend.MountFile(uuid, "modpack", "world.mrpack")
+	if !ok || string(got) != string(payload) {
+		t.Fatalf("MountFile = %q ok=%v, 期望 %q", got, ok, payload)
+	}
+
+	// 未知實例 → 404 映射為 ErrNodeNotFound。
+	if err := c.UploadMount(ctx, "nope", "modpack", "world.mrpack", bytes.NewReader(payload)); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("未知實例上傳期望 ErrNodeNotFound,得 %v", err)
 	}
 }
 

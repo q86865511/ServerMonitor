@@ -80,6 +80,7 @@ kind = "rest"
 host_port_ref = "rest"
 password_ref = "ADMIN_PASSWORD"
 auth = "basic"
+username = "admin"             # spike:REST Basic Auth 帳號固定為 admin(顯式宣告,core 亦有同值回退)
 actions = [
   { action_id = "info",     method = "GET",  path = "/v1/api/info" },
   { action_id = "metrics",  method = "GET",  path = "/v1/api/metrics" },
@@ -104,9 +105,13 @@ password_ref = "ADMIN_PASSWORD"
 
 # ── 生命週期 hooks(R3/R8/R9;REST 以 action_id 引用) ──
 # stop 用 shutdown(倒數 + 公告)符合 R3 優雅停機語意;stop 動作留給硬停 fallback(T9)。
+# shutdown body 欄位(spike 第 1.2 節,【待查】拼寫以實跑為準):waittime(秒)、message。
+# RunStopHook 不帶動態訊息,故 waittime/message 以 args 靜態宣告。
+# announce 的動態訊息(Announce(uuid, msg))以 message_key 指定寫入 Args 的欄位名,
+# 對齊 spike announce body `{"message": "text"}`。
 [hooks]
-stop = { protocol_id = "palworld-rest", action_id = "shutdown" }
-announce = { protocol_id = "palworld-rest", action_id = "announce" }
+stop = { protocol_id = "palworld-rest", action_id = "shutdown", args = { waittime = "30", message = "Server is shutting down" } }
+announce = { protocol_id = "palworld-rest", action_id = "announce", message_key = "message" }
 
 # ── 健康探針(R8,kind=rest) ──
 [health]
