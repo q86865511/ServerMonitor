@@ -42,12 +42,16 @@ var (
 	ErrEULANotAccepted = errors.New("core: 必填同意項未接受")
 	// ErrPortConflict 表示埠衝突(ERR_PORT_CONFLICT 語意);見 PortConflictError.Code。
 	ErrPortConflict = errors.New("core: 埠衝突")
+	// ErrMissingSecrets 表示「被啟用中的 command_protocols 引用」的必填機密未提供
+	// (建立前阻擋;legacy=true 的協定不計入,見 requiredSecretKeys)。
+	ErrMissingSecrets = errors.New("core: 缺少必填機密")
 )
 
-// ParamError 攜帶被阻擋的參數清單(R2:指出缺項)。
+// ParamError 攜帶被阻擋的參數/機密清單(R2:指出缺項)。
 type ParamError struct {
-	Missing    []string // 缺少的必填參數
-	Unaccepted []string // 必填但未接受的同意項(必填 bool 未設為 true,如 EULA)
+	Missing        []string // 缺少的必填參數
+	Unaccepted     []string // 必填但未接受的同意項(必填 bool 未設為 true,如 EULA)
+	MissingSecrets []string // 缺少的必填機密(被啟用中的指令協定引用,見 requiredSecretKeys)
 }
 
 func (e *ParamError) Error() string {
@@ -58,16 +62,21 @@ func (e *ParamError) Error() string {
 	if len(e.Unaccepted) > 0 {
 		parts = append(parts, "未接受必填同意項: "+strings.Join(e.Unaccepted, ", "))
 	}
+	if len(e.MissingSecrets) > 0 {
+		parts = append(parts, "缺少必填機密: "+strings.Join(e.MissingSecrets, ", "))
+	}
 	return "core: " + strings.Join(parts, ";")
 }
 
-// Is 使 ParamError 可被 errors.Is 對應到 ErrMissingParams / ErrEULANotAccepted。
+// Is 使 ParamError 可被 errors.Is 對應到 ErrMissingParams / ErrEULANotAccepted / ErrMissingSecrets。
 func (e *ParamError) Is(target error) bool {
 	switch target {
 	case ErrMissingParams:
 		return len(e.Missing) > 0
 	case ErrEULANotAccepted:
 		return len(e.Unaccepted) > 0
+	case ErrMissingSecrets:
+		return len(e.MissingSecrets) > 0
 	}
 	return false
 }
@@ -184,6 +193,9 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	}
 	if perr := validateParams(tmpl, opts.Params); perr != nil {
 		return InstanceRecord{}, perr
+	}
+	if serr := validateSecrets(tmpl, opts.Secrets); serr != nil {
+		return InstanceRecord{}, serr
 	}
 
 	uuid := s.newUUID()
@@ -437,13 +449,18 @@ func resolveVariant(tmpl *protocol.GameTemplate, variant string) (map[string]str
 
 // validateParams 檢查必填參數齊備(R2:缺項於建立前阻擋);必填 bool 需為 true(涵蓋
 // Minecraft EULA「未接受不得建立、不暗中預設」——不硬編遊戲語意,而以「必填同意項」通則表達)。
+//
+// I 修正:必填參數的值直接查 params(使用者輸入),不經 resolveParamValue 回退範本
+// default——否則範本作者若把 required=true 的參數又設了 default=true(如誤寫的 EULA
+// 宣告),使用者未明確提供時會被 default 悄悄滿足,架空「必填同意項需主動同意」的防呆
+// 用意。非必填參數的 default 回退不受影響,見 resolveParamValue/resolveEnv。
 func validateParams(tmpl *protocol.GameTemplate, params map[string]string) error {
 	var pe ParamError
 	for _, p := range tmpl.Params {
 		if !p.Required {
 			continue
 		}
-		val := resolveParamValue(p, params)
+		val := strings.TrimSpace(params[p.Key])
 		if val == "" {
 			pe.Missing = append(pe.Missing, p.Key)
 			continue
@@ -456,6 +473,48 @@ func validateParams(tmpl *protocol.GameTemplate, params map[string]string) error
 		}
 	}
 	if len(pe.Missing) > 0 || len(pe.Unaccepted) > 0 {
+		return &pe
+	}
+	return nil
+}
+
+// requiredSecretKeys 回傳「被啟用中的 command_protocols 引用」的必填機密鍵(E 修正)。
+// legacy=true 的協定(如 Palworld RCON)首版不啟用,其引用的 secret 不計入必填,避免
+// 使用者被要求填一個用不到的機密。同一鍵可能被協定層與動作層(可覆寫)重複引用,
+// 去重後依鍵名排序回傳,使缺項清單順序穩定、可測。
+func requiredSecretKeys(tmpl *protocol.GameTemplate) []string {
+	seen := make(map[string]bool)
+	for _, cp := range tmpl.CommandProtocols {
+		if cp.Legacy {
+			continue
+		}
+		if cp.PasswordRef != "" {
+			seen[cp.PasswordRef] = true
+		}
+		for _, act := range cp.Actions {
+			if act.PasswordRef != "" {
+				seen[act.PasswordRef] = true
+			}
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// validateSecrets 檢查必填機密齊備(E 修正:見 requiredSecretKeys)。純函式、無副作用
+// (不觸碰金鑰庫/DB/journal),呼叫時機在 Create 任一寫入動作之前。
+func validateSecrets(tmpl *protocol.GameTemplate, secrets map[string]string) error {
+	var pe ParamError
+	for _, key := range requiredSecretKeys(tmpl) {
+		if strings.TrimSpace(secrets[key]) == "" {
+			pe.MissingSecrets = append(pe.MissingSecrets, key)
+		}
+	}
+	if len(pe.MissingSecrets) > 0 {
 		return &pe
 	}
 	return nil

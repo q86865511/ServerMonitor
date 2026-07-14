@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -426,6 +427,44 @@ func TestServer_WSLogs(t *testing.T) {
 	}
 	if line.Stream != "stdout" || line.Line == "" {
 		t.Fatalf("unexpected log line: %+v", line)
+	}
+}
+
+// 5xx(伺服器端暫時性失敗)不快取:同鍵下一次請求應重新執行,不卡整個 TTL;
+// 2xx 成功仍重播不重執。
+func TestServer_IdempotencyDoesNotCache5xx(t *testing.T) {
+	backend := newWrapBackend()
+	backend.startErr = errors.New("transient backend failure") // 映射為 500
+	hs := newTestServer(t, backend)
+	const uuid = "5xx-uuid"
+	if _, err := backend.MockBackend.Create(context.Background(), specWithUUID(uuid)); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+	path := apiBase + "/instances/" + uuid + "/start"
+
+	// 首次:回 500。
+	if s1, _ := request(t, hs, http.MethodPost, path, testToken, "k5xx", nil); s1 != http.StatusInternalServerError {
+		t.Fatalf("first start status=%d want 500", s1)
+	}
+	// 同鍵第二次:5xx 未快取 → 重新執行(startCalls 累加)。
+	if s2, _ := request(t, hs, http.MethodPost, path, testToken, "k5xx", nil); s2 != http.StatusInternalServerError {
+		t.Fatalf("second start status=%d want 500", s2)
+	}
+	if _, sc := backend.counts(); sc != 2 {
+		t.Fatalf("5xx 不應被快取: startCalls=%d want 2", sc)
+	}
+
+	// 對照:成功(2xx)仍重播,不重新執行。
+	backend.startErr = nil
+	if s3, _ := request(t, hs, http.MethodPost, path, testToken, "kok", nil); s3 != http.StatusNoContent {
+		t.Fatalf("ok start status=%d want 204", s3)
+	}
+	_, scAfterOK := backend.counts()
+	if s4, _ := request(t, hs, http.MethodPost, path, testToken, "kok", nil); s4 != http.StatusNoContent {
+		t.Fatalf("replay ok start status=%d want 204", s4)
+	}
+	if _, sc := backend.counts(); sc != scAfterOK {
+		t.Fatalf("2xx 應重播不重執: startCalls=%d want %d", sc, scAfterOK)
 	}
 }
 

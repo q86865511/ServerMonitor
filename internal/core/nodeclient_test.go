@@ -3,7 +3,9 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -121,6 +123,131 @@ func TestNodeClient_EventsWS(t *testing.T) {
 	}
 	if ev.Kind != protocol.RuntimeEventDie || ev.ExitCode == nil || *ev.ExitCode != 7 {
 		t.Fatalf("event = %+v", ev)
+	}
+}
+
+// countingCommandAdapter 記錄 Send 被呼叫次數(供驗證指令是否真的送達,而非被冪等重播)。
+type countingCommandAdapter struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (a *countingCommandAdapter) Send(_ context.Context, _ agent.CommandTarget, cmd protocol.GameCommand) (protocol.CommandResult, error) {
+	a.mu.Lock()
+	a.calls++
+	n := a.calls
+	a.mu.Unlock()
+	return protocol.CommandResult{Success: true, Output: fmt.Sprintf("call-%d:%s", n, cmd.Raw)}, nil
+}
+
+func (a *countingCommandAdapter) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.calls
+}
+
+// TestNodeClient_Idempotency_DistinctCommandsBothReachBackend 是 A-client 修正的迴歸測試:
+// 同一實例連續兩個「不同」command 呼叫,先前因把實例 UUID 當冪等鍵,第二個會在 TTL 內被重播
+// 為第一個的結果(不送達轉接器)。修正後每次呼叫應各自產生新鍵,兩者都真正送達。
+func TestNodeClient_Idempotency_DistinctCommandsBothReachBackend(t *testing.T) {
+	backend := agent.NewMockBackend()
+	adapter := &countingCommandAdapter{}
+	s, err := agent.NewServer(agent.Config{Backend: backend, Commands: adapter, Token: agentTestToken})
+	if err != nil {
+		t.Fatalf("agent.NewServer: %v", err)
+	}
+	hs := httptest.NewServer(s.Handler())
+	t.Cleanup(func() { hs.Close(); _ = s.Close() })
+
+	c := NewNodeClient(hs.URL, agentTestToken, nil)
+	ctx := context.Background()
+	const uuid = "cmd-uuid"
+	if _, err := backend.Create(ctx, testSpec(uuid)); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	res1, err := c.Command(ctx, uuid, protocol.GameCommand{ProtocolID: "p", Raw: "say hi"})
+	if err != nil {
+		t.Fatalf("Command 1: %v", err)
+	}
+	res2, err := c.Command(ctx, uuid, protocol.GameCommand{ProtocolID: "p", Raw: "save-all"})
+	if err != nil {
+		t.Fatalf("Command 2: %v", err)
+	}
+
+	if adapter.count() != 2 {
+		t.Fatalf("轉接器應被呼叫 2 次(兩個不同指令都真正送達),得 %d 次", adapter.count())
+	}
+	if res1.Output == res2.Output {
+		t.Fatalf("兩次不同指令的結果不應相同(第二次疑似被重播為第一次),得 res1=%q res2=%q", res1.Output, res2.Output)
+	}
+}
+
+// TestNodeClient_Idempotency_StartStopStartAllExecute 是 A-client 修正的迴歸測試:
+// start→stop→start 三次操作,先前第二個 start 與第一個 start 共用同一冪等鍵(同 method+path),
+// 於 TTL 內被重播為第一次 start 的(陳舊)結果、容器實際上未真正再次啟動。
+// 修正後三次呼叫都應真正執行,最終 runtime 狀態為 Running。
+func TestNodeClient_Idempotency_StartStopStartAllExecute(t *testing.T) {
+	hs, backend := newAgentServer(t)
+	c := NewNodeClient(hs.URL, agentTestToken, nil)
+	ctx := context.Background()
+	const uuid = "start-stop-start-uuid"
+
+	rid, err := backend.Create(ctx, testSpec(uuid))
+	if err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	if err := c.Start(ctx, uuid); err != nil {
+		t.Fatalf("Start 1: %v", err)
+	}
+	if err := c.Stop(ctx, uuid, protocol.StopInstanceRequest{}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := c.Start(ctx, uuid); err != nil {
+		t.Fatalf("Start 2: %v", err)
+	}
+
+	st, err := backend.Status(ctx, rid)
+	if err != nil {
+		t.Fatalf("backend.Status: %v", err)
+	}
+	if !st.Running {
+		t.Fatalf("第二次 start 後應真正 Running(不應被第一次 start 的冪等快取重播),得狀態 = %+v", st)
+	}
+}
+
+// TestNodeClient_Idempotency_ConsecutiveBackupsBothPersist 是 A-client 修正的迴歸測試:
+// 同一實例連續兩次 backup,先前共用 uuid 為冪等鍵,第二次會在 TTL 內被重播為第一次的
+// (陳舊)備份中繼、未真正再次執行備份。修正後兩次都應真正執行,產生兩筆相異備份。
+func TestNodeClient_Idempotency_ConsecutiveBackupsBothPersist(t *testing.T) {
+	hs, backend := newAgentServer(t)
+	c := NewNodeClient(hs.URL, agentTestToken, nil)
+	ctx := context.Background()
+	const uuid = "backup-uuid"
+
+	if _, err := backend.Create(ctx, testSpec(uuid)); err != nil {
+		t.Fatalf("seed create: %v", err)
+	}
+
+	b1, err := c.Backup(ctx, uuid)
+	if err != nil {
+		t.Fatalf("Backup 1: %v", err)
+	}
+	b2, err := c.Backup(ctx, uuid)
+	if err != nil {
+		t.Fatalf("Backup 2: %v", err)
+	}
+	if b1.BackupID == b2.BackupID {
+		t.Fatalf("兩次備份不應得到同一 BackupID(第二次疑似被重播為第一次),得 %q", b1.BackupID)
+	}
+
+	backups, err := c.ListBackups(ctx, uuid)
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if len(backups) != 2 {
+		t.Fatalf("應有 2 份備份(兩次呼叫都真正執行),得 %d 份", len(backups))
 	}
 }
 

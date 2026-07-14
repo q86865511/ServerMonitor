@@ -223,6 +223,137 @@ func TestInstanceService_EULANotAccepted(t *testing.T) {
 	h.assertNoSideEffects(t)
 }
 
+// TestInstanceService_MissingRequiredSecret:E 修正——svc 範本的 svc-rcon 協定(非 legacy)
+// 引用 RCON_PASSWORD,未提供時建立前應被擋、指明鍵名、不留副作用。
+func TestInstanceService_MissingRequiredSecret(t *testing.T) {
+	h := newSvcHarness(t)
+	opts := h.validCreate()
+	opts.Secrets = map[string]string{} // 缺 RCON_PASSWORD
+
+	_, err := h.svc.Create(context.Background(), opts)
+	if !errors.Is(err, ErrMissingSecrets) {
+		t.Fatalf("期望 ErrMissingSecrets,得 %v", err)
+	}
+	var pe *ParamError
+	if !errors.As(err, &pe) || len(pe.MissingSecrets) != 1 || pe.MissingSecrets[0] != "RCON_PASSWORD" {
+		t.Fatalf("應指出缺項 RCON_PASSWORD,得 %v", err)
+	}
+	h.assertNoSideEffects(t)
+}
+
+// legacySecretTemplate 有兩個指令協定:非 legacy 的 rest(引用 REST_PASSWORD)與
+// legacy=true 的 rcon(引用 RCON_PASSWORD)。用以驗證「legacy 協定引用的機密不計入必填」。
+const legacySecretTemplate = `
+schema_version = 1
+id = "legacysec"
+name = "LegacySecret Test"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "example/legacysec:1.0"
+[[ports]]
+name = "game"
+container = 25565
+host_port = 25568
+bind_ip = "0.0.0.0"
+protocol = "tcp"
+required = true
+[[ports]]
+name = "rcon"
+container = 25575
+host_port = 25577
+bind_ip = "127.0.0.1"
+protocol = "tcp"
+[[secrets]]
+key = "REST_PASSWORD"
+[[secrets]]
+key = "RCON_PASSWORD"
+[[command_protocols]]
+protocol_id = "legacysec-rest"
+kind = "rest"
+password_ref = "REST_PASSWORD"
+auth = "basic"
+[[command_protocols]]
+protocol_id = "legacysec-rcon"
+kind = "rcon"
+legacy = true
+host_port_ref = "rcon"
+password_ref = "RCON_PASSWORD"
+`
+
+// TestInstanceService_LegacyProtocolSecretNotRequired:legacy=true 的協定首版不啟用,
+// 其引用的機密(RCON_PASSWORD)缺失不應阻擋建立;非 legacy 的 REST_PASSWORD 仍須提供。
+func TestInstanceService_LegacyProtocolSecretNotRequired(t *testing.T) {
+	h := newSvcHarness(t)
+	writeTemplateFile(t, h.dir, "legacysec.toml", legacySecretTemplate)
+	if _, err := h.eng.LoadDir(h.dir); err != nil {
+		t.Fatalf("載入 legacysec 範本: %v", err)
+	}
+
+	rec, err := h.svc.Create(context.Background(), CreateOptions{
+		TemplateID: "legacysec",
+		Secrets:    map[string]string{"REST_PASSWORD": "x"}, // 不給 legacy RCON 的 RCON_PASSWORD
+	})
+	if err != nil {
+		t.Fatalf("Create: 不應因 legacy 協定缺機密而擋,得 %v", err)
+	}
+	if rec.UUID == "" {
+		t.Errorf("應成功建立, rec = %+v", rec)
+	}
+}
+
+// reqDefaultTemplate 有一個 required=true 且 default=true 的 bool 參數,用以驗證
+// I 修正:必填參數不得因範本 default 而被悄悄滿足。
+const reqDefaultTemplate = `
+schema_version = 1
+id = "reqdefault"
+name = "ReqDefault Test"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "example/reqdefault:1.0"
+[[ports]]
+name = "game"
+container = 25565
+host_port = 25569
+bind_ip = "0.0.0.0"
+protocol = "tcp"
+required = true
+[[params]]
+key = "EULA"
+type = "bool"
+required = true
+default = true
+`
+
+// TestInstanceService_RequiredParamNotMaskedByDefault:I 修正——EULA 為必填 bool 且範本
+// default=true;使用者未提供時仍應被擋(不得靠 default 悄悄通過),明確提供 true 才通過。
+func TestInstanceService_RequiredParamNotMaskedByDefault(t *testing.T) {
+	h := newSvcHarness(t)
+	writeTemplateFile(t, h.dir, "reqdefault.toml", reqDefaultTemplate)
+	if _, err := h.eng.LoadDir(h.dir); err != nil {
+		t.Fatalf("載入 reqdefault 範本: %v", err)
+	}
+
+	_, err := h.svc.Create(context.Background(), CreateOptions{TemplateID: "reqdefault", Params: map[string]string{}})
+	if !errors.Is(err, ErrMissingParams) {
+		t.Fatalf("期望 ErrMissingParams(不應被 default=true 架空),得 %v", err)
+	}
+	var pe *ParamError
+	if !errors.As(err, &pe) || len(pe.Missing) != 1 || pe.Missing[0] != "EULA" {
+		t.Fatalf("應指出缺項 EULA,得 %v", err)
+	}
+	h.assertNoSideEffects(t)
+
+	rec, err := h.svc.Create(context.Background(), CreateOptions{TemplateID: "reqdefault", Params: map[string]string{"EULA": "true"}})
+	if err != nil {
+		t.Fatalf("Create(明確提供 EULA=true): %v", err)
+	}
+	if rec.UUID == "" {
+		t.Errorf("應成功建立, rec = %+v", rec)
+	}
+}
+
 func TestInstanceService_UnknownTemplate(t *testing.T) {
 	h := newSvcHarness(t)
 	_, err := h.svc.Create(context.Background(), CreateOptions{TemplateID: "nope"})

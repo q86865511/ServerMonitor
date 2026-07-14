@@ -91,17 +91,22 @@ func (b *DockerBackend) Restore(ctx context.Context, id protocol.RuntimeID, bid 
 		return "", err
 	}
 	// 先由舊容器標籤取 uuid(盡力);備份自包含,uuid 最終以備份記錄為準。
-	uuid := ""
+	inspectedUUID := ""
 	if j, ierr := b.cli.ContainerInspect(ctx, string(id)); ierr == nil && j.Config != nil {
-		uuid = j.Config.Labels[labelUUID]
+		inspectedUUID = j.Config.Labels[labelUUID]
 	}
-	bkpDir, rec, err := b.findBackup(uuid, bid)
+	bkpDir, rec, err := b.findBackup(inspectedUUID, bid)
 	if err != nil {
 		return "", err
 	}
-	uuid = rec.Meta.InstanceUUID
+	uuid := rec.Meta.InstanceUUID
 	if uuid == "" {
 		return "", fmt.Errorf("agent: 備份 %s 缺 InstanceUUID", bid)
+	}
+	// 防跨實例還原:目標容器 uuid 已知且與備份記錄不符時拒絕(避免以 A 的端點提交 B 的
+	// BackupID 而改到 B)。inspectedUUID 為空(舊容器已不存在)才容許純以備份記錄重建。
+	if inspectedUUID != "" && inspectedUUID != uuid {
+		return "", fmt.Errorf("agent: 備份 %s 屬實例 %s,與目標實例 %s 不符,拒絕還原", bid, uuid, inspectedUUID)
 	}
 
 	// staging 驗證:重算 tar checksum 與備份記錄比對。
@@ -127,39 +132,87 @@ func (b *DockerBackend) Restore(ctx context.Context, id protocol.RuntimeID, bid 
 		return "", fmt.Errorf("解包備份失敗: %w", err)
 	}
 
-	// 逐 data_dir 子目錄 rename-aside 原子切換(Windows 不能 rename 覆蓋既有目錄,見 spike)。
-	entries, err := os.ReadDir(staging)
+	// 逐 data_dir 子目錄 rename-aside 原子切換(Windows 不能 rename 覆蓋既有目錄,見 spike);
+	// 全有或全無:任一步失敗即反向回滾至還原前狀態。
+	commit, rollback, err := applyRestoreSwap(root, staging, os.Rename)
 	if err != nil {
-		return "", fmt.Errorf("讀取 staging 失敗: %w", err)
-	}
-	var trash []string
-	for _, e := range entries {
-		name := e.Name()
-		live := filepath.Join(root, name)
-		if _, serr := os.Stat(live); serr == nil {
-			old := filepath.Join(root, ".gsm-old-"+shortRand()+"-"+name)
-			if err := os.Rename(live, old); err != nil {
-				return "", fmt.Errorf("原子切換(移開現行)失敗: %w", err)
-			}
-			trash = append(trash, old)
-		}
-		if err := os.Rename(filepath.Join(staging, name), live); err != nil {
-			return "", fmt.Errorf("原子切換(換入還原)失敗: %w", err)
-		}
-	}
-	for _, t := range trash {
-		_ = os.RemoveAll(t)
+		return "", err
 	}
 
 	// 依備份 spec 建新容器(同 uuid、同 bind),回傳新 RuntimeID;不自動啟動。
+	// Create 失敗時回滾資料(換回舊資料),使實例資料與還原前完全一致。
 	newID, err := b.Create(ctx, rec.Spec)
 	if err != nil {
+		rollback()
 		return "", fmt.Errorf("還原後建立新容器失敗: %w", err)
 	}
+	// Create 成功後才永久刪除換出的舊資料(trash),確保刪除前新容器已就緒。
+	commit()
 	return newID, nil
 }
 
-// findBackup 定位備份目錄與記錄;uuid 已知則直取,否則掃 backupRoot。找不到回 ErrNotFound。
+// restoreSwap 記錄一個 data_dir 子目錄的原子切換:live 為最終目標(root/name),
+// oldPath 為原資料被移開的暫存位置(原本不存在則為空)。
+type restoreSwap struct {
+	name    string
+	live    string
+	oldPath string
+}
+
+// applyRestoreSwap 把 staging 下各子目錄以 rename-aside 原子換入 root:每目錄先把現行資料
+// 移到 .gsm-old-*(記入 swap),再把 staging 的還原資料換入。任一 rename 失敗即反向回滾
+// (把已換入的移回 staging、把 .gsm-old 移回原位),回錯時 root 與呼叫前完全一致、無殘留。
+// 全部成功時回傳 commit(永久刪除換出的舊資料)與 rollback(供之後步驟如建容器失敗時反悔)。
+// rename 參數供測試注入失敗;回滾一律用 os.Rename 實際還原。
+func applyRestoreSwap(root, staging string, rename func(oldpath, newpath string) error) (commit func(), rollback func(), err error) {
+	entries, rerr := os.ReadDir(staging)
+	if rerr != nil {
+		return nil, nil, fmt.Errorf("讀取 staging 失敗: %w", rerr)
+	}
+	var swaps []restoreSwap
+	rollback = func() {
+		for i := len(swaps) - 1; i >= 0; i-- {
+			s := swaps[i]
+			_ = os.Rename(s.live, filepath.Join(staging, s.name)) // 換入的移回 staging
+			if s.oldPath != "" {
+				_ = os.Rename(s.oldPath, s.live) // 舊資料移回原位
+			}
+		}
+	}
+	for _, e := range entries {
+		name := e.Name()
+		sw := restoreSwap{name: name, live: filepath.Join(root, name)}
+		if _, serr := os.Stat(sw.live); serr == nil {
+			old := filepath.Join(root, ".gsm-old-"+shortRand()+"-"+name)
+			if rnErr := rename(sw.live, old); rnErr != nil {
+				rollback()
+				return nil, nil, fmt.Errorf("原子切換(移開現行)失敗: %w", rnErr)
+			}
+			sw.oldPath = old
+		}
+		if rnErr := rename(filepath.Join(staging, name), sw.live); rnErr != nil {
+			// 本目錄換入失敗:先把剛移開的舊資料還原,再回滾先前各目錄。
+			if sw.oldPath != "" {
+				_ = os.Rename(sw.oldPath, sw.live)
+			}
+			rollback()
+			return nil, nil, fmt.Errorf("原子切換(換入還原)失敗: %w", rnErr)
+		}
+		swaps = append(swaps, sw)
+	}
+	commit = func() {
+		for _, s := range swaps {
+			if s.oldPath != "" {
+				_ = os.RemoveAll(s.oldPath)
+			}
+		}
+	}
+	return commit, rollback, nil
+}
+
+// findBackup 定位備份目錄與記錄。uuid 已知時只在該 uuid 目錄下找,找不到即回 ErrNotFound
+// (不跨 uuid 掃描——避免以某實例端點提交他實例 BackupID 時誤配到別的實例);僅 uuid 為空
+// (舊容器已不存在)才容許掃描所有 uuid 目錄。
 func (b *DockerBackend) findBackup(uuid string, bid protocol.BackupID) (string, backupRecord, error) {
 	tryDir := func(dir string) (string, backupRecord, bool) {
 		rec, err := readBackupRecord(dir)
@@ -173,8 +226,9 @@ func (b *DockerBackend) findBackup(uuid string, bid protocol.BackupID) (string, 
 		if d, rec, ok := tryDir(dir); ok {
 			return d, rec, nil
 		}
+		return "", backupRecord{}, ErrNotFound // 不 fallback 跨 uuid 掃描
 	}
-	// 掃描所有 uuid 目錄。
+	// uuid 為空:掃描所有 uuid 目錄。
 	uuids, err := os.ReadDir(b.backupRoot)
 	if err == nil {
 		for _, u := range uuids {
@@ -298,6 +352,10 @@ func untar(tarPath, dest string) error {
 				return err
 			}
 		case tar.TypeSymlink:
+			// 驗 Linkname 解析後仍落在 dest 內,拒絕逃逸(絕對路徑或 ../ 逸出)。
+			if !linkWithinDest(cleanDest, target, hdr.Linkname) {
+				return fmt.Errorf("備份含逃逸 symlink: %s -> %s", hdr.Name, hdr.Linkname)
+			}
 			_ = os.MkdirAll(filepath.Dir(target), 0o755)
 			_ = os.Symlink(hdr.Linkname, target) // Windows 可能需權限;盡力而為
 		case tar.TypeReg:
@@ -316,6 +374,23 @@ func untar(tarPath, dest string) error {
 		}
 	}
 	return nil
+}
+
+// linkWithinDest 判定一個 symlink(target 位置、指向 linkname)解析後是否仍落在 dest 內。
+// 絕對 linkname 直接以 Clean 判定;相對 linkname 以 target 所在目錄 join 後 Clean。
+// 空 linkname 視為非法。
+func linkWithinDest(cleanDest, target, linkname string) bool {
+	if linkname == "" {
+		return false
+	}
+	ln := filepath.FromSlash(linkname)
+	var resolved string
+	if filepath.IsAbs(ln) {
+		resolved = filepath.Clean(ln)
+	} else {
+		resolved = filepath.Clean(filepath.Join(filepath.Dir(target), ln))
+	}
+	return resolved == cleanDest || strings.HasPrefix(resolved, cleanDest+string(os.PathSeparator))
 }
 
 // specFromInspect 由容器 inspect 盡力重建 InstanceSpec(缺 instance.json 時的 fallback;

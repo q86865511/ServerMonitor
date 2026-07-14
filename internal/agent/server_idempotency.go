@@ -52,11 +52,18 @@ func (c *idempotencyCache) begin(key string) (*idemEntry, bool) {
 	return e, true
 }
 
-// complete 記錄回應快照、設定到期並喚醒等待者。
-func (c *idempotencyCache) complete(e *idemEntry, resp *capturedResponse) {
+// complete 記錄回應快照、設定到期並喚醒等待者。狀態 >=500 時不留存快取:仍完成 entry
+// 讓已在等待的同鍵請求收到本次結果,但隨即從 map 移除,使下一個同鍵請求重新執行——
+// 暫時性(伺服器端)失敗不應卡住整個 TTL。4xx 屬語意性失敗,維持快取重播。
+func (c *idempotencyCache) complete(key string, e *idemEntry, resp *capturedResponse) {
 	c.mu.Lock()
 	e.resp = resp
 	e.expires = c.now().Add(c.ttl)
+	if resp != nil && resp.status >= 500 {
+		if c.entries[key] == e {
+			delete(c.entries, key)
+		}
+	}
 	c.mu.Unlock()
 	close(e.done)
 }
@@ -99,7 +106,7 @@ func (s *Server) idempotent(next http.Handler) http.Handler {
 		rec := newResponseRecorder()
 		serveSafely(next, rec, r)
 		resp := rec.captured()
-		s.idem.complete(entry, resp)
+		s.idem.complete(cacheKey, entry, resp)
 		writeCaptured(w, resp)
 	})
 }

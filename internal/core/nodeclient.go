@@ -96,19 +96,20 @@ func (c *NodeClient) Inspect(ctx context.Context, uuid string) (protocol.Runtime
 }
 
 // Remove 移除實例(DELETE /instances/{id});purge 一併刪除 data/backups。
+// 冪等鍵由 do() 對本次呼叫自動產生新值(不重用 uuid,避免與其他寫入端點的重播窗口互相污染)。
 func (c *NodeClient) Remove(ctx context.Context, uuid string, purge bool) error {
-	return c.do(ctx, http.MethodDelete, "/instances/"+url.PathEscape(uuid), uuid,
+	return c.do(ctx, http.MethodDelete, "/instances/"+url.PathEscape(uuid), "",
 		protocol.RemoveInstanceRequest{Purge: purge}, nil)
 }
 
-// Start 啟動實例(POST /instances/{id}/start)。
+// Start 啟動實例(POST /instances/{id}/start)。冪等鍵由 do() 逐次呼叫自動產生。
 func (c *NodeClient) Start(ctx context.Context, uuid string) error {
-	return c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/start", uuid, nil, nil)
+	return c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/start", "", nil, nil)
 }
 
-// Stop 停止實例(POST /instances/{id}/stop)。
+// Stop 停止實例(POST /instances/{id}/stop)。冪等鍵由 do() 逐次呼叫自動產生。
 func (c *NodeClient) Stop(ctx context.Context, uuid string, req protocol.StopInstanceRequest) error {
-	return c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/stop", uuid, req, nil)
+	return c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/stop", "", req, nil)
 }
 
 // Status 查詢 runtime 即時狀態(GET /instances/{id}/status)。
@@ -118,10 +119,11 @@ func (c *NodeClient) Status(ctx context.Context, uuid string) (protocol.RuntimeS
 	return out, err
 }
 
-// Command 送出遊戲指令(POST /instances/{id}/command)。
+// Command 送出遊戲指令(POST /instances/{id}/command)。冪等鍵由 do() 逐次呼叫自動產生
+// (同一實例的連續兩個不同指令不可共用冪等鍵,否則第二個會被重播為第一個的結果)。
 func (c *NodeClient) Command(ctx context.Context, uuid string, cmd protocol.GameCommand) (protocol.CommandResult, error) {
 	var out protocol.CommandResponse
-	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/command", uuid,
+	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/command", "",
 		protocol.CommandRequest{Command: cmd}, &out)
 	return out.Result, err
 }
@@ -133,17 +135,18 @@ func (c *NodeClient) ListBackups(ctx context.Context, uuid string) ([]protocol.B
 	return out.Backups, err
 }
 
-// Backup 觸發一次備份(POST /instances/{id}/backup)。
+// Backup 觸發一次備份(POST /instances/{id}/backup)。冪等鍵由 do() 逐次呼叫自動產生
+// (否則同一實例的連續兩次備份,第二次會被重播為第一次的結果而未真正執行)。
 func (c *NodeClient) Backup(ctx context.Context, uuid string) (protocol.BackupMeta, error) {
 	var out protocol.BackupResponse
-	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/backup", uuid, nil, &out)
+	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/backup", "", nil, &out)
 	return out.Backup, err
 }
 
-// Restore 以備份還原(POST /instances/{id}/restore),回傳新 runtime ID(R9)。
+// Restore 以備份還原(POST /instances/{id}/restore),回傳新 runtime ID(R9)。冪等鍵由 do() 逐次呼叫自動產生。
 func (c *NodeClient) Restore(ctx context.Context, uuid string, backupID protocol.BackupID) (protocol.RuntimeID, error) {
 	var out protocol.RestoreResponse
-	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/restore", uuid,
+	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/restore", "",
 		protocol.RestoreRequest{BackupID: backupID}, &out)
 	return out.RuntimeID, err
 }
@@ -177,7 +180,17 @@ func (c *NodeClient) LogsWS(ctx context.Context, uuid string) (*websocket.Conn, 
 // do 執行一次 HTTP 呼叫:組 URL(base + 版本前綴 + path)、帶 bearer 與可選冪等鍵、
 // 送出並依狀態碼映射錯誤。out 非 nil 且回應成功時解碼回應主體。
 // 傳輸層失敗(連不上)回 ErrNodeUnreachable 包裝,供 NodeRegistry 標離線。
+//
+// 冪等鍵語意(對應代理端 idempotent 中介層,見 server_idempotency.go):快取鍵為
+// method+path+key,同鍵於 TTL 內重播首次回應而不重跑後端動作。呼叫端未指定 idemKey
+// (傳空字串)且為非 GET 寫入呼叫時,此處對「這一次呼叫」自動產生一把新鍵——
+// 避免呼叫端誤把可重複使用的識別碼(如實例 UUID)當冪等鍵,導致同一實例的後續不同
+// 操作在 TTL 窗口內被錯誤重播。呼叫端若需要「重試回原結果」的語意(如 Create 以
+// spec.UUID 為鍵),仍可顯式傳入 idemKey 覆蓋此自動產生行為。
 func (c *NodeClient) do(ctx context.Context, method, path, idemKey string, body, out any) error {
+	if idemKey == "" && method != http.MethodGet {
+		idemKey = newUUIDv4()
+	}
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
