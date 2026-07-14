@@ -6,7 +6,7 @@
 
 ## 已完成
 
-- [2026-07-14] 🔧 R1 雙審修正(/pipeline 第 3-5 步):reviewer(opus)+Codex 雙審 T1-T7,13 項發現經逐條讀碼裁決 9 成立;使用者裁示全修。已修:A 冪等鍵誤用(NodeClient 改每呼叫隨機鍵;server 5xx 不快取)、B Restore 無回滾(swap 可反向回滾、舊資料延至 Create 成功後刪)、C events 斷線漏失(重連帶 Since+發 Resync)、D 跨實例還原(uuid 已知不 fallback 掃描)、E secret 必填驗證(非 legacy 協定引用即必填)、F channel 關閉空轉、H untar symlink 驗證、I 必填參數不回退 default。新增 15 個測試(含反向驗證);build/vet/gofmt/test/-race 全綠。**註:修正後 `-tags docker` 整合測試因 Docker Desktop 已關而 SKIP,待重啟後補跑確認。**
+- [2026-07-14] 🔧 R1 雙審修正(/pipeline 第 3-5 步):reviewer(opus)+Codex 雙審 T1-T7,13 項發現經逐條讀碼裁決 9 成立;使用者裁示全修。已修:A 冪等鍵誤用(NodeClient 改每呼叫隨機鍵;server 5xx 不快取)、B Restore 無回滾(swap 可反向回滾、舊資料延至 Create 成功後刪)、C events 斷線漏失(重連帶 Since+發 Resync)、D 跨實例還原(uuid 已知不 fallback 掃描)、E secret 必填驗證(非 legacy 協定引用即必填)、F channel 關閉空轉、H untar symlink 驗證、I 必填參數不回退 default。新增 15 個測試(含反向驗證);build/vet/gofmt/test/-race 全綠;`-tags docker` 整合測試已於 Docker Desktop 重啟後補跑通過(2026-07-14,`TestDockerBackend_Integration` PASS)。
 - [2026-07-13] 🚀 R1 實作 T1–T7(/pipeline):Go+Wails 骨架與版本鎖定、`internal/protocol` 全型別+SecretRef、持久化/事件基礎(SQLite/遷移/quarantine/port_reservations/EventLog/keyring)、`RuntimeBackend` 介面+MockBackend(含 Events)、`DockerBackend`(真 Docker 整合測試綠)、代理 HTTP/WS server(bearer/Origin/冪等)、核心骨幹(NodeClient/NodeRegistry/範本引擎+內建 minecraft·palworld/InstanceService 原子建立+wildcard 埠+分階段回滾)。三套件 build/vet/gofmt/test/`-race`/docker 全綠;5 依賴鎖版。Palworld spike(REST 12 端點、RCON legacy、映像 2.5.1)、備份 spike(停機 bind-mount 快照可行)落檔於 `specs/game-server-manager/spikes/`。
 - [2026-07-13] 📄 R1 規格深修(rev.3):依 Codex 第二輪二審(3 解決/10 部分/9 高),把高+中嚴重補進規格——埠 host binding+預留、RuntimeBackend 補 Events、restart 單一所有者、SecretRef 型別、完整狀態轉移表、備份 BackupID/停機快照、事件封套+碼表、精確參數與版本下限、任務重排 + Palworld/備份/模組 spike 前置 gate。Codex 第三輪聚焦複審:9 高中 7 關閉、2 部分,修掉 2 阻擋項(啟動就緒條件四處對齊、備份 spike 掛入 T4 並修正 spike 任務編號)後判定可進 pipeline。
 - [2026-07-13] 📄 R1 規格二審與修訂(rev.2):Codex 對三件套二審(15 高/12 中/2 低)。已修訂:修正非法 TOML schema、補全代理 API 契約與 `RuntimeBackend`(List/Inspect/Remove/Archive/Restore、ExecProcess 與遊戲指令分離)、驗收可測化、新增 R13 啟動對帳/單一實例與 R14 結構化事件記錄、代理 bearer 認證;並依裁決改 Palworld REST 為主/RCON legacy、CurseForge 改 itzg 原生。
@@ -26,7 +26,6 @@
 - [ ] T11 排程 + 自動重啟/崩潰復原 + 健康探針
 - [ ] (餘)T12 備份/還原、T13 告警、T14 模組+spike(含模組 spike)、T15 GUI、T16 E2E/文件
 - [ ] (審查遺留 J)T15/T16 組裝時:production listener 必須綁 127.0.0.1 並斷言(目前僅提供 Handler(),無監聽保證)
-- [ ] Docker Desktop 重啟後補跑 `go test -tags docker ./internal/agent/...` 確認雙審修正的整合不退步
 
 ## 已知問題
 
