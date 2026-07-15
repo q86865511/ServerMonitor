@@ -14,6 +14,8 @@
 4. **鎖定映像**:`thijsvanloef/palworld-server-docker:2.5.1`(2026-07-10 發布);REST 8212/tcp、遊戲 8211/udp、資料卷 `/palworld/`;env `REST_API_ENABLED=true`、`RCON_ENABLED=false`。
 5. **待再查證**:`game-data` 端點方法、shutdown/kick 的 body 欄位精確拼寫與 `userid` 格式、映像 digest 落定 — 見文末清單。
 
+> **勘誤(2026-07-15,T16 實測)**:本文各處寫的 tag `2.5.1` 於 Docker Hub 實際命名帶 `v` 前綴,正確為 **`v2.5.1`**(`docker pull ...:2.5.1` 回 not found;Hub tag 清單 latest/v2/v2.6/v2.6.0/v2.5.1 皆帶 v)。範本 `templates/palworld.toml` 與 E2E 已更正為 `v2.5.1`;以下未逐處改寫的 `2.5.1` 均應讀作 `v2.5.1`。
+
 ---
 
 ## 1. 官方 REST API

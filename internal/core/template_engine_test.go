@@ -178,8 +178,10 @@ func TestTemplateEngine_BuiltinTemplates(t *testing.T) {
 	if !ok {
 		t.Fatal("minecraft 範本未載入")
 	}
-	if mc.Health == nil || mc.Health.Kind != "tcp" {
-		t.Errorf("minecraft health 應為 tcp,得 %+v", mc.Health)
+	// health 用 rcon(非 tcp):Docker 發布埠的 userland proxy 會讓 tcp 探針假陽性提早判就緒;
+	// rcon 走 auth+空指令,伺服器完全起來才健康(T16 雙審 #1)。
+	if mc.Health == nil || mc.Health.Kind != "rcon" {
+		t.Errorf("minecraft health 應為 rcon,得 %+v", mc.Health)
 	}
 	pw, ok := eng.Get("palworld")
 	if !ok {

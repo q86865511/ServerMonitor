@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -278,6 +279,41 @@ func TestNodeClient_UploadMount(t *testing.T) {
 	// 未知實例 → 404 映射為 ErrNodeNotFound。
 	if err := c.UploadMount(ctx, "nope", "modpack", "world.mrpack", bytes.NewReader(payload)); !errors.Is(err, ErrNodeNotFound) {
 		t.Fatalf("未知實例上傳期望 ErrNodeNotFound,得 %v", err)
+	}
+}
+
+// TestNodeClient_PerOperationTimeout 驗證逾時分級機制(T16 雙審 #2):短操作(Status)以短逾時
+// 保護、長操作(Stop/Backup/Restore)以較長逾時不被短逾時截斷、且呼叫端顯式較嚴 deadline 恆以其
+// 為準。以縮小的預設值(ms 級)驗機制,不必等真實 30s 級逾時;測後還原全域預設。
+func TestNodeClient_PerOperationTimeout(t *testing.T) {
+	origShort, origStop := defaultNodeHTTPTimeout, defaultNodeStopTimeout
+	defaultNodeHTTPTimeout, defaultNodeStopTimeout = 60*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() { defaultNodeHTTPTimeout, defaultNodeStopTimeout = origShort, origStop })
+
+	const delay = 180 * time.Millisecond // 介於短(60ms)與長(400ms)預設之間
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(delay)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewNodeClient(srv.URL, agentTestToken, nil)
+	const uuid = "timeout-uuid"
+
+	// 短操作(Status):60ms 預設 < 180ms 延遲 → 被短逾時截斷(傳輸層失敗映射為 ErrNodeUnreachable)。
+	if _, err := c.Status(context.Background(), uuid); !errors.Is(err, ErrNodeUnreachable) {
+		t.Fatalf("短操作應因 60ms 預設逾時而截斷(ErrNodeUnreachable),得 %v", err)
+	}
+	// 長操作(Stop):400ms 預設 > 180ms 延遲 → 不被短逾時截斷,正常完成。
+	if err := c.Stop(context.Background(), uuid, protocol.StopInstanceRequest{}); err != nil {
+		t.Fatalf("長操作(Stop)不應被短逾時截斷,得 %v", err)
+	}
+	// 呼叫端顯式帶較嚴 deadline(50ms < 180ms)時以其為準,即使是長操作亦被截斷。
+	sctx, scancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer scancel()
+	if err := c.Stop(sctx, uuid, protocol.StopInstanceRequest{}); !errors.Is(err, ErrNodeUnreachable) {
+		t.Fatalf("呼叫端較嚴 deadline 應以其為準截斷長操作,得 %v", err)
 	}
 }
 

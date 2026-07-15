@@ -44,6 +44,9 @@ type Options struct {
 	AlertChannel core.AlertChannel
 	// Now 供測試注入固定時鐘;nil 用 time.Now。
 	Now func() time.Time
+	// ReadyTimeout 覆寫生命週期啟動就緒逾時(Orchestrator.awaitReady);<=0 用預設 60s(R3)。
+	// 重載遊戲(如 Minecraft 冷啟需下載/世界生成、Palworld 啟動數分鐘)或 E2E 測試可放寬之。
+	ReadyTimeout time.Duration
 }
 
 // appConfigFileName 是資料根下的一般設定檔名(UTF-8 JSON;毀損時降級,見 core.LoadAppConfig)。
@@ -294,6 +297,7 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	r.orch = core.NewOrchestrator(core.OrchestratorConfig{
 		Store: store, Events: events, Registry: r.registry, Reconciler: r.recon,
 		Prober: r.prober, Now: now, CrashHook: crashHook, StopHook: r.commands.RunStopHook,
+		ReadyTimeout: opts.ReadyTimeout, // <=0 → NewOrchestrator 用預設 60s
 	})
 	r.restart.SetRestart(r.orch.Start, r.orch.MarkGiveup)
 

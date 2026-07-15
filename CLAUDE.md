@@ -21,6 +21,10 @@ Go(核心/代理)+ Wails v2(桌面)+ Svelte-TS 前端 + Docker(執行後端,官�
 - 編譯:`go build ./...`
 - 單元/整合測試(免 Docker):`go test ./...`
 - 真 Docker 整合測試:`go test -tags docker ./...`(需 Docker daemon;build tag 為 `docker`)
+- 端到端(T16,需 Docker;會拉映像/建啟容器,測後自動清理):`go test -tags docker -run TestE2E ./internal/app/`
+  - 單跑 Minecraft 全流程:`go test -tags docker -run TestE2E_MinecraftFullLifecycle ./internal/app/`
+  - Palworld(需先 `docker pull thijsvanloef/palworld-server-docker:v2.5.1`,約 6-8GB;否則自動 skip):`-run TestE2E_Palworld`
+  - log 高流量 fanout 基準:`go test -tags docker -run TestPerf_LogThroughput ./internal/core/`
 - 開發(GUI):`wails dev`｜建置:`wails build`
 
 ## 依賴版本(已鎖定,勿升級)

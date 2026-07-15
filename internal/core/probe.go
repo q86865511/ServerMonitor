@@ -135,7 +135,7 @@ func (p *HealthProber) Ready(ctx context.Context, node, uuid string) (bool, erro
 	case "tcp":
 		return p.probeTCP(ctx, tmpl, hp.PortRef)
 	case "rest":
-		return p.probeREST(ctx, tmpl, hp.PortRef)
+		return p.probeREST(ctx, tmpl, uuid, hp)
 	case "rcon":
 		return p.probeRcon(ctx, uuid)
 	default:
@@ -172,10 +172,16 @@ func (p *HealthProber) probeTCP(ctx context.Context, tmpl *protocol.GameTemplate
 	return true, nil
 }
 
-// probeREST 對 port_ref 對應宿主埠的根路徑發 GET,2xx 視為健康。範本 [health] 僅含 kind+port_ref
-// (無路徑/認證),故探測根路徑;需認證的具體健康端點屬日後範本增量。
-func (p *HealthProber) probeREST(ctx context.Context, tmpl *protocol.GameTemplate, portRef string) (bool, error) {
-	host, port, err := resolveCommandPort(tmpl, portRef)
+// probeREST 探測 rest 健康。範本 [health] 指定 action_id 時(建議):經 CommandService 送該具名 REST
+// 動作(複用該 rest 協定的 Basic Auth 認證與埠映射),Send 成功且 result.Success=true 為健康——這是
+// 「全端點需認證」的伺服器(如 Palworld,任何未認證請求皆非 2xx)唯一可行的就緒判定,對稱 rcon 探針
+// (認證/協定不在 core 重寫,交 CommandService/adapter)。省略 action_id 時退回未認證 GET port_ref
+// 根路徑、2xx 為健康(僅適合無認證的簡單服務)。
+func (p *HealthProber) probeREST(ctx context.Context, tmpl *protocol.GameTemplate, uuid string, hp *protocol.HealthProbe) (bool, error) {
+	if hp.ActionID != "" {
+		return p.probeRestAction(ctx, tmpl, uuid, hp.ActionID)
+	}
+	host, port, err := resolveCommandPort(tmpl, hp.PortRef)
 	if err != nil {
 		return false, fmt.Errorf("rest 探針: %w", err)
 	}
@@ -190,6 +196,37 @@ func (p *HealthProber) probeREST(ctx context.Context, tmpl *protocol.GameTemplat
 	}
 	_ = resp.Body.Close()
 	return resp.StatusCode/100 == 2, nil
+}
+
+// probeRestAction 經 CommandService 送出範本 health.action_id 指定的具名 REST 動作(含 Basic Auth),
+// 判 Send 成功且 result.Success=true 為健康。未配置 commander 或範本無非 legacy rest 協定→回錯誤。
+func (p *HealthProber) probeRestAction(ctx context.Context, tmpl *protocol.GameTemplate, uuid, actionID string) (bool, error) {
+	if p.commander == nil {
+		return false, fmt.Errorf("rest 探針: 未配置 command sender")
+	}
+	cp, ok := activeRestProtocol(tmpl)
+	if !ok {
+		return false, fmt.Errorf("rest 探針: health.action_id=%q 但範本無非 legacy rest 指令協定", actionID)
+	}
+	result, err := p.commander.Send(ctx, uuid, protocol.GameCommand{ProtocolID: cp.ProtocolID, ActionID: actionID})
+	if err != nil {
+		return false, err
+	}
+	if !result.Success {
+		return false, fmt.Errorf("rest 探針: 動作 %q 未成功(output=%s)", actionID, result.Output)
+	}
+	return true, nil
+}
+
+// activeRestProtocol 回傳範本第一個「非 legacy 且 kind=rest」的指令協定(供 rest 就緒探測選定認證協定)。
+func activeRestProtocol(tmpl *protocol.GameTemplate) (protocol.CommandProtocol, bool) {
+	for _, cp := range tmpl.CommandProtocols {
+		if cp.Legacy || cp.Kind != "rest" {
+			continue
+		}
+		return cp, true
+	}
+	return protocol.CommandProtocol{}, false
 }
 
 // probeRcon 經 CommandService 觸發一次輕量指令(空 raw):RconAdapter 會完成連線+認證+執行,

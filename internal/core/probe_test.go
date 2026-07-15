@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -48,6 +50,67 @@ kind = "rcon"
 port_ref = "rcon"
 `
 
+// restActionHealthTemplate:kind=rest + action_id(經指令協定含認證探測);含一個非 legacy rest
+// 協定(供 activeRestProtocol 選定)與一個 legacy rcon 協定(應被略過)。
+const restActionHealthTemplate = `
+schema_version = 1
+id = "restactionhealth"
+name = "REST Action Health"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "example/rest:1.0"
+[[ports]]
+name = "rest"
+container = 8212
+host_port = 18212
+bind_ip = "127.0.0.1"
+protocol = "tcp"
+[[secrets]]
+key = "ADMIN_PASSWORD"
+label = "Admin"
+[[command_protocols]]
+protocol_id = "the-rest"
+kind = "rest"
+host_port_ref = "rest"
+password_ref = "ADMIN_PASSWORD"
+auth = "basic"
+username = "admin"
+actions = [ { action_id = "info", method = "GET", path = "/v1/api/info" } ]
+[[command_protocols]]
+protocol_id = "the-rcon"
+kind = "rcon"
+legacy = true
+host_port_ref = "rest"
+password_ref = "ADMIN_PASSWORD"
+[health]
+kind = "rest"
+port_ref = "rest"
+action_id = "info"
+`
+
+// restBareHealthTemplate:kind=rest 但**無** action_id → 退回未認證 GET port_ref 根路徑判 2xx(舊行為)。
+func restBareHealthTemplate(hostPort int) string {
+	return fmt.Sprintf(`
+schema_version = 1
+id = "restbarehealth"
+name = "REST Bare Health"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "example/rest:1.0"
+[[ports]]
+name = "rest"
+container = 8212
+host_port = %d
+bind_ip = "127.0.0.1"
+protocol = "tcp"
+[health]
+kind = "rest"
+port_ref = "rest"
+`, hostPort)
+}
+
 // fakeProber 是可控健康結果的 prober(供存活監控/就緒逾時測試)。
 type fakeProber struct {
 	mu      sync.Mutex
@@ -75,10 +138,12 @@ type fakeCommander struct {
 	resultFail bool
 	output     string
 	calls      int
+	lastCmd    protocol.GameCommand // 記錄最後一次收到的指令(供斷言 ProtocolID/ActionID 正確帶入)
 }
 
-func (c *fakeCommander) Send(context.Context, string, protocol.GameCommand) (protocol.CommandResult, error) {
+func (c *fakeCommander) Send(_ context.Context, _ string, cmd protocol.GameCommand) (protocol.CommandResult, error) {
 	c.calls++
+	c.lastCmd = cmd
 	if c.err != nil {
 		return protocol.CommandResult{}, c.err
 	}
@@ -225,6 +290,79 @@ func TestHealthProber_RconResultSuccessFalseUnhealthy(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("Success=false 應回錯誤(供呼叫端記錄/計失敗),得 nil")
+	}
+}
+
+// ---- 探針:rest + action_id(經 CommandService 含認證探測,T16 雙審)----
+
+// TestHealthProber_RestActionViaCommander 驗證 kind=rest + action_id 時,經 commander 送出「正確
+// ProtocolID(非 legacy rest 協定)+ ActionID」的具名動作;Send 成功且 Success=true 判健康。
+func TestHealthProber_RestActionViaCommander(t *testing.T) {
+	env := newT11Env(t, map[string]string{"restactionhealth": restActionHealthTemplate}, false)
+	if err := env.store.UpsertInstance(InstanceRecord{
+		UUID: "ra-1", TemplateID: "restactionhealth", Node: "local",
+		ObservedState: protocol.InstanceStateRunning,
+	}); err != nil {
+		t.Fatalf("UpsertInstance: %v", err)
+	}
+
+	cmd := &fakeCommander{}
+	p := NewHealthProber(ProberConfig{Store: env.store, Engine: env.eng, Registry: env.reg, Commander: cmd})
+	ok, err := p.Ready(context.Background(), "local", "ra-1")
+	if err != nil || !ok {
+		t.Fatalf("rest 動作成功應健康, 得 ok=%v err=%v", ok, err)
+	}
+	if cmd.calls != 1 {
+		t.Fatalf("應經 commander 送出 1 次探測動作, 得 %d", cmd.calls)
+	}
+	// 帶入的協定須為非 legacy rest 協定(the-rest),而非被略過的 legacy rcon(the-rcon);動作為 info。
+	if cmd.lastCmd.ProtocolID != "the-rest" || cmd.lastCmd.ActionID != "info" {
+		t.Errorf("探測指令 = %+v, 期望 ProtocolID=the-rest ActionID=info", cmd.lastCmd)
+	}
+
+	// Success=false(如伺服器仍在載入而動作失敗)應判不健康並回錯誤。
+	cmd.resultFail = true
+	ok, err = p.Ready(context.Background(), "local", "ra-1")
+	if ok {
+		t.Errorf("rest 動作 Success=false 不應視為健康")
+	}
+	if err == nil {
+		t.Fatal("rest 動作 Success=false 應回錯誤(供呼叫端記錄/計失敗),得 nil")
+	}
+}
+
+// TestHealthProber_RestBareGetRetained 驗證未帶 action_id 時保留舊行為:對 port_ref 根路徑發未認證
+// GET,2xx 為健康(不經 commander)。以 httptest 伺服器提供該埠。
+func TestHealthProber_RestBareGetRetained(t *testing.T) {
+	var got200 bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			got200 = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+
+	env := newT11Env(t, map[string]string{"restbarehealth": restBareHealthTemplate(port)}, false)
+	if err := env.store.UpsertInstance(InstanceRecord{
+		UUID: "rb-1", TemplateID: "restbarehealth", Node: "local",
+		ObservedState: protocol.InstanceStateRunning,
+	}); err != nil {
+		t.Fatalf("UpsertInstance: %v", err)
+	}
+
+	// commander 存在也不應被裸 GET 路徑使用(斷言 calls==0)。
+	cmd := &fakeCommander{}
+	p := NewHealthProber(ProberConfig{Store: env.store, Engine: env.eng, Registry: env.reg, Commander: cmd})
+	ok, err := p.Ready(context.Background(), "local", "rb-1")
+	if err != nil || !ok {
+		t.Fatalf("裸 GET 得 2xx 應健康, 得 ok=%v err=%v", ok, err)
+	}
+	if !got200 || cmd.calls != 0 {
+		t.Errorf("應走未認證 GET / 路徑(got200=%v)且不經 commander(calls=%d)", got200, cmd.calls)
 	}
 }
 

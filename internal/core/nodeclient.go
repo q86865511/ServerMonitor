@@ -45,14 +45,23 @@ type NodeClient struct {
 	hc      *http.Client
 }
 
-// defaultNodeHTTPTimeout 是單次 HTTP 呼叫的預設逾時;WS 串流不受此限(另建 Dialer)。
-const defaultNodeHTTPTimeout = 30 * time.Second
+// 逾時分級:短操作(GET/建立/狀態/指令等)用 30s;停機鏈(hooks.stop 探測 + 寬限期)與備份/
+// 還原(大檔封存)可遠超過 30s,故各給更長的預設。逾時改由 do() 逐請求以 ctx deadline 施加
+// (而非全域 http.Client.Timeout),使長短操作可分別控制、且呼叫端顯式帶 deadline 時以其為準;
+// WS 串流不受此限(另建 Dialer)。
+// 為 var(非 const)以利單元測試注入小值驗證分級機制,不必等真實 30s 級逾時;正式路徑不改寫。
+var (
+	defaultNodeHTTPTimeout = 30 * time.Second // 短操作:單次 HTTP 呼叫預設逾時
+	defaultNodeStopTimeout = 90 * time.Second // 停機鏈:hooks.stop RCON 探測可 hang 至逾時 + 寬限期
+	defaultNodeLongTimeout = 30 * time.Minute // 備份/還原/上傳:大檔封存或傳輸可長
+)
 
 // NewNodeClient 建立 NodeClient。baseURL 為代理根位址(如 http://127.0.0.1:PORT);
-// hc 可為 nil,採預設(帶逾時)的 http.Client。
+// hc 可為 nil,採預設 http.Client(不設全域 Timeout——逾時由 do() 逐請求以 ctx 施加,見上;
+// 全域 Timeout 會一併截斷長操作與 WS 升級後的讀取,故不用)。
 func NewNodeClient(baseURL, token string, hc *http.Client) *NodeClient {
 	if hc == nil {
-		hc = &http.Client{Timeout: defaultNodeHTTPTimeout}
+		hc = &http.Client{}
 	}
 	return &NodeClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
@@ -108,8 +117,10 @@ func (c *NodeClient) Start(ctx context.Context, uuid string) error {
 }
 
 // Stop 停止實例(POST /instances/{id}/stop)。冪等鍵由 do() 逐次呼叫自動產生。
+// 用較長預設逾時:代理端會先跑 hooks.stop(RCON/REST 探測,對啟動中伺服器可能 hang 至逾時)再等
+// 優雅停機寬限期,合計可超過短操作的 30s(呼叫端未帶 deadline 時,30s 會在停機完成前錯誤截斷)。
 func (c *NodeClient) Stop(ctx context.Context, uuid string, req protocol.StopInstanceRequest) error {
-	return c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/stop", "", req, nil)
+	return c.doWithTimeout(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/stop", "", req, nil, defaultNodeStopTimeout)
 }
 
 // Status 查詢 runtime 即時狀態(GET /instances/{id}/status)。
@@ -155,15 +166,17 @@ func (c *NodeClient) DeleteBackup(ctx context.Context, uuid string, backupID pro
 // (否則同一實例的連續兩次備份,第二次會被重播為第一次的結果而未真正執行)。
 func (c *NodeClient) Backup(ctx context.Context, uuid string) (protocol.BackupMeta, error) {
 	var out protocol.BackupResponse
-	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/backup", "", nil, &out)
+	// 用較長預設逾時:停機一致快照的 tar+checksum 封存對大型世界可耗數分鐘,遠超短操作 30s。
+	err := c.doWithTimeout(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/backup", "", nil, &out, defaultNodeLongTimeout)
 	return out.Backup, err
 }
 
 // Restore 以備份還原(POST /instances/{id}/restore),回傳新 runtime ID(R9)。冪等鍵由 do() 逐次呼叫自動產生。
 func (c *NodeClient) Restore(ctx context.Context, uuid string, backupID protocol.BackupID) (protocol.RuntimeID, error) {
 	var out protocol.RestoreResponse
-	err := c.do(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/restore", "",
-		protocol.RestoreRequest{BackupID: backupID}, &out)
+	// 用較長預設逾時:還原需解壓封存並重建容器,對大型世界可耗數分鐘(同 Backup)。
+	err := c.doWithTimeout(ctx, http.MethodPost, "/instances/"+url.PathEscape(uuid)+"/restore", "",
+		protocol.RestoreRequest{BackupID: backupID}, &out, defaultNodeLongTimeout)
 	return out.RuntimeID, err
 }
 
@@ -204,6 +217,21 @@ func (c *NodeClient) LogsWS(ctx context.Context, uuid string) (*websocket.Conn, 
 // 操作在 TTL 窗口內被錯誤重播。呼叫端若需要「重試回原結果」的語意(如 Create 以
 // spec.UUID 為鍵),仍可顯式傳入 idemKey 覆蓋此自動產生行為。
 func (c *NodeClient) do(ctx context.Context, method, path, idemKey string, body, out any) error {
+	return c.doWithTimeout(ctx, method, path, idemKey, body, out, defaultNodeHTTPTimeout)
+}
+
+// doWithTimeout 同 do,但以 def 作為「呼叫端 ctx 未帶 deadline 時」套用的預設逾時。長操作
+// (Stop/Backup/Restore)傳入較長的 def;呼叫端已帶 deadline 時以其為準、不覆寫(取較嚴者:
+// context.WithTimeout 對已較早到期的父 ctx 不會延後)。cancel 以 defer 於本函式返回時呼叫,
+// 請求已於函式內讀盡回應主體,故不洩漏 context。
+func (c *NodeClient) doWithTimeout(ctx context.Context, method, path, idemKey string, body, out any, def time.Duration) error {
+	if def > 0 {
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, def)
+			defer cancel()
+		}
+	}
 	if idemKey == "" && method != http.MethodGet {
 		idemKey = newUUIDv4()
 	}
@@ -251,6 +279,13 @@ func (c *NodeClient) do(ctx context.Context, method, path, idemKey string, body,
 // doUpload 以 PUT 送出 application/octet-stream 原始位元組(不經 JSON 編碼、不帶冪等鍵)。
 // 傳輸層失敗回 ErrNodeUnreachable;代理回 4xx/5xx 依統一碼表映射(見 mapError)。
 func (c *NodeClient) doUpload(ctx context.Context, path string, r io.Reader) error {
+	// 全域 http.Client.Timeout 已移除(見 NewNodeClient),故此處對「呼叫端未帶 deadline」補一層
+	// 較長預設逾時——手動模組包檔可達數百 MB,傳輸不宜以短逾時截斷,但仍需上界避免無限 hang。
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultNodeLongTimeout)
+		defer cancel()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.endpoint(path), r)
 	if err != nil {
 		return fmt.Errorf("建立請求失敗: %w", err)

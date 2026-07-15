@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-已進入 /pipeline 實作。**T1–T15 完成並勾銷(15/16)**:T15 經雙審(11 成立)→ 全修 → 聚焦複審 11 項全關閉、五組交互通過;合併樹 build/-race/docker 快驗/svelte-check 0 錯誤/wails build 全綠。**GUI 視窗真機一輪待使用者實測**(懶人包已提供)。剩 T16 E2E/效能基準/文件。規格 rev.3。
+**🏁 game-server-manager 16/16 全數完成**(規格 rev.3)。三條真機 E2E 通過:Minecraft 全流程(建立→rcon 真就緒→監控→list→備份→還原→移除,706s)、重啟對帳接管、Palworld REST(認證就緒探測+players 動作,284s);效能基準回填 design.md(閒置 ~18MB,每實例 +5.4MB);文件完稿(README 快速開始/範本指南/版本鎖定/spike 索引)。**唯一留給使用者:GUI 視窗真機一輪**(功能等價流程已由 E2E 程式化驗證)。次期候選:NativeBackend(免 Docker)、動態埠、Email 告警。
 
 ## 已完成
 
+- [2026-07-16] 🏁 R1 實作 T16+雙審修正+16/16 收官(/pipeline):E2E(Minecraft 全流程/重啟對帳/Palworld REST)、效能基準回填、文件完稿。雙審 8 成立全修:**Minecraft 就緒探針 tcp→rcon**(Docker proxy 假陽性,真產品 bug)、**Palworld rest 探針帶認證**(health 加 action_id 經 CommandService,原裸 GET 對全認證 API 永遠失敗——15 分逾時實測抓到)、**palworld 映像 tag 2.5.1→v2.5.1**(Hub 命名帶 v,pull 實測抓到)、NodeClient 逾時分級(Stop 90s/備份還原 30min)、perf 測試 atomic+緩衝、E2E 失敗路徑清理、README REST 欄位/wails 鎖版。全部修正由真機 E2E 或單元測試實證關閉。
 - [2026-07-15] 🚀 R1 實作 T15+雙審修正(/pipeline):**波1** `internal/app` 生產組裝(bootstrap 全元件接線/CrashHook 組合接 INSTANCE_CRASHED 告警/journal 目錄與 loopback 斷言/優雅關閉)+25 Wails bindings+`logs:/stats:` 事件推送;**波2** Svelte 六子項(卡片/建立精靈/主控台/排程備份告警/事件檢視/錯誤矩陣)。雙審 11 成立全修:registry 委派 dialer(解 nil panic+RetryDocker 舊連線)、Palworld REST 主控台(Capability DTO+動作下拉)、關閉收束(rootCtx+inflight 排空+readEvents closeOnCancel 解死鎖)、前端數值綁定字串化、Remove 埠失敗中止+機密鍵清單持久化、OnlineProber 適配、訂閱競態/輪詢序號/purge 勾選。聚焦複審 11 項全關閉。GUI 真機一輪待使用者。
 - [2026-07-15] 🚀 R1 實作 T12+T13+雙審修正(/pipeline):**T12** BackupService(planned-stop 一致快照→原 desired 收斂、RetentionPolicy N=7 經 BackupDeleter 鏈+DELETE 端點、op-journal 獨立於建立 journal、RecoverInterrupted 掛鉤);**T13** AlertDispatcher(AlertSink 生產實作、dedup cooldown)+DiscordWebhookChannel(429 Retry-After/5xx/4xx 策略)+ThresholdMonitor(60s 窗口/遲滯/邊緣觸發)。雙審 11 成立全修:backupID 路徑遍歷雙層防禦(server 400+backend 容器斷言+findBackup 同補)、RecoverInterrupted 失敗保留 journal、收斂改依 desired(stopLocked 污染前擷取)、事件語意去矛盾、journal 記 newRuntimeID 認養、空清單不修剪、alertDispatchTimeout=90s、dedup 成功才佔 cooldown、Retry-After 小數/HTTP-date、URL 不洩漏、dedup 惰性清理。聚焦複審 11 項全關閉;真 Docker 全整合(backup→刪最舊→restore 迴圈 PASS)。中途兩代理撞用量上限,SendMessage 原地續跑完成。
 - [2026-07-14] 🚀 R1 實作 T10+T11+雙審修正(/pipeline):**T10** MonitorHub(stats/logs WS 訂閱+退避重連、log 背壓丟舊留新+提示行、玩家數解析、探針/指令以消費端介面注入、Snapshot);**T11** HealthProber(docker/tcp/rcon/rest,兼 ReadinessProber)、HealthMonitor(15s/3 次判卡死)、RestartPolicy(5min3 次→giveup+AlertSink port)、Scheduler(UTC 自製格式免 cron、重啟先 announce、備份觸發)。雙審 9 成立+1 誤報→全修:MonitorHub 全程 h.mu 序列化(壓力測試 -race×20)、重試失敗續排至上限、卡死復原先 token+強停再交 hook(die 雙防線去重)、排程首 tick/fire goroutine 化/last_fired 持久化(schema v2)、rcon 探針判 Success、shutdown 取消未決計時器。聚焦複審 9 項全關閉、四組交互驗自洽。合併樹 -race×3 全綠。
@@ -19,15 +20,15 @@
 
 ## 進行中
 
-- **等使用者 GUI 真機一輪實測**(建立→啟動→監控→指令→備份→告警;`build\bin\servermonitor.exe` 或 `wails dev`),之後續派 T16。
+(無——pipeline 16/16 收官;等使用者 GUI 視窗真機一輪實測回報)
 
 ## 待辦
 
 > 完整任務見 `specs/game-server-manager/tasks.md`(16 項)。**T1–T8 已完成。** 近期:
 
-- [ ] 使用者 GUI 真機一輪(懶人包見對話/README)
-- [ ] T16 E2E/效能基準/文件(含 Paper 外掛/AUTO_CURSEFORGE/Palworld waittime 真機驗證)
-- [ ] (審查遺留,低)動態埠 host_port=0;事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC;Console 就地換 uuid 需 {#key}(現 Modal 遮罩使不可達);範本 kind 非 rcon/rest 前端空渲染(domain 文件限定);dispatchCrashAlert goroutine 不入 inflight 記帳(唯讀無害)
+- [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
+- [ ] 次期候選:NativeBackend(SteamCMD 免 Docker,R4 縫已留)、動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證
+- [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 - [ ] (餘)T12 備份/還原、T13 告警、T14 模組+spike(含模組 spike)、T15 GUI、T16 E2E/文件
 - [ ] (審查遺留 J)T15/T16 組裝時:production listener 必須綁 127.0.0.1 並斷言(目前僅提供 Handler(),無監聽保證)
 

@@ -14,9 +14,10 @@ runtime = "docker"
 data_dirs = ["/palworld"]              # spike:資料/存檔目錄(容器內),對應 R9 備份根
 
 [docker]
-# spike 鎖定:社群主流映像 thijsvanloef/palworld-server-docker,semver tag 2.5.1(勿用 latest)。
-# digest 待部署時以 `docker buildx imagetools inspect ...:2.5.1` 落定填入 image_digest。
-image = "thijsvanloef/palworld-server-docker:2.5.1"
+# spike 鎖定:社群主流映像 thijsvanloef/palworld-server-docker(勿用 latest)。
+# 注意:Docker Hub 的 tag 命名帶 v 前綴,故為 v2.5.1(`docker pull ...:2.5.1` 無此 tag 會 not found)。
+# digest 待部署時以 `docker buildx imagetools inspect ...:v2.5.1` 落定填入 image_digest。
+image = "thijsvanloef/palworld-server-docker:v2.5.1"
 image_digest = ""
 
 # ── 埠(spike 第 3 節;對齊 R2 衝突鍵 (bind_ip, protocol, host_port)) ──
@@ -114,9 +115,12 @@ stop = { protocol_id = "palworld-rest", action_id = "shutdown", args = { waittim
 announce = { protocol_id = "palworld-rest", action_id = "announce", message_key = "message" }
 
 # ── 健康探針(R8,kind=rest) ──
+# action_id 指向下方 command_protocols 的具名 GET 動作 info:Palworld REST 全端點需 Basic Auth,
+# 未認證裸 GET / 恆非 2xx → 就緒永不成立(實測 15 分逾時)。經指令協定送 info(含認證)才是有效就緒閘門。
 [health]
 kind = "rest"
 port_ref = "rest"
+action_id = "info"
 
 # ── 線上玩家查詢(R6) ──
 [players_query]

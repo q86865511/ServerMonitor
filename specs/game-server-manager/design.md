@@ -23,7 +23,21 @@
 
 ## 效能基準(NFR 可量測)
 
-於參考環境(記錄 CPU 型號/核數/RAM、Docker Desktop 版本)、取樣窗 60 秒下量測:閒置(0 實例)工具 CPU 平均 < 2%、working set < 200MB(基準值於 T16 benchmark 落定);每執行中實例監控開銷、與 log 高流量(如 1000 行/秒)下的 CPU/記憶體皆記錄且遠低於單一遊戲伺服器。實際門檻由 T16 benchmark 產出後回填。
+> **量測環境**:Intel Core i5-13600K(20 執行緒)/ 32GB RAM / Windows 11 / Docker Desktop 29.4.1(WSL2 後端)。
+> **量測方法**:工具自身程序的 Windows 計數器——`GetProcessTimes`(累計 kernel+user CPU 時間)、`GetProcessMemoryInfo`(工作集),取樣窗 60 秒;log 吞吐於核心 fanout 層白箱量測。量測程式:`internal/app/e2e_docker_test.go`(`TestE2E_PerfBaseline`)、`internal/core/monitor_perf_test.go`(`TestPerf_LogThroughput`),以 `-tags docker` 執行。**量測日期:2026-07-15**。
+> 註:headless(無 GUI)Runtime 量測;Wails GUI 視窗(WebView2)另計的工作集屬桌面殼層,**未量測/待人工**(以工作管理員實測補記)。
+> 註:下表為**單次觀測(n=1)快照**,非多次取樣的統計值;數值供量級參考,絕對值會隨機器/負載波動。
+
+| 指標 | 量測值 | 說明 |
+|---|---|---|
+| 閒置(0 實例)CPU | 全核 0.000% / 單核當量 0.000% | Bootstrap+Start、無實例,60s 窗平均低於量測解析度(僅背景事件 WS 連線 + 排程/存活迴圈的閒置週期) |
+| 閒置工作集 | **17.8 MB** | headless Runtime 程序工作集 |
+| 每執行中實例監控開銷 CPU | Δ 全核 +0.001%(單核當量 +0.026%) | 1 個執行中實例 + stats/log/poll 監控 + log 訂閱 vs 閒置增量 |
+| 每執行中實例監控開銷 工作集 | Δ **+5.4 MB**(17.8→23.1 MB) | 同上 |
+| log 常態流量(NFR 示例 1000 行/秒 × 10s) | 注入 10000、**丟棄 0**(無損轉推) | 健康消費者下核心 fanout 零丟棄 |
+| log fanout 吞吐上限 | **~7.5×10⁶ 行/秒**(20 萬行 / 26.6ms) | 消費者跟不上時丟最舊留最新 + 注入「已丟棄 N 行」提示,**絕不阻塞**(既有背壓單元測試另證 500 行 <200ms) |
+
+**NFR 結論(工具開銷遠低於單一遊戲伺服器)**:同機同批量測到的單一 Minecraft Paper 伺服器容器工作集約 **2.9 GB**(啟動期 CPU 數十%);相對之下,本工具閒置工作集 ~18 MB、每監控一個執行中實例僅 +~5 MB 與 <0.03%(單核當量)CPU,log 高流量下核心 fanout 吞吐達數百萬行/秒且常態零丟棄。工具總開銷相對遊戲伺服器自身數 GB/多核負載可忽略,**符合 NFR「遠低於單一遊戲伺服器」**。
 
 ## 需求對應表
 

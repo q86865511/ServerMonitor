@@ -94,8 +94,11 @@ stop = { protocol_id = "mc-rcon", command = "stop" }
 announce = { protocol_id = "mc-rcon", command = "say {msg}" }
 
 [health]                               # R8 探針
-kind = "tcp"                           # tcp | rcon | rest | docker
-port_ref = "game"
+# 用 rcon(非 tcp):Docker 對已發布埠的 userland proxy 會在容器程序尚未真正綁定前即接受 TCP 連線,
+# tcp 探針因而「假陽性」提早判就緒(伺服器仍在下載 Paper/啟動 JVM)。rcon 探針走 auth+空指令,
+# 伺服器完全起來才回應→就緒判定更正確(啟動時間略長屬預期)。核心零改動(probeRcon 複用 mc-rcon)。
+kind = "rcon"                          # tcp | rcon | rest | docker
+port_ref = "rcon"
 
 [players_query]                        # R6
 kind = "rcon"

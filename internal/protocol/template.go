@@ -127,6 +127,10 @@ type Hook struct {
 type HealthProbe struct {
 	Kind    string `toml:"kind"`     // tcp | rcon | rest | docker
 	PortRef string `toml:"port_ref"` // 指向 [[ports]].name
+	// ActionID(可選,僅 kind=rest)指定經指令協定送出的具名 REST 動作(如 Palworld "info"):
+	// 探測複用該 rest 協定的 Basic Auth 認證,避免未認證裸 GET 對「全端點需認證」的伺服器恆非 2xx。
+	// 省略時 rest 探針退回未認證 GET port_ref 根路徑(僅適合無認證的簡單服務)。
+	ActionID string `toml:"action_id"`
 }
 
 // PlayersQuery 對應 [players_query]:玩家數查詢方式(R6)。不支援者省略,GUI 顯示「不適用」。
