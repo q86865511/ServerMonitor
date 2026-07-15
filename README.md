@@ -4,7 +4,7 @@
 
 ## 狀態
 
-實作進行中(/pipeline)。規格 rev.3 已核可(見 `specs/game-server-manager/`)。後端核心 **T1–T11、T14 完成(12/16)**:共享型別、持久化(SQLite)、Docker 執行後端、節點代理 HTTP/WS API、管理核心、狀態機/生命週期/啟動對帳、RCON 與 Palworld REST 指令、監控聚合(stats/logs 串流+背壓)、健康探針與自動崩潰復原、UTC 排程(重啟/備份)、itzg 模組包、內建 Minecraft/Palworld 範本(build / test / -race / 真 Docker 整合測試皆綠)。備份還原(T12)、Discord 告警(T13)、桌面 GUI(T15)與端到端(T16)開發中。
+實作進行中(/pipeline)。規格 rev.3 已核可(見 `specs/game-server-manager/`)。**後端全部完成(T1–T14,14/16)**:共享型別、持久化(SQLite)、Docker 執行後端、節點代理 HTTP/WS API、管理核心、狀態機/生命週期/啟動對帳、RCON 與 Palworld REST 指令、監控聚合(stats/logs 串流+背壓)、健康探針與自動崩潰復原、UTC 排程、備份/還原(停機一致快照+保留策略+crash-safe journal)、Discord 告警(門檻/去重/重試)、itzg 模組包、內建 Minecraft/Palworld 範本(build / test / -race / 真 Docker 整合測試皆綠)。剩桌面 GUI(T15)與端到端+文件(T16)。
 
 ## 特色(規劃中)
 

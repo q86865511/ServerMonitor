@@ -144,6 +144,13 @@ func (c *NodeClient) ListBackups(ctx context.Context, uuid string) ([]protocol.B
 	return out.Backups, err
 }
 
+// DeleteBackup 刪除某實例的一份備份(DELETE /instances/{id}/backups/{backupID});供保留策略
+// 刪最舊(R9)。冪等鍵由 do() 逐次呼叫自動產生;備份不存在回 ErrNodeNotFound。
+func (c *NodeClient) DeleteBackup(ctx context.Context, uuid string, backupID protocol.BackupID) error {
+	return c.do(ctx, http.MethodDelete,
+		"/instances/"+url.PathEscape(uuid)+"/backups/"+url.PathEscape(string(backupID)), "", nil, nil)
+}
+
 // Backup 觸發一次備份(POST /instances/{id}/backup)。冪等鍵由 do() 逐次呼叫自動產生
 // (否則同一實例的連續兩次備份,第二次會被重播為第一次的結果而未真正執行)。
 func (c *NodeClient) Backup(ctx context.Context, uuid string) (protocol.BackupMeta, error) {

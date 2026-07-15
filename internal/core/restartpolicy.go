@@ -203,7 +203,7 @@ func (rp *RestartPolicy) recordGiveup(uuid string, exitCode *int, count int) pro
 // dispatchAlert 把一則事件送往 AlertSink;失敗記 ALERT_FAILED、成功記 ALERT_SENT。
 // 於 after 排程的執行緒中執行(不在 per-instance lock 上)。
 func (rp *RestartPolicy) dispatchAlert(ev protocol.Event) {
-	ctx, cancel := context.WithTimeout(rp.baseCtx, defaultProbeTimeout)
+	ctx, cancel := context.WithTimeout(rp.baseCtx, alertDispatchTimeout)
 	defer cancel()
 	if err := rp.alerts.Alert(ctx, ev); err != nil {
 		rp.recordAlertResult(ev, protocol.EventAlertFailed, protocol.SeverityWarning, err.Error())

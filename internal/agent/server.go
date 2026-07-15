@@ -129,6 +129,7 @@ func (s *Server) routes() http.Handler {
 	// 上傳具名 mount 檔(R11 手動模組包);上傳採覆寫、天然冪等,故不套冪等中介層。
 	mux.HandleFunc("PUT "+base+"/instances/{id}/mounts/{name}", s.handleUploadMount)
 	mux.HandleFunc("GET "+base+"/instances/{id}/backups", s.handleListBackups)
+	mux.Handle("DELETE "+base+"/instances/{id}/backups/{backupID}", s.idempotent(http.HandlerFunc(s.handleDeleteBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/backup", s.idempotent(http.HandlerFunc(s.handleBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/restore", s.idempotent(http.HandlerFunc(s.handleRestore)))
 
@@ -371,6 +372,31 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.ListBackupsResponse{Backups: metas})
 }
 
+// handleDeleteBackup 刪除某實例的一份備份(保留策略;R9)。{id}=instance UUID、{backupID}=備份 ID
+// 皆為路徑參數;以 UUID 過濾避免跨實例刪除。後端未實作 BackupDeleter → 500;備份不存在 → 404;
+// 成功回 204。刪除採冪等中介層(重播回原結果)。
+func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("id")
+	backupID := protocol.BackupID(r.PathValue("backupID"))
+	// 路徑遍歷第一層防禦:URL 路徑段(已解碼,如 "..%5C"→"..\")進後端前先驗格式,拒絕 → 400。
+	if err := validateBackupID(backupID); err != nil {
+		writeErr(w, err)
+		return
+	}
+	deleter, ok := s.backend.(BackupDeleter)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, protocol.APIError{
+			Code: protocol.ErrInternal, Message: "backend does not support backup deletion",
+		})
+		return
+	}
+	if err := deleter.DeleteBackup(r.Context(), uuid, backupID); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleBackup(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("id")
 	rid, err := s.resolve(r.Context(), uuid)
@@ -432,6 +458,8 @@ func apiErrorFor(err error) (int, protocol.APIError) {
 	case errors.Is(err, ErrNotFound):
 		return http.StatusNotFound, protocol.APIError{Code: protocol.ErrNotFound, Message: err.Error()}
 	case errors.Is(err, ErrInvalidFilename):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrInvalidBackupID):
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrPortConflict):
 		return http.StatusConflict, protocol.APIError{Code: protocol.ErrPortConflict, Message: err.Error()}

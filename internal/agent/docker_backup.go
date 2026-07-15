@@ -214,6 +214,10 @@ func applyRestoreSwap(root, staging string, rename func(oldpath, newpath string)
 // (不跨 uuid 掃描——避免以某實例端點提交他實例 BackupID 時誤配到別的實例);僅 uuid 為空
 // (舊容器已不存在)才容許掃描所有 uuid 目錄。
 func (b *DockerBackend) findBackup(uuid string, bid protocol.BackupID) (string, backupRecord, error) {
+	// 路徑遍歷防禦(還原路徑):bid 同樣充當目錄名 join,未消毒可逃逸備份根定位到任意 meta.json。
+	if err := validateBackupID(bid); err != nil {
+		return "", backupRecord{}, err
+	}
 	tryDir := func(dir string) (string, backupRecord, bool) {
 		rec, err := readBackupRecord(dir)
 		if err != nil {

@@ -313,6 +313,87 @@ logLoop:
 	}
 }
 
+// TestDockerBackend_BackupRetentionRestore 端到端(真 Docker):backup→retention(刪最舊)→restore
+// 迴圈一輪。驗 DeleteBackup 真的移除 agent 端備份目錄(保留策略的能力鏈),且刪除後仍可用剩下的
+// 備份還原。對映 R9 保留策略 + 原子還原。
+func TestDockerBackend_BackupRetentionRestore(t *testing.T) {
+	b := newITestBackend(t)
+	defer b.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	uuid := "itest-ret-" + shortRand()
+	spec := itestSpec(uuid)
+	id, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	defer b.Remove(ctx, id, RemoveOpts{Purge: true})
+	if err := b.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// 寫入可辨識資料,停機取一致快照(第一份備份)。
+	if res, err := b.ExecProcess(ctx, id, ExecCmd{Cmd: []string{"sh", "-c", "echo v1 > /data/save.txt"}}); err != nil || res.ExitCode != 0 {
+		t.Fatalf("ExecProcess v1: err=%v res=%+v", err, res)
+	}
+	if err := b.Stop(ctx, id, StopOpts{Grace: 5 * time.Second}); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	bid1, err := b.Archive(ctx, id)
+	if err != nil {
+		t.Fatalf("Archive #1: %v", err)
+	}
+
+	// 第二份備份(改資料後再存)。
+	if err := b.Start(ctx, id); err != nil {
+		t.Fatalf("Start2: %v", err)
+	}
+	if res, err := b.ExecProcess(ctx, id, ExecCmd{Cmd: []string{"sh", "-c", "echo v2 > /data/save.txt"}}); err != nil || res.ExitCode != 0 {
+		t.Fatalf("ExecProcess v2: err=%v res=%+v", err, res)
+	}
+	if err := b.Stop(ctx, id, StopOpts{Grace: 5 * time.Second}); err != nil {
+		t.Fatalf("Stop2: %v", err)
+	}
+	bid2, err := b.Archive(ctx, id)
+	if err != nil {
+		t.Fatalf("Archive #2: %v", err)
+	}
+
+	if metas, err := b.ListBackups(ctx, uuid); err != nil || len(metas) != 2 {
+		t.Fatalf("Archive 後應有 2 份, err=%v metas=%d", err, len(metas))
+	}
+
+	// 保留策略能力:刪最舊(bid1)→ 目錄真的消失、清單剩 bid2。
+	if err := b.DeleteBackup(ctx, uuid, bid1); err != nil {
+		t.Fatalf("DeleteBackup bid1: %v", err)
+	}
+	bkp1Dir := filepath.Join(b.backupInstanceRoot(uuid), string(bid1))
+	if _, err := os.Stat(bkp1Dir); !os.IsNotExist(err) {
+		t.Fatalf("刪除後備份目錄應消失, stat err=%v", err)
+	}
+	metas, err := b.ListBackups(ctx, uuid)
+	if err != nil || len(metas) != 1 || metas[0].BackupID != bid2 {
+		t.Fatalf("刪最舊後應剩 bid2, err=%v metas=%+v", err, metas)
+	}
+
+	// 以剩下的 bid2 還原 → 新 runtime ID,資料為 v2。
+	newID, err := b.Restore(ctx, id, bid2)
+	if err != nil {
+		t.Fatalf("Restore bid2: %v", err)
+	}
+	defer b.Remove(ctx, newID, RemoveOpts{Purge: true})
+	livePath := filepath.Join(b.instanceDataRoot(uuid), "data", "save.txt")
+	restored, err := os.ReadFile(livePath)
+	if err != nil {
+		t.Fatalf("read restored: %v", err)
+	}
+	if strings.TrimSpace(string(restored)) != "v2" {
+		t.Fatalf("還原內容應為 v2, 得 %q", string(restored))
+	}
+}
+
 // Status/Inspect 對不存在的容器回 ErrNotFound(驗 mapDockerErr)。
 func TestDockerBackend_NotFound(t *testing.T) {
 	b := newITestBackend(t)

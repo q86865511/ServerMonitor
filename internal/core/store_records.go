@@ -286,6 +286,15 @@ func (s *Store) ListBackups(instanceUUID string) ([]protocol.BackupMeta, error) 
 	return out, rows.Err()
 }
 
+// DeleteBackup 刪除一筆備份中繼(保留策略刪最舊時同步清 store 列;不存在則 no-op)。
+func (s *Store) DeleteBackup(backupID protocol.BackupID) error {
+	_, err := s.db.Exec(`DELETE FROM backups WHERE backup_id = ?`, string(backupID))
+	if err != nil {
+		return fmt.Errorf("刪除備份中繼 %s 失敗: %w", backupID, err)
+	}
+	return nil
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1
