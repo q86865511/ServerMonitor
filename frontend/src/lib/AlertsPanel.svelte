@@ -61,14 +61,19 @@
   }
 </script>
 
-<h3 class="head">告警設定</h3>
+<div class="section-head head">
+  <div>
+    <div class="section-code mono">ALERTS / DISPATCH</div>
+    <h3>告警設定</h3>
+  </div>
+</div>
 
 {#if loading}
   <div class="empty">載入中…</div>
 {:else}
   <div class="form">
     <div class="field">
-      <label>Discord Webhook</label>
+      <div class="field-label">Discord Webhook</div>
       <div class="masked">
         目前:{webhookConfigured ? '已設定(●●●●●●,基於安全不顯示)' : '未設定'}
       </div>
@@ -78,6 +83,7 @@
       </div>
       {#if updateWebhook}
         <input
+          aria-label="新的 Discord Webhook URL"
           type="password"
           bind:value={webhookUrl}
           placeholder="貼上新的 webhook URL(留空=清除既有)"
@@ -126,11 +132,17 @@
     margin-bottom: 14px;
   }
   .form {
-    max-width: 440px;
+    max-width: 520px;
   }
+  .section-code { margin-bottom: 2px; color: var(--fg-3); font-size: 8px; font-weight: 700; letter-spacing: .12em; }
   .masked {
-    font-size: 13px;
+    padding: 9px 10px;
     color: var(--fg-1);
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
   .actions {
     margin-top: 8px;

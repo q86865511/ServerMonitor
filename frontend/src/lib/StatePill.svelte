@@ -2,63 +2,53 @@
   import { stateLabel, stateTone } from './format';
 
   export let state: string;
-  /** 對照顯示 desired(選填,空字串=不比對):與 observed 不同時以副標提示。 */
   export let desired = '';
 
   $: tone = stateTone(state);
   $: diverged = desired !== '' && desired !== state;
 </script>
 
-<span class="pill" title={diverged ? `目標:${stateLabel(desired)}` : ''}>
-  <span class="dot {tone}"></span>
-  <span>{stateLabel(state)}</span>
+<span class="state {tone}" title={diverged ? `目標:${stateLabel(desired)}` : ''}>
+  <span class="dot"></span>
+  <span class="state-copy">{stateLabel(state)}</span>
   {#if diverged}
-    <span class="target">→ {stateLabel(desired)}</span>
+    <span class="target">/ → {stateLabel(desired)}</span>
   {/if}
 </span>
 
 <style>
-  .pill {
+  .state {
     display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 13px;
-  }
-  .dot {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
     flex: none;
+    align-items: center;
+    gap: 7px;
+    color: var(--fg-1);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.055em;
+    text-transform: uppercase;
   }
-  .dot.ok {
-    background: var(--ok);
-    box-shadow: 0 0 6px var(--ok);
-  }
-  .dot.busy {
-    background: var(--busy);
-    animation: pulse 1.2s ease-in-out infinite;
-  }
-  .dot.idle {
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
     background: var(--idle);
+    border-radius: 50%;
   }
-  .dot.err {
-    background: var(--err);
-    box-shadow: 0 0 6px var(--err);
-  }
-  .dot.off {
-    background: var(--off);
-  }
+
+  .state.ok .dot { background: var(--ok); }
+  .state.busy .dot { background: var(--busy); animation: pulse 1.2s steps(2, end) infinite; }
+  .state.err .dot { background: var(--err); }
+  .state.off .dot { background: var(--off); }
+
   .target {
-    color: var(--fg-2);
-    font-size: 12px;
+    color: var(--fg-3);
+    font-size: 9px;
   }
+
   @keyframes pulse {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.35;
-    }
+    50% { opacity: 0.28; }
   }
 </style>

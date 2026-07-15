@@ -6,6 +6,7 @@
   import { pushToast } from './stores';
   import { fmtTime } from './format';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import Icon from './Icon.svelte';
 
   export let uuid: string;
 
@@ -57,12 +58,17 @@
   }
 </script>
 
-<div class="spread head">
-  <h3>備份</h3>
+<div class="section-head">
+  <div>
+    <div class="section-code mono">DATA / SNAPSHOTS</div>
+    <h3>備份</h3>
+  </div>
   <div class="row">
-    <button class="sm" on:click={load} disabled={loading}>重新整理</button>
-    <button class="sm primary" on:click={backupNow} disabled={backingUp}>
-      {backingUp ? '備份中…' : '立即備份'}
+    <button class="sm icon-text" on:click={load} disabled={loading}>
+      <Icon name="refresh" size={13} /><span>重新整理</span>
+    </button>
+    <button class="sm primary icon-text" on:click={backupNow} disabled={backingUp}>
+      <Icon name="database" size={14} /><span>{backingUp ? '備份中…' : '立即備份'}</span>
     </button>
   </div>
 </div>
@@ -111,9 +117,8 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 12px;
-  }
+  .section-code { margin-bottom: 2px; color: var(--fg-3); font-size: 8px; font-weight: 700; letter-spacing: .12em; }
+  .icon-text { display: inline-flex; align-items: center; gap: 6px; }
   .right {
     text-align: right;
   }

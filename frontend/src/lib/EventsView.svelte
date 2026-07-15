@@ -5,6 +5,7 @@
   import { call } from './api';
   import { instances } from './stores';
   import { fmtTime, severityTone } from './format';
+  import Icon from './Icon.svelte';
 
   // 必備 event code 目錄(R14;對齊 internal/protocol/event.go)。
   const EVENT_CODES = [
@@ -90,11 +91,28 @@
   }
 </script>
 
-<div class="spread head">
-  <h2>事件</h2>
-</div>
+<header class="page-head">
+  <div class="page-copy">
+    <div class="eyebrow">System / Event log</div>
+    <h2>事件記錄</h2>
+    <p class="page-description">追蹤生命週期、健康檢查、備份與告警活動。</p>
+  </div>
+</header>
 
-<div class="filters card">
+<section class="filters card" aria-labelledby="filter-title">
+  <div class="filter-head">
+    <div>
+      <div class="filter-code mono">QUERY CONTROLS</div>
+      <h3 id="filter-title">篩選條件</h3>
+    </div>
+    <div class="row actions">
+      <button class="sm" on:click={reset} disabled={loading}>重設</button>
+      <button class="sm primary" on:click={query} disabled={loading}>
+        <Icon name="events" size={14} />
+        <span>{loading ? '查詢中…' : '執行查詢'}</span>
+      </button>
+    </div>
+  </div>
   <div class="fgrid">
     <div class="field">
       <label for="f-inst">實例</label>
@@ -127,14 +145,16 @@
       <input id="f-limit" type="number" min="1" bind:value={fLimit} />
     </div>
   </div>
-  <div class="row actions">
-    <button class="primary" on:click={query} disabled={loading}>{loading ? '查詢中…' : '查詢'}</button>
-    <button on:click={reset} disabled={loading}>重設</button>
-  </div>
-</div>
+</section>
 
 {#if events.length === 0 && !loading}
-  <div class="empty">無符合條件的事件。</div>
+  <div class="empty-state event-empty">
+    <div class="empty-state-inner">
+      <div class="empty-mark"><Icon name="events" size={26} /></div>
+      <div class="empty-title">沒有符合條件的事件</div>
+      <p class="empty-copy">調整篩選條件後重新查詢，或等待系統產生新的活動記錄。</p>
+    </div>
+  </div>
 {:else}
   <div class="scroll-x">
     <table>
@@ -149,12 +169,26 @@
       </thead>
       <tbody>
         {#each events as e, i}
-          <tr class="ev" on:click={() => (expanded = { ...expanded, [i]: !expanded[i] })}>
-            <td class="nowrap">{fmtTime(e.ts_utc)}</td>
-            <td><span class="sev {severityTone(e.severity)}">{e.severity}</span></td>
+          <tr class="ev">
+            <td class="nowrap mono time">{fmtTime(e.ts_utc)}</td>
+            <td><span class="sev {severityTone(e.severity)}"><i></i>{e.severity}</span></td>
             <td class="mono">{e.code}</td>
             <td class="mono muted nowrap">{e.instance_uuid || '—'}</td>
-            <td class="muted">{e.details ? (expanded[i] ? '▾' : '▸ 展開') : '(無)'}</td>
+            <td class="detail-cell">
+              {#if e.details}
+                <button
+                  class="ghost sm expand"
+                  on:click={() => (expanded = { ...expanded, [i]: !expanded[i] })}
+                  aria-expanded={!!expanded[i]}
+                  aria-label={`${expanded[i] ? '收合' : '展開'} ${e.code} 詳細資料`}
+                >
+                  <span class:open={expanded[i]}><Icon name="chevron" size={13} /></span>
+                  <span>{expanded[i] ? '收合' : '展開'}</span>
+                </button>
+              {:else}
+                <span class="muted">—</span>
+              {/if}
+            </td>
           </tr>
           {#if expanded[i] && e.details}
             <tr class="detail-row">
@@ -168,16 +202,34 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 16px;
-  }
   .filters {
     margin-bottom: 16px;
   }
+  .filter-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: 15px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  .filter-code {
+    margin-bottom: 2px;
+    color: var(--fg-3);
+    font-size: 8px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+  .actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
   .fgrid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-    gap: 12px;
+    grid-template-columns: 1.15fr 1.15fr repeat(2, minmax(160px, 1fr)) 96px;
+    gap: 11px;
   }
   .fgrid .field {
     margin-bottom: 0;
@@ -185,42 +237,51 @@
   .limit {
     max-width: 120px;
   }
-  .actions {
-    margin-top: 14px;
-  }
   .sev {
-    display: inline-block;
-    padding: 1px 8px;
-    border-radius: 10px;
-    font-size: 11px;
-    border: 1px solid;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
   }
-  .sev.ok {
-    color: var(--ok);
-    border-color: var(--ok);
+  .sev i {
+    display: block;
+    width: 3px;
+    height: 12px;
+    background: currentColor;
   }
-  .sev.busy {
-    color: var(--busy);
-    border-color: var(--busy);
-  }
-  .sev.err {
-    color: var(--err);
-    border-color: var(--err);
-  }
-  .nowrap {
-    white-space: nowrap;
-  }
-  .ev {
-    cursor: pointer;
-  }
+  .sev.ok { color: var(--ok); }
+  .sev.busy { color: var(--busy); }
+  .sev.err { color: var(--err); }
+  .time { color: var(--fg-1); font-size: 11px; }
+  .detail-cell { width: 92px; }
+  .expand { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-2); }
+  .expand > span:first-child { display: grid; transition: transform 120ms ease; }
+  .expand > span:first-child.open { transform: rotate(90deg); }
   .detail-row td {
-    background: var(--bg-0);
+    padding: 0;
+    background: var(--bg-inset);
   }
   pre {
     margin: 0;
+    padding: 14px 16px;
     font-size: 12px;
     white-space: pre-wrap;
     word-break: break-word;
     color: var(--fg-1);
+  }
+  .event-empty { min-height: 270px; }
+  @media (max-width: 1180px) {
+    .fgrid { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+    .limit { max-width: none; }
+  }
+  @media (max-width: 620px) {
+    .filter-head { align-items: flex-start; flex-direction: column; }
+    .actions { width: 100%; }
+    .actions button { flex: 1; justify-content: center; }
+    .fgrid { grid-template-columns: 1fr; }
   }
 </style>

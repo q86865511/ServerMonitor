@@ -7,6 +7,7 @@
   import { fmtWeekdays, fmtTime, WEEKDAY_LABELS } from './format';
   import Modal from './Modal.svelte';
   import ConfirmDialog from './ConfirmDialog.svelte';
+  import Icon from './Icon.svelte';
 
   export let uuid: string;
 
@@ -125,11 +126,14 @@
   const KIND_LABEL: Record<string, string> = { restart: '重啟', backup: '備份' };
 </script>
 
-<div class="spread head">
-  <h3>排程</h3>
+<div class="section-head">
+  <div>
+    <div class="section-code mono">AUTOMATION / UTC</div>
+    <h3>排程</h3>
+  </div>
   <div class="row">
-    <button class="sm" on:click={load} disabled={loading}>重新整理</button>
-    <button class="sm primary" on:click={openNew}>＋ 新增排程</button>
+    <button class="sm icon-text" on:click={load} disabled={loading}><Icon name="refresh" size={13} /><span>重新整理</span></button>
+    <button class="sm primary icon-text" on:click={openNew}><Icon name="plus" size={13} /><span>新增排程</span></button>
   </div>
 </div>
 
@@ -157,8 +161,8 @@
             <td class="mono">{s.at}</td>
             <td>{fmtWeekdays(s.weekdays)}</td>
             <td>
-              <button class="sm ghost" on:click={() => toggleEnabled(s)}>
-                {s.enabled ? '✅ 啟用' : '⛔ 停用'}
+              <button class="sm status-toggle" class:enabled={s.enabled} on:click={() => toggleEnabled(s)}>
+                <span class="status-mark"></span>{s.enabled ? '啟用' : '停用'}
               </button>
             </td>
             <td class="muted">{fmtTime(s.last_fired_utc)}</td>
@@ -186,8 +190,8 @@
       <label for="s-at">時刻(UTC，24 小時)</label>
       <input id="s-at" type="time" bind:value={editAt} />
     </div>
-    <div class="field">
-      <label>週期(不選=每天)</label>
+    <fieldset class="field">
+      <legend class="field-label">週期(不選=每天)</legend>
       <div class="wrap">
         {#each WEEKDAY_LABELS as lbl, d}
           <button
@@ -198,7 +202,7 @@
           >
         {/each}
       </div>
-    </div>
+    </fieldset>
     <div class="field checkbox-row">
       <input id="s-en" type="checkbox" bind:checked={editEnabled} />
       <label for="s-en" style="margin:0">啟用</label>
@@ -225,9 +229,8 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 12px;
-  }
+  .section-code { margin-bottom: 2px; color: var(--fg-3); font-size: 8px; font-weight: 700; letter-spacing: .12em; }
+  .icon-text { display: inline-flex; align-items: center; gap: 6px; }
   .right {
     text-align: right;
     white-space: nowrap;
@@ -235,7 +238,15 @@
   .day.on {
     background: var(--accent);
     border-color: var(--accent);
-    color: #fff;
+    color: var(--accent-ink);
+    font-weight: 700;
+  }
+  .status-toggle { display: inline-flex; align-items: center; gap: 7px; color: var(--fg-2); background: transparent; border-color: transparent; }
+  .status-toggle.enabled { color: var(--ok); }
+  .status-mark { width: 6px; height: 6px; background: var(--fg-3); border-radius: 50%; }
+  .status-toggle.enabled .status-mark { background: var(--ok); }
+  .field-label {
+    margin-bottom: 7px;
   }
   .actions {
     display: flex;

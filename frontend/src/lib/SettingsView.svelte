@@ -20,27 +20,40 @@
   ];
 </script>
 
-<div class="spread head">
-  <h2>設定</h2>
+<header class="page-head settings-head">
+  <div class="page-copy">
+    <div class="eyebrow">Instance / Operations</div>
+    <h2>實例設定</h2>
+    <p class="page-description">管理備份、UTC 排程與資源告警。</p>
+  </div>
   {#if $instances.length > 0}
-    <select class="picker" bind:value={selectedUuid}>
-      {#each $instances as inst (inst.uuid)}
-        <option value={inst.uuid}>{inst.uuid}({inst.template_id})</option>
-      {/each}
-    </select>
+    <div class="context-picker">
+      <label for="settings-instance">目前實例</label>
+      <select id="settings-instance" class="picker mono" bind:value={selectedUuid}>
+        {#each $instances as inst (inst.uuid)}
+          <option value={inst.uuid}>{inst.template_id} / {inst.uuid}</option>
+        {/each}
+      </select>
+    </div>
   {/if}
-</div>
+</header>
 
 {#if $instances.length === 0}
   <div class="empty">尚無實例;請先於「實例」頁建立。</div>
 {:else}
-  <div class="tabs">
+  <div class="tabs" role="tablist" aria-label="實例設定分類">
     {#each tabs as t}
-      <button class="tab" class:active={tab === t.id} on:click={() => (tab = t.id)}>{t.label}</button>
+      <button
+        class="tab"
+        class:active={tab === t.id}
+        on:click={() => (tab = t.id)}
+        role="tab"
+        aria-selected={tab === t.id}
+      >{t.label}</button>
     {/each}
   </div>
 
-  <div class="panel">
+  <div class="panel workspace">
     {#key selectedUuid}
       {#if tab === 'backups'}
         <BackupsPanel uuid={selectedUuid} />
@@ -54,26 +67,29 @@
 {/if}
 
 <style>
-  .head {
-    margin-bottom: 16px;
+  .settings-head {
+    align-items: flex-end;
+  }
+  .context-picker {
+    width: min(420px, 48%);
   }
   .picker {
-    width: auto;
-    min-width: 240px;
+    width: 100%;
+    font-size: 11px;
   }
   .tabs {
     display: flex;
-    gap: 4px;
-    margin-bottom: 16px;
+    gap: 22px;
     border-bottom: 1px solid var(--line);
   }
   .tab {
+    position: relative;
     background: transparent;
     border: none;
-    border-bottom: 2px solid transparent;
     border-radius: 0;
-    color: var(--fg-1);
-    padding: 8px 16px;
+    color: var(--fg-2);
+    padding: 10px 2px 11px;
+    font-size: 12px;
   }
   .tab:hover:not(:disabled) {
     background: transparent;
@@ -81,7 +97,24 @@
   }
   .tab.active {
     color: var(--fg-0);
-    border-bottom-color: var(--accent);
     font-weight: 600;
+  }
+  .tab.active::after {
+    position: absolute;
+    right: 0;
+    bottom: -1px;
+    left: 0;
+    height: 2px;
+    background: var(--accent);
+    content: '';
+  }
+  .workspace {
+    border-top: 0;
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+  @media (max-width: 720px) {
+    .settings-head { align-items: stretch; }
+    .context-picker { width: 100%; }
   }
 </style>

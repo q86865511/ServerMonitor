@@ -5,6 +5,7 @@
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
   import { errMsg } from './api';
   import Modal from './Modal.svelte';
+  import Icon from './Icon.svelte';
 
   export let uuid: string;
 
@@ -169,15 +170,20 @@
 
 <Modal title={`主控台 · ${uuid}`} wide on:close={() => dispatch('close')}>
   <div class="console">
-    <div class="bar spread">
-      <span class="muted">{rows.length} 行</span>
-      <label class="checkbox-row" style="margin:0">
+    <div class="terminal-bar">
+      <div class="terminal-meta">
+        <span class="stream-light"></span>
+        <span class="mono">LOG STREAM</span>
+        <span class="divider"></span>
+        <span class="mono muted">{rows.length} LINES</span>
+      </div>
+      <label class="checkbox-row auto-scroll">
         <input type="checkbox" bind:checked={autoScroll} />
         <span>自動捲底</span>
       </label>
     </div>
 
-    <div class="log mono" bind:this={scrollBox} on:scroll={onScroll}>
+    <div class="log mono" bind:this={scrollBox} on:scroll={onScroll} role="log" aria-label="伺服器日誌">
       {#each rows as r (r.id)}
         <div class="line {r.stream}">{r.text}</div>
       {/each}
@@ -187,7 +193,7 @@
     </div>
 
     {#if capKind === '' }
-      <div class="muted" style="flex:none">載入指令能力…</div>
+      <div class="cap-note"><span class="stream-light busy"></span>載入指令能力…</div>
     {:else if capKind === 'none'}
       <div class="disabled-note">
         此範本未啟用指令協定,無法送出指令。{capReason ? `(${capReason})` : ''}
@@ -202,8 +208,8 @@
           placeholder="輸入指令後 Enter 送出…"
           disabled={sending}
         />
-        <button class="primary" on:click={sendRcon} disabled={sending || cmd.trim() === ''}>
-          {sending ? '送出中…' : '送出'}
+        <button class="primary send" on:click={sendRcon} disabled={sending || cmd.trim() === ''}>
+          <Icon name="terminal" size={14} /><span>{sending ? '送出中…' : '送出'}</span>
         </button>
       </div>
     {:else if capKind === 'rest'}
@@ -215,24 +221,26 @@
             {/each}
           </select>
           <button
-            class="primary"
+            class="primary send"
             on:click={sendRest}
             disabled={sending || !selectedAction}
           >
-            {sending ? '送出中…' : '送出動作'}
+            <Icon name="terminal" size={14} /><span>{sending ? '送出中…' : '送出動作'}</span>
           </button>
         </div>
         <div class="args">
           <div class="args-head">
             <span class="muted">參數(選填,key = value)</span>
-            <button class="ghost" on:click={addArgRow} disabled={sending}>+ 新增參數</button>
+            <button class="ghost sm add-arg" on:click={addArgRow} disabled={sending}><Icon name="plus" size={13} /><span>新增參數</span></button>
           </div>
           {#each argRows as r (r.id)}
             <div class="arg-row">
               <input class="mono" type="text" placeholder="key" bind:value={r.key} disabled={sending} />
               <span class="eq">=</span>
               <input class="mono" type="text" placeholder="value" bind:value={r.value} disabled={sending} />
-              <button class="ghost" on:click={() => removeArgRow(r.id)} disabled={sending}>移除</button>
+              <button class="ghost icon-button" on:click={() => removeArgRow(r.id)} disabled={sending} aria-label="移除參數">
+                <Icon name="trash" size={14} />
+              </button>
             </div>
           {/each}
         </div>
@@ -245,28 +253,59 @@
   .console {
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    height: 66vh;
+    gap: 0;
+    height: 68vh;
+    min-height: 460px;
+    margin: -20px;
+    background: var(--bg-inset);
   }
-  .bar {
+  .terminal-bar {
     flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 39px;
+    padding: 7px 12px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .terminal-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--fg-1);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .08em;
+  }
+  .stream-light {
+    width: 6px;
+    height: 6px;
+    background: var(--ok);
+    border-radius: 50%;
+  }
+  .stream-light.busy { background: var(--busy); }
+  .divider { width: 1px; height: 12px; background: var(--line-strong); }
+  .auto-scroll {
+    color: var(--fg-2);
+    font-size: 10px;
   }
   .log {
     flex: 1;
     overflow-y: auto;
-    background: var(--bg-0);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-sm);
-    padding: 10px;
-    font-size: 12.5px;
-    line-height: 1.55;
+    padding: 14px 16px;
+    color: #c8c9be;
+    background: #090a08;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+    line-height: 1.62;
   }
   .line {
     white-space: pre-wrap;
     word-break: break-word;
   }
   .line.stderr {
-    color: var(--err);
+    color: #e8887f;
   }
   .line.gsm-monitor {
     color: var(--busy);
@@ -280,37 +319,59 @@
   }
   .disabled-note {
     flex: none;
-    font-size: 12px;
+    margin: 10px 12px;
+    font-size: 11px;
     color: var(--busy);
-    background: rgba(210, 153, 34, 0.1);
-    border: 1px solid var(--busy);
+    background: rgba(214, 162, 74, 0.07);
+    border: 1px solid rgba(214, 162, 74, 0.5);
     border-radius: var(--radius-sm);
     padding: 8px 10px;
+  }
+  .cap-note {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    color: var(--fg-2);
+    background: var(--bg-1);
+    font-size: 11px;
   }
   .input-row {
     flex: none;
     display: flex;
-    gap: 8px;
+    gap: 7px;
+    padding: 10px 12px;
+    background: var(--bg-1);
   }
   .input-row input,
   .input-row select {
     flex: 1;
   }
+  .send,
+  .add-arg {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
   .rest-panel {
     flex: none;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0;
+    background: var(--bg-1);
   }
   .args {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 7px;
+    padding: 0 12px 11px;
   }
   .args-head {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    min-height: 31px;
   }
   .arg-row {
     display: flex;
@@ -322,5 +383,16 @@
   }
   .arg-row .eq {
     color: var(--fg-2);
+  }
+  @media (max-width: 820px) {
+    .console {
+      height: calc(100vh - 112px);
+      min-height: 0;
+      margin: -16px;
+    }
+  }
+  @media (max-width: 600px) {
+    .arg-row { flex-wrap: wrap; }
+    .arg-row input { min-width: 120px; }
   }
 </style>

@@ -12,9 +12,10 @@
   import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
   import { call } from './api';
   import { pushToast } from './stores';
-  import { fmtBytes, fmtCPU, fmtPlayers, fmtOnline, memRatio } from './format';
+  import { fmtBytes, fmtCPU, fmtPlayers, fmtOnline, memRatio, stateTone } from './format';
   import StatePill from './StatePill.svelte';
   import Modal from './Modal.svelte';
+  import Icon from './Icon.svelte';
 
   export let inst: main.InstanceDTO;
 
@@ -91,65 +92,92 @@
   $: diskBytes = stats ? stats.data_disk_bytes : undefined;
   $: players = stats ? stats.player_count : undefined;
   $: online = stats ? stats.online : undefined;
+  $: tone = stateTone(inst.observed_state);
 </script>
 
-<div class="card instance">
-  <div class="spread top">
+<article class="card instance {tone}">
+  <div class="top">
     <div class="ident">
-      <div class="name mono">{inst.uuid}</div>
-      <div class="sub muted">{inst.template_id} · {inst.variant || '預設'} · {inst.node}</div>
+      <div class="template-name">{inst.template_id}</div>
+      <div class="variant mono">{inst.variant || 'default'}</div>
     </div>
     <StatePill state={inst.observed_state} desired={inst.desired_state} />
+  </div>
+
+  <div class="identity-grid">
+    <div>
+      <span class="identity-label">INSTANCE</span>
+      <span class="identity-value mono" title={inst.uuid}>{inst.uuid}</span>
+    </div>
+    <div>
+      <span class="identity-label">NODE</span>
+      <span class="identity-value mono" title={inst.node}>{inst.node}</span>
+    </div>
   </div>
 
   <div class="metrics">
     <div class="metric">
       <span class="k">CPU</span>
-      <span class="v">{fmtCPU(stats?.cpu_percent)}</span>
+      <span class="v mono">{fmtCPU(stats?.cpu_percent)}</span>
     </div>
     <div class="metric">
       <span class="k">記憶體</span>
-      <span class="v">{fmtBytes(stats?.memory_bytes)}</span>
+      <span class="v mono">{fmtBytes(stats?.memory_bytes)}</span>
       {#if ratio != null}
-        <div class="bar"><div class="fill" style="width:{Math.round(ratio * 100)}%"></div></div>
+        <div class="bar" aria-label={`記憶體使用率 ${Math.round(ratio * 100)}%`}>
+          <div class="fill" style="width:{Math.round(ratio * 100)}%"></div>
+        </div>
       {/if}
     </div>
     <div class="metric">
       <span class="k">磁碟</span>
-      <span class="v">{fmtBytes(diskBytes)}</span>
+      <span class="v mono">{fmtBytes(diskBytes)}</span>
     </div>
     <div class="metric">
       <span class="k">玩家</span>
-      <span class="v">{fmtPlayers(players)} <span class="online muted">{fmtOnline(online)}</span></span>
+      <span class="v mono">{fmtPlayers(players)} <span class="online">{fmtOnline(online)}</span></span>
     </div>
   </div>
 
-  <div class="actions wrap">
-    {#if running}
-      <button class="sm" on:click={() => act('stop', () => StopInstance(inst.uuid))} disabled={!!busy}
-        >{busy === 'stop' ? '停止中…' : '停止'}</button
-      >
-      <button class="sm" on:click={() => act('restart', () => RestartInstance(inst.uuid))} disabled={!!busy}
-        >{busy === 'restart' ? '重啟中…' : '重啟'}</button
-      >
-    {:else}
-      <button
-        class="sm primary"
-        on:click={() => act('start', () => StartInstance(inst.uuid))}
-        disabled={!!busy}>{busy === 'start' ? '啟動中…' : '啟動'}</button
-      >
-    {/if}
-    <button class="sm" on:click={() => dispatch('console', inst.uuid)} disabled={!!busy}>主控台</button>
-    <button class="sm danger" on:click={openRemoveConfirm} disabled={!!busy}>移除</button>
+  <div class="actions">
+    <div class="lifecycle-actions">
+      {#if running}
+        <button class="sm" on:click={() => act('stop', () => StopInstance(inst.uuid))} disabled={!!busy}>
+          <Icon name="stop" size={13} />
+          <span>{busy === 'stop' ? '停止中…' : '停止'}</span>
+        </button>
+        <button class="sm" on:click={() => act('restart', () => RestartInstance(inst.uuid))} disabled={!!busy}>
+          <Icon name="restart" size={14} />
+          <span>{busy === 'restart' ? '重啟中…' : '重啟'}</span>
+        </button>
+      {:else}
+        <button
+          class="sm primary"
+          on:click={() => act('start', () => StartInstance(inst.uuid))}
+          disabled={!!busy}
+        >
+          <Icon name="play" size={13} />
+          <span>{busy === 'start' ? '啟動中…' : '啟動'}</span>
+        </button>
+      {/if}
+      <button class="sm" on:click={() => dispatch('console', inst.uuid)} disabled={!!busy}>
+        <Icon name="terminal" size={14} />
+        <span>主控台</span>
+      </button>
+    </div>
+    <button class="sm danger remove" on:click={openRemoveConfirm} disabled={!!busy} aria-label={`移除 ${inst.uuid}`}>
+      <Icon name="trash" size={14} />
+      <span>移除</span>
+    </button>
   </div>
-</div>
+</article>
 
 {#if confirmRemove}
   <Modal title="移除實例" on:close={() => (confirmRemove = false)}>
     <p class="msg">確定移除 {inst.uuid}?</p>
     <div class="checkbox-row">
-      <input id="purge-chk" type="checkbox" bind:checked={purgeOnRemove} disabled={removing} />
-      <label for="purge-chk" style="margin:0">同時刪除伺服器資料與備份(data 與 backups,無法復原)</label>
+      <input id={`purge-${inst.uuid}`} type="checkbox" bind:checked={purgeOnRemove} disabled={removing} />
+      <label for={`purge-${inst.uuid}`}>同時刪除伺服器資料與備份(data 與 backups,無法復原)</label>
     </div>
     <div class="hint" style="margin-top:6px">
       {purgeOnRemove
@@ -167,62 +195,165 @@
 
 <style>
   .instance {
+    position: relative;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 15px;
+    min-width: 0;
+    overflow: hidden;
+    border-left-width: 3px;
   }
-  .name {
-    font-size: 14px;
-    font-weight: 600;
-    word-break: break-all;
+
+  .instance.ok { border-left-color: var(--ok); }
+  .instance.busy { border-left-color: var(--busy); }
+  .instance.err { border-left-color: var(--err); }
+  .instance.idle { border-left-color: var(--idle); }
+  .instance.off { border-left-color: var(--off); }
+
+  .top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
   }
-  .sub {
-    font-size: 12px;
-    margin-top: 2px;
+
+  .template-name {
+    color: var(--fg-0);
+    font-size: 16px;
+    font-weight: 700;
+    line-height: 1.2;
+    text-transform: capitalize;
   }
+
+  .variant {
+    margin-top: 3px;
+    color: var(--fg-2);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .identity-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px 11px;
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+  }
+
+  .identity-grid > div {
+    min-width: 0;
+  }
+
+  .identity-label {
+    display: block;
+    margin-bottom: 3px;
+    color: var(--fg-3);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+  }
+
+  .identity-value {
+    display: block;
+    overflow: hidden;
+    color: var(--fg-1);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .metrics {
     display: grid;
     grid-template-columns: repeat(2, 1fr);
-    gap: 10px 16px;
+    border-top: 1px solid var(--line);
+    border-left: 1px solid var(--line);
   }
+
   .metric {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    min-height: 68px;
+    gap: 4px;
+    padding: 10px 11px;
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
   }
+
   .metric .k {
-    font-size: 11px;
-    color: var(--fg-2);
+    color: var(--fg-3);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
   }
+
   .metric .v {
-    font-size: 14px;
-    font-variant-numeric: tabular-nums;
+    color: var(--fg-0);
+    font-size: 15px;
+    font-weight: 600;
   }
+
   .online {
+    margin-left: 3px;
+    color: var(--fg-3);
     font-size: 11px;
   }
+
   .bar {
-    height: 4px;
+    height: 3px;
     background: var(--bg-3);
-    border-radius: 2px;
-    margin-top: 3px;
+    margin-top: 2px;
     overflow: hidden;
   }
+
   .fill {
     height: 100%;
     background: var(--accent);
   }
+
   .msg {
     margin: 0 0 14px;
     color: var(--fg-1);
     white-space: pre-wrap;
+    word-break: break-word;
   }
+
   .actions {
     display: flex;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 18px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 1px;
+  }
+
+  .lifecycle-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .actions button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .remove {
+    flex: none;
+    margin-left: auto;
+  }
+
+  @media (max-width: 430px) {
+    .actions {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .remove {
+      margin-left: 0;
+    }
   }
 </style>

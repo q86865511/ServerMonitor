@@ -55,18 +55,20 @@
 <div class="app">
   <Sidebar />
   <main class="content">
-    <NodeBanner />
-    {#if $currentView === 'instances'}
-      <InstanceList
-        on:create={() => (showCreate = true)}
-        on:console={(e) => (consoleUuid = e.detail)}
-        on:changed={() => refresh(false)}
-      />
-    {:else if $currentView === 'events'}
-      <EventsView />
-    {:else if $currentView === 'settings'}
-      <SettingsView />
-    {/if}
+    <div class="content-inner">
+      <NodeBanner />
+      {#if $currentView === 'instances'}
+        <InstanceList
+          on:create={() => (showCreate = true)}
+          on:console={(e) => (consoleUuid = e.detail)}
+          on:changed={() => refresh(false)}
+        />
+      {:else if $currentView === 'events'}
+        <EventsView />
+      {:else if $currentView === 'settings'}
+        <SettingsView />
+      {/if}
+    </div>
   </main>
 </div>
 
@@ -84,12 +86,23 @@
   .app {
     display: flex;
     height: 100vh;
+    background: var(--bg-0);
     text-align: left;
   }
   .content {
     flex: 1;
     min-width: 0;
     overflow-y: auto;
-    padding: 22px 26px;
+  }
+  .content-inner {
+    width: 100%;
+    max-width: 1480px;
+    min-height: 100%;
+    padding: 24px 26px 34px;
+  }
+  @media (max-width: 820px) {
+    .content-inner {
+      padding: 20px 18px 28px;
+    }
   }
 </style>

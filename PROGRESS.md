@@ -2,10 +2,12 @@
 
 ## 目前狀態
 
-**🏁 game-server-manager 16/16 全數完成**(規格 rev.3)。三條真機 E2E 通過:Minecraft 全流程(建立→rcon 真就緒→監控→list→備份→還原→移除,706s)、重啟對帳接管、Palworld REST(認證就緒探測+players 動作,284s);效能基準回填 design.md(閒置 ~18MB,每實例 +5.4MB);文件完稿(README 快速開始/範本指南/版本鎖定/spike 索引)。**唯一留給使用者:GUI 視窗真機一輪**(功能等價流程已由 E2E 程式化驗證)。次期候選:NativeBackend(免 Docker)、動態埠、Email 告警。
+**🏁 game-server-manager 16/16 全數完成**(規格 rev.3)。三條真機 E2E 通過:Minecraft 全流程(建立→rcon 真就緒→監控→list→備份→還原→移除,706s)、重啟對帳接管、Palworld REST(認證就緒探測+players 動作,284s);效能基準回填 design.md(閒置 ~18MB,每實例 +5.4MB);文件完稿(README 快速開始/範本指南/版本鎖定/spike 索引);**GUI 視窗真機驗收已通過**。次期候選:NativeBackend(免 Docker)、動態埠、Email 告警。
 
 ## 已完成
 
+- [2026-07-16] 🎨 R1 Graphite Ops GUI 現代化改版:全前端重構為石墨黑/暖白/琥珀桌面控制台，完成 184px SVG 導覽、控制室實例卡、事件工具列/表格、設定工作區、分欄建立精靈、終端主控台、系統狀態列與響應式版面；移除 Emoji/Unicode 圖示並補 Modal 焦點循環/復原、Toast `aria-live`、表單語意，`svelte-check` 由 6 warning 收斂至 0 error/0 warning。Vite production build、`go test ./...`、Wails v2.13 build 全綠；瀏覽器驗證 1024×768/800×640 無水平溢出，正式 `.exe` 實機擷取確認新 UI 非黑屏，正常關閉後程序與 `gsm.lock` 均釋放，`build/bin/templates/` 保留完整。
+- [2026-07-16] 🐛 R1 修復 `.exe` GUI 黑屏:Svelte 5 元件為函式,舊入口仍以 `new App(...)` 建構而在執行期中止;改用官方 `mount(App,{target})`。`svelte-check` 0 error/原有 6 warning、Vite production build、`go test ./...`、Wails v2.13 production build 全綠;實際啟動新版 `.exe` 驗證側邊欄/實例頁正常渲染、Docker backend 建立失敗時顯示「節點離線」與重試按鈕,正常關閉後程序與 `gsm.lock` 均釋放。
 - [2026-07-16] 🏁 R1 實作 T16+雙審修正+16/16 收官(/pipeline):E2E(Minecraft 全流程/重啟對帳/Palworld REST)、效能基準回填、文件完稿。雙審 8 成立全修:**Minecraft 就緒探針 tcp→rcon**(Docker proxy 假陽性,真產品 bug)、**Palworld rest 探針帶認證**(health 加 action_id 經 CommandService,原裸 GET 對全認證 API 永遠失敗——15 分逾時實測抓到)、**palworld 映像 tag 2.5.1→v2.5.1**(Hub 命名帶 v,pull 實測抓到)、NodeClient 逾時分級(Stop 90s/備份還原 30min)、perf 測試 atomic+緩衝、E2E 失敗路徑清理、README REST 欄位/wails 鎖版。全部修正由真機 E2E 或單元測試實證關閉。
 - [2026-07-15] 🚀 R1 實作 T15+雙審修正(/pipeline):**波1** `internal/app` 生產組裝(bootstrap 全元件接線/CrashHook 組合接 INSTANCE_CRASHED 告警/journal 目錄與 loopback 斷言/優雅關閉)+25 Wails bindings+`logs:/stats:` 事件推送;**波2** Svelte 六子項(卡片/建立精靈/主控台/排程備份告警/事件檢視/錯誤矩陣)。雙審 11 成立全修:registry 委派 dialer(解 nil panic+RetryDocker 舊連線)、Palworld REST 主控台(Capability DTO+動作下拉)、關閉收束(rootCtx+inflight 排空+readEvents closeOnCancel 解死鎖)、前端數值綁定字串化、Remove 埠失敗中止+機密鍵清單持久化、OnlineProber 適配、訂閱競態/輪詢序號/purge 勾選。聚焦複審 11 項全關閉。GUI 真機一輪待使用者。
 - [2026-07-15] 🚀 R1 實作 T12+T13+雙審修正(/pipeline):**T12** BackupService(planned-stop 一致快照→原 desired 收斂、RetentionPolicy N=7 經 BackupDeleter 鏈+DELETE 端點、op-journal 獨立於建立 journal、RecoverInterrupted 掛鉤);**T13** AlertDispatcher(AlertSink 生產實作、dedup cooldown)+DiscordWebhookChannel(429 Retry-After/5xx/4xx 策略)+ThresholdMonitor(60s 窗口/遲滯/邊緣觸發)。雙審 11 成立全修:backupID 路徑遍歷雙層防禦(server 400+backend 容器斷言+findBackup 同補)、RecoverInterrupted 失敗保留 journal、收斂改依 desired(stopLocked 污染前擷取)、事件語意去矛盾、journal 記 newRuntimeID 認養、空清單不修剪、alertDispatchTimeout=90s、dedup 成功才佔 cooldown、Retry-After 小數/HTTP-date、URL 不洩漏、dedup 惰性清理。聚焦複審 11 項全關閉;真 Docker 全整合(backup→刪最舊→restore 迴圈 PASS)。中途兩代理撞用量上限,SendMessage 原地續跑完成。
@@ -20,13 +22,12 @@
 
 ## 進行中
 
-(無——pipeline 16/16 收官;等使用者 GUI 視窗真機一輪實測回報)
+(無——pipeline 16/16 收官，GUI 視窗真機驗收已通過)
 
 ## 待辦
 
 > 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
-- [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:NativeBackend(SteamCMD 免 Docker,R4 縫已留)、動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證
 - [ ] 打包:`wails build` 不自動隨附 `templates/`(exe 找「執行檔目錄/templates」);發佈需複製隨附或改 go:embed(本機 build/bin 已手動補)
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
