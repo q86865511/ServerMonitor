@@ -24,14 +24,12 @@
 
 ## 待辦
 
-> 完整任務見 `specs/game-server-manager/tasks.md`(16 項)。**T1–T8 已完成。** 近期:
+> 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:NativeBackend(SteamCMD 免 Docker,R4 縫已留)、動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證
 - [ ] 打包:`wails build` 不自動隨附 `templates/`(exe 找「執行檔目錄/templates」);發佈需複製隨附或改 go:embed(本機 build/bin 已手動補)
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
-- [ ] (餘)T12 備份/還原、T13 告警、T14 模組+spike(含模組 spike)、T15 GUI、T16 E2E/文件
-- [ ] (審查遺留 J)T15/T16 組裝時:production listener 必須綁 127.0.0.1 並斷言(目前僅提供 Handler(),無監聽保證)
 
 ## 已知問題
 
