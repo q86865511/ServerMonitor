@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -84,6 +85,34 @@ func NewHealthProber(cfg ProberConfig) *HealthProber {
 }
 
 var _ ReadinessProber = (*HealthProber)(nil)
+
+// errInstanceNotOnline 表示線上探針判定實例未就緒/存活(HealthProber.Ready 回 false 但無錯誤)。
+var errInstanceNotOnline = errors.New("core: 實例線上探針判定未就緒")
+
+// healthOnlineProber 以 HealthProber 適配 MonitorHub 所需的 OnlineProber(T15 雙審 #10):把
+// Ready(ctx, node, uuid)(bool, error) 轉為 Probe(ctx, tmpl, rec) error 契約——就緒回 nil、未就緒
+// 回 errInstanceNotOnline、探測錯誤原樣回傳。MonitorHub 僅於範本定義了 [health] 時呼叫本探針,
+// 故此處不重複 nil/health 判斷(見 MonitorHub.probeOnline)。
+type healthOnlineProber struct{ prober *HealthProber }
+
+// NewHealthOnlineProber 以 HealthProber 建立 MonitorHub 用的 OnlineProber(供 Bootstrap 注入,
+// 取代先前恆 nil 導致線上維度永遠「不適用」的佔位)。
+func NewHealthOnlineProber(prober *HealthProber) OnlineProber {
+	return healthOnlineProber{prober: prober}
+}
+
+func (a healthOnlineProber) Probe(ctx context.Context, _ *protocol.GameTemplate, rec InstanceRecord) error {
+	ok, err := a.prober.Ready(ctx, rec.Node, rec.UUID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return errInstanceNotOnline
+	}
+	return nil
+}
+
+var _ OnlineProber = healthOnlineProber{}
 
 // Ready 實作 ReadinessProber:解析實例範本的 [health] 並依 kind 探測。範本未載入或
 // 未定義 [health]→退回容器 running 檢查(與 runningProber 一致)。探測失敗回 (false, err),

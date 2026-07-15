@@ -662,8 +662,46 @@ func (l storeInstanceLookup) Lookup(uuid string) (InstanceRecord, *protocol.Game
 	return rec, tmpl, nil
 }
 
+// registryStreamDialer 是委派 NodeRegistry 的 StreamDialer:每次串流呼叫都自 registry 取「當前」
+// 節點 NodeClient(而非建構時固定注入的一份),藉此一次解決兩個問題(T15 雙審 #1):
+//
+//	(a) 離線啟動時代理尚未建立,不再需要把 nil client 注入 MonitorHub(避免 stats/logs goroutine
+//	    對 nil 撥號 deref);registry 已註冊佔位 client,撥號自然失敗回 ErrNodeUnreachable。
+//	(b) RetryDocker 重建代理後以新 client 覆蓋 registry 登錄,MonitorHub 下一次(重連)撥號即
+//	    自動改用新連線,無需重啟應用。
+//
+// registry 尚無登錄(未註冊)時回 ErrNodeUnreachable 包裝,交 MonitorHub 既有退避重連。
+type registryStreamDialer struct {
+	registry *NodeRegistry
+	node     string
+}
+
+// NewRegistryStreamDialer 建立委派 registry 的 StreamDialer(供單機 MonitorHub 注入)。
+func NewRegistryStreamDialer(registry *NodeRegistry, node string) StreamDialer {
+	return registryStreamDialer{registry: registry, node: node}
+}
+
+func (d registryStreamDialer) StatsWS(ctx context.Context, uuid string) (*websocket.Conn, error) {
+	c, err := d.registry.Client(d.node)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+	}
+	return c.StatsWS(ctx, uuid)
+}
+
+func (d registryStreamDialer) LogsWS(ctx context.Context, uuid string) (*websocket.Conn, error) {
+	c, err := d.registry.Client(d.node)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+	}
+	return c.LogsWS(ctx, uuid)
+}
+
 // 確保 *NodeClient 滿足 StreamDialer(單機直接注入)。
 var _ StreamDialer = (*NodeClient)(nil)
+
+// 確保 registryStreamDialer 滿足 StreamDialer。
+var _ StreamDialer = registryStreamDialer{}
 
 // 確保 *CommandService 滿足 CommandSender。
 var _ CommandSender = (*CommandService)(nil)

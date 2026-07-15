@@ -130,6 +130,14 @@ func (s *Store) SetSetting(key, value string) error {
 	return nil
 }
 
+// DeleteSetting 刪除一個設定鍵(冪等:不存在視為成功)。
+func (s *Store) DeleteSetting(key string) error {
+	if _, err := s.db.Exec(`DELETE FROM settings WHERE key = ?`, key); err != nil {
+		return fmt.Errorf("刪除設定 %s 失敗: %w", key, err)
+	}
+	return nil
+}
+
 // GetSetting 讀取一個設定;第二回傳值表示鍵是否存在。
 func (s *Store) GetSetting(key string) (string, bool, error) {
 	var value string

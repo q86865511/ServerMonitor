@@ -133,6 +133,10 @@ type InstanceService struct {
 	// hookAfterAgentCreate 是測試縫:於代理成功建容器後注入失敗,以驗證「已建容器」
 	// 階段失敗的回滾(移除孤兒容器)。生產環境恆為 nil。
 	hookAfterAgentCreate func(uuid string) error
+
+	// releasePortsHook 是測試縫:注入 Remove 期間「釋放埠預留」失敗,以驗證失敗中止語意
+	// (T15 雙審 #6:回錯誤、保留 DB 列)。生產環境恆為 nil(走 store.ReleasePortsForInstance)。
+	releasePortsHook func(uuid string) error
 }
 
 // InstanceServiceConfig 是 InstanceService 的建構參數。
@@ -297,6 +301,11 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 		return InstanceRecord{}, fmt.Errorf("寫入實例紀錄失敗: %w", uerr)
 	}
 
+	// 6b. 持久化本實例實際寫入的金鑰庫鍵清單,供 Remove 不依賴「範本仍載入」即可清理機密
+	//     (範本檔可能於實例存活期間被使用者刪除;金鑰庫無法列舉,故以 DB 清單記帳)。best-effort:
+	//     寫入失敗只使 Remove 退回範本推導,不阻擋建立。
+	s.persistSecretKeys(uuid, secretsWritten)
+
 	// 7. 清 journal;完成。
 	if jerr := s.journal.Complete(uuid); jerr != nil {
 		// 已落 DB,journal 殘留只會讓對帳多做一次無害檢查;不視為建立失敗。
@@ -317,6 +326,139 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 		DetailsJSON:  mustJSON(map[string]string{"runtime_id": string(runtimeID)}),
 	})
 	return rec, nil
+}
+
+// EventInstanceRemoved 標記實例已被移除(補充事件碼,非 protocol 必備集;沿用
+// EventConfigRecovered/EventHookFailed 的「補充碼定義於 core」慣例)。
+const EventInstanceRemoved protocol.EventCode = "INSTANCE_REMOVED"
+
+// Remove 移除一個實例:經代理刪容器(purge 決定是否連同 data/backups 一併刪)、釋放埠預留、
+// 刪除其金鑰庫機密、刪 DB 記錄,並記 INSTANCE_REMOVED。與 Create 的資源清理對稱。
+//
+// 呼叫端(Runtime.RemoveInstance)須先(若在執行)優雅停機;本方法只負責資源回收,不做生命週期
+// 停機編排。代理回報查無容器(ErrNodeNotFound)視為已移除、不阻擋後續清理。節點不可達則回錯誤
+// 且不刪 DB(避免留下無主容器)。
+//
+// T15 雙審 #6:埠釋放失敗→中止並回錯誤(保留 DB 列供重試,避免埠預留洩漏後無從回收);
+// 機密清理不依賴範本(改讀建立時持久化的鍵清單,範本已刪仍可清),刪除失敗只記事件、不中止
+// (金鑰庫暫時性錯誤不應阻擋移除)。
+func (s *InstanceService) Remove(ctx context.Context, uuid string, purge bool) error {
+	rec, err := s.store.GetInstance(uuid)
+	if err != nil {
+		return err
+	}
+	// 1) 刪容器(冪等:查無視為已移除)。節點不可達→中止,不刪 DB。
+	rerr := s.registry.Call(rec.Node, func(c *NodeClient) error {
+		return c.Remove(ctx, uuid, purge)
+	})
+	if rerr != nil && !errors.Is(rerr, ErrNodeNotFound) {
+		return fmt.Errorf("移除容器失敗: %w", rerr)
+	}
+	// 2) 釋放埠預留:失敗→中止,保留 DB 列供重試(下次 Remove 的容器移除冪等,可安全重跑)。
+	if perr := s.releasePortsForRemoval(uuid); perr != nil {
+		return fmt.Errorf("釋放埠預留失敗: %w", perr)
+	}
+	// 3) 刪機密(不依賴範本:優先讀持久化鍵清單)。刪除失敗累計後記事件、不中止。
+	var secretErrs []string
+	for _, key := range s.secretKeysForRemoval(uuid, rec.TemplateID) {
+		if derr := s.secrets.Delete(protocol.SecretRef{Key: key}); derr != nil {
+			secretErrs = append(secretErrs, key)
+		}
+	}
+	// 清除持久化的鍵清單設定本身(冪等;無清單亦為 no-op)。
+	_ = s.store.DeleteSetting(secretKeysSettingKey(uuid))
+	// 4) 刪 DB 記錄。
+	if derr := s.store.DeleteInstance(uuid); derr != nil {
+		return fmt.Errorf("刪除實例記錄失敗: %w", derr)
+	}
+	sev := protocol.SeverityInfo
+	details := map[string]any{"purge": purge}
+	if len(secretErrs) > 0 {
+		// 機密殘留:記為警告並列出未能刪除的鍵(金鑰庫暫時性錯誤,不阻擋移除)。
+		sev = protocol.SeverityWarning
+		details["secret_cleanup_failed"] = secretErrs
+	}
+	s.recordEvent(protocol.Event{
+		Code:         EventInstanceRemoved,
+		Severity:     sev,
+		InstanceUUID: strPtr(uuid),
+		Node:         strPtr(rec.Node),
+		TemplateID:   strPtr(rec.TemplateID),
+		DetailsJSON:  mustJSON(details),
+	})
+	return nil
+}
+
+// releasePortsForRemoval 釋放實例埠預留(可經 releasePortsHook 測試縫注入失敗)。
+func (s *InstanceService) releasePortsForRemoval(uuid string) error {
+	if s.releasePortsHook != nil {
+		return s.releasePortsHook(uuid)
+	}
+	return s.store.ReleasePortsForInstance(uuid)
+}
+
+// secretKeysSettingPrefix 是 DB settings 表中「實例已寫入金鑰庫鍵清單」設定鍵的前綴。
+const secretKeysSettingPrefix = "secretkeys:"
+
+// secretKeysSettingKey 回傳一實例機密鍵清單的 settings 鍵。
+func secretKeysSettingKey(uuid string) string { return secretKeysSettingPrefix + uuid }
+
+// persistSecretKeys 把一實例實際寫入金鑰庫的鍵(已含 UUID 命名空間)以 JSON 陣列持久化到
+// settings,供 Remove 不依賴範本即可清理。空清單不寫(Remove 時無設定即退回範本推導)。
+func (s *InstanceService) persistSecretKeys(uuid string, refs []protocol.SecretRef) {
+	if len(refs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		keys = append(keys, ref.Key)
+	}
+	data, err := json.Marshal(keys)
+	if err != nil {
+		return
+	}
+	_ = s.store.SetSetting(secretKeysSettingKey(uuid), string(data))
+}
+
+// secretKeysForRemoval 回傳移除一實例時要刪除的金鑰庫鍵(已含 UUID 命名空間)。優先取建立時
+// 持久化的清單(不依賴範本仍載入);清單不存在(舊實例或建立前之版本)才退回依範本推導的鍵集合
+// (需範本仍載入,否則回空——已無從得知,交由不中止語意接受殘留)。
+func (s *InstanceService) secretKeysForRemoval(uuid, templateID string) []string {
+	if raw, ok, err := s.store.GetSetting(secretKeysSettingKey(uuid)); err == nil && ok {
+		var keys []string
+		if json.Unmarshal([]byte(raw), &keys) == nil {
+			return keys
+		}
+	}
+	tmpl, ok := s.engine.Get(templateID)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0)
+	for _, key := range instanceSecretKeysToRemove(tmpl) {
+		out = append(out, instanceSecretKey(uuid, key))
+	}
+	return out
+}
+
+// instanceSecretKeysToRemove 回傳移除實例時要一併刪除的金鑰庫鍵集合:範本宣告的 [[secrets]].key
+// 與必填密碼 ref 的聯集(去重)。Delete 冪等,故涵蓋未實際寫入者亦無害。
+func instanceSecretKeysToRemove(tmpl *protocol.GameTemplate) []string {
+	seen := make(map[string]bool)
+	for _, sp := range tmpl.Secrets {
+		if sp.Key != "" {
+			seen[sp.Key] = true
+		}
+	}
+	for _, k := range requiredSecretKeys(tmpl) {
+		seen[k] = true
+	}
+	keys := make([]string, 0, len(seen))
+	for k := range seen {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // rollbackState 記錄建立過程已完成、需回滾的階段。

@@ -12,8 +12,9 @@ import (
 // Windows Credential Manager。Get 查無時回傳 keyring.ErrNotFound,
 // 以驗證 SecretStore 對「查無」的映射。
 type memoryKeyring struct {
-	mu sync.Mutex
-	m  map[string]string
+	mu        sync.Mutex
+	m         map[string]string
+	deleteErr error // 非 nil 時 Delete 回此錯誤(測試機密刪除失敗路徑)
 }
 
 func newMemoryKeyring() *memoryKeyring {
@@ -44,6 +45,9 @@ func (k *memoryKeyring) Get(service, user string) (string, error) {
 func (k *memoryKeyring) Delete(service, user string) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.deleteErr != nil {
+		return k.deleteErr
+	}
 	kk := k.key(service, user)
 	if _, ok := k.m[kk]; !ok {
 		return keyring.ErrNotFound

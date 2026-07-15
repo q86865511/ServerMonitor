@@ -360,7 +360,12 @@ func (o *Orchestrator) dialEvents(ctx context.Context, node string, since protoc
 }
 
 // readEvents 迴圈讀取事件並分派,更新 since 游標;讀取錯誤(斷線)回傳供上層退避重連。
+// closeOnCancel 使 ctx 取消時立即關閉 conn 以中斷阻塞中的 ReadJSON——否則 ReadJSON 會阻塞至
+// 對端送出訊息或連線斷開,導致 RunEventLoop 無法於 cancel 後及時返回(關閉時的 loopWg.Wait 會卡住,
+// T15 雙審 #3)。
 func (o *Orchestrator) readEvents(ctx context.Context, node string, conn *websocket.Conn, since *protocol.Cursor) error {
+	stop := closeOnCancel(ctx, conn)
+	defer stop()
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -548,6 +553,11 @@ func (o *Orchestrator) markGiveup(uuid string) {
 	}
 	_ = o.forceObserved(&rec, protocol.InstanceStateError)
 }
+
+// MarkGiveup 是 markGiveup 的匯出包裝,供跨套件接線(如 app.Bootstrap 的
+// RestartPolicy.SetRestart(orch.Start, orch.MarkGiveup))使用。契約與 markGiveup 相同:
+// 只可經 RestartPolicy 的 after 於 per-instance lock 之外派發,切勿於持鎖路徑同步呼叫。
+func (o *Orchestrator) MarkGiveup(uuid string) { o.markGiveup(uuid) }
 
 // runStopHook best-effort 執行 hooks.stop:無 hook 或成功→無事;失敗→記 HOOK_FAILED 警告事件,
 // 不回傳錯誤(不阻擋停止流程,R3)。

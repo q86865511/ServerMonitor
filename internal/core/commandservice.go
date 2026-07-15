@@ -85,6 +85,17 @@ func (s *CommandService) RunStopHook(ctx context.Context, uuid string) error {
 	return serr
 }
 
+// Capability 回傳實例「啟用中」指令協定(第一個非 legacy),供 GUI 主控台決定渲染方式
+// (rcon 自由輸入 / rest 具名動作 / 停用)。範本無可用協定→ErrCommandNotEnabled;實例或範本
+// 查無→對應錯誤。不送出任何指令,純解析。
+func (s *CommandService) Capability(uuid string) (protocol.CommandProtocol, error) {
+	_, tmpl, err := s.resolveInstance(uuid)
+	if err != nil {
+		return protocol.CommandProtocol{}, err
+	}
+	return activeProtocol(tmpl)
+}
+
 // ---- 內部 ----
 
 // resolveInstance 取實例記錄與其(已載入)範本。

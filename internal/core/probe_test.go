@@ -110,6 +110,42 @@ func TestHealthProber_DockerRunning(t *testing.T) {
 	}
 }
 
+// ---- OnlineProber 適配器(T15 雙審 #10)----
+
+// TestHealthOnlineProber_Adapts 驗證 HealthProber→OnlineProber 適配器把 Ready 結果轉為
+// Probe 契約:健康→nil、不健康→非 nil。經真實 tcp 探針(埠開/關)驅動,涵蓋 MonitorHub 注入路徑。
+func TestHealthOnlineProber_Adapts(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	port := lis.Addr().(*net.TCPAddr).Port
+
+	env := newT11Env(t, map[string]string{"tcphealth": tcpHealthTemplate(port)}, false)
+	rec := InstanceRecord{
+		UUID: "on-1", TemplateID: "tcphealth", Node: "local",
+		ObservedState: protocol.InstanceStateRunning,
+	}
+	if err := env.store.UpsertInstance(rec); err != nil {
+		t.Fatalf("UpsertInstance: %v", err)
+	}
+	tmpl, _ := env.eng.Get("tcphealth")
+
+	prober := NewHealthProber(ProberConfig{Store: env.store, Engine: env.eng, Registry: env.reg})
+	online := NewHealthOnlineProber(prober)
+
+	// 埠開放:適配器應回 nil(線上)。
+	if perr := online.Probe(context.Background(), tmpl, rec); perr != nil {
+		t.Fatalf("埠開放時 Probe 應回 nil(線上),得 %v", perr)
+	}
+
+	// 埠關閉:適配器應回非 nil(離線)。
+	_ = lis.Close()
+	if perr := online.Probe(context.Background(), tmpl, rec); perr == nil {
+		t.Fatal("埠關閉時 Probe 應回非 nil(離線),得 nil")
+	}
+}
+
 // ---- 探針:tcp(撥宿主埠)----
 
 func TestHealthProber_TCP(t *testing.T) {

@@ -4,7 +4,15 @@
 
 ## 狀態
 
-實作進行中(/pipeline)。規格 rev.3 已核可(見 `specs/game-server-manager/`)。**後端全部完成(T1–T14,14/16)**:共享型別、持久化(SQLite)、Docker 執行後端、節點代理 HTTP/WS API、管理核心、狀態機/生命週期/啟動對帳、RCON 與 Palworld REST 指令、監控聚合(stats/logs 串流+背壓)、健康探針與自動崩潰復原、UTC 排程、備份/還原(停機一致快照+保留策略+crash-safe journal)、Discord 告警(門檻/去重/重試)、itzg 模組包、內建 Minecraft/Palworld 範本(build / test / -race / 真 Docker 整合測試皆綠)。剩桌面 GUI(T15)與端到端+文件(T16)。
+實作進行中(/pipeline,15/16)。規格 rev.3 已核可(見 `specs/game-server-manager/`)。**後端(T1–T14)與桌面 GUI(T15)完成**:完整生命週期/監控/指令/排程/備份/告警後端 + Wails 桌面介面(實例卡片、建立精靈、主控台(RCON 與 Palworld REST 動作)、排程/備份/告警設定、事件檢視)。build / test / -race / 真 Docker 整合 / svelte-check 皆綠。剩端到端驗證+效能基準+文件(T16)。
+
+## 快速開始(使用者)
+
+1. 開啟 Docker Desktop(必要)。
+2. 執行 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。
+3. 「建立伺服器」→ 選 Minecraft → 變體 Paper → 勾 EULA → 設 RCON 密碼 → 建立(首次拉映像需數分鐘)。
+4. 卡片「啟動」→ 開「主控台」看 log、輸入 `list` 測指令 → 設定頁玩備份/排程/告警。
+5. 遊戲連線:`localhost:25565`。應用資料在 `%LOCALAPPDATA%\ServerMonitor\`;**關閉本工具不會停伺服器**(容器由 Docker 維持,重開自動接管)。
 
 ## 特色(規劃中)
 
