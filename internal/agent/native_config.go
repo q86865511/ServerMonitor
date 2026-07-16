@@ -19,9 +19,14 @@ import (
 // 使檔案位元組穩定(便於還原比對與測試斷言)。值格式化(如 Palworld 字串加引號)由參數值本身承載,
 // 編碼器不臆測型別。
 
-// writeConfigFile 依 cm.Format 選編碼器,把 env 中對應的參數值寫入實例根下的 cm.File。
-func writeConfigFile(instanceRoot string, cm protocol.NativeConfigMap, env map[string]string) error {
-	pairs := resolveConfigPairs(cm.Map, env)
+// writeConfigFile 依 cm.Format 選編碼器,把 env 中對應的參數值(cm.Map)與固定/衍生值(cm.Set,
+// 展開 {port:<name>} token)寫入實例根下的 cm.File。ports 供 Set 的埠 token 展開(native 無 docker
+// 埠映射,伺服器須自 server.properties/ini 綁到與探針一致的埠)。
+func writeConfigFile(instanceRoot string, cm protocol.NativeConfigMap, env map[string]string, ports []protocol.PortBinding) error {
+	pairs, err := resolveConfigPairs(cm.Map, cm.Set, env, ports)
+	if err != nil {
+		return err
+	}
 	path := filepath.Join(instanceRoot, filepath.FromSlash(cm.File))
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建立設定檔目錄失敗: %w", err)
@@ -47,16 +52,41 @@ type configPair struct {
 	value string
 }
 
-// resolveConfigPairs 把 paramKey→configKey 映射與 env 值解析為 (configKey,value) 清單,依 configKey 排序。
-func resolveConfigPairs(m map[string]string, env map[string]string) []configPair {
-	pairs := make([]configPair, 0, len(m))
+// resolveConfigPairs 合併兩個來源為 (configKey,value) 清單並依 configKey 排序:
+//   - m(paramKey→configKey):由 env 取值,只有 env 存在的 paramKey 才落檔(未提供者交伺服器預設)。
+//   - set(configKey→字面值/{port:<name>} token):固定/衍生值,埠 token 以 ports 展開。
+//
+// 同一 configKey 同時來自 m 與 set 時,set 覆蓋(native 執行必需值優先於使用者參數,如埠)。
+func resolveConfigPairs(m, set map[string]string, env map[string]string, ports []protocol.PortBinding) ([]configPair, error) {
+	byKey := make(map[string]string, len(m)+len(set))
 	for paramKey, configKey := range m {
 		if v, ok := env[paramKey]; ok {
-			pairs = append(pairs, configPair{key: configKey, value: v})
+			byKey[configKey] = v
 		}
 	}
+	if len(set) > 0 {
+		portByName := make(map[string]int, len(ports))
+		for _, p := range ports {
+			hp := p.HostPort
+			if hp == 0 {
+				hp = p.Container
+			}
+			portByName[p.Name] = hp
+		}
+		for configKey, raw := range set {
+			v, err := expandPortTokens(raw, portByName)
+			if err != nil {
+				return nil, fmt.Errorf("設定 %q 的值展開失敗: %w", configKey, err)
+			}
+			byKey[configKey] = v
+		}
+	}
+	pairs := make([]configPair, 0, len(byKey))
+	for k, v := range byKey {
+		pairs = append(pairs, configPair{key: k, value: v})
+	}
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].key < pairs[j].key })
-	return pairs
+	return pairs, nil
 }
 
 // encodeProperties 編碼為 server.properties(configKey=value 逐行,LF 換行)。

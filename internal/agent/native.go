@@ -278,9 +278,19 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		return "", err
 	}
 
-	// 設定檔(params→server.properties / palworld-ini,由 spec.Env 取值)。
+	// 設定檔(params→server.properties / palworld-ini,由 spec.Env 取值;Set 的固定/衍生值
+	// 以 spec.Ports 展開埠 token——native 無 docker 埠映射,server-port/rcon.port 須綁與探針一致)。
 	for _, cm := range spec.Native.Config {
-		if err := writeConfigFile(workDir, cm, spec.Env); err != nil {
+		if err := writeConfigFile(workDir, cm, spec.Env, spec.Ports); err != nil {
+			return "", err
+		}
+	}
+
+	// Forge/NeoForge:啟動經 installer 產出的 run.bat 讀 user_jvm_args.txt(無單一 server jar,故
+	// 範本的 -Xmx{memory_mb}M -jar {server_jar} 形式不適用);把記憶體上限注入該 args 檔(R7/R9 的
+	// supervisor 注入落點,見 nativeMeta.ArgsFile 註)。ServerJar 有值(vanilla/paper/fabric)時不注入。
+	if installed.StartScript != "" && installed.ArgsFile != "" && installed.ServerJar == "" {
+		if err := injectMemoryArgs(installed.ArgsFile, resolveMemoryMB(spec)); err != nil {
 			return "", err
 		}
 	}
@@ -416,6 +426,7 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	if err != nil {
 		return err
 	}
+	argv = wrapBatchLaunch(argv)
 	if len(argv) == 0 || argv[0] == "" {
 		return fmt.Errorf("agent: 實例 %s 啟動命令為空", uuid)
 	}
@@ -428,7 +439,21 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	// 刻意不用 exec.CommandContext:請求 ctx 結束不應殺掉常駐伺服器(生命週期由 Stop/Remove 管)。
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = workDir
+	// 供應的 JRE bin 前置於 PATH:Forge/NeoForge 的 run.bat 以裸 `java` 呼叫,須解析到本後端供應的
+	// JRE(而非依賴系統安裝的 java,維持「零外裝」賣點)。JavaPath 為空(steamcmd 供應)時不變動。
 	cmd.Env = append(os.Environ(), envSlice(spec.Env)...)
+	if meta.JavaPath != "" {
+		cmd.Env = append(cmd.Env, "PATH="+filepath.Dir(meta.JavaPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	// 專屬暫存目錄:給每個 native 實例自己的 TEMP/TMP(實例根下 .gsm-tmp),而非共用使用者 %TEMP%。
+	// 動機有二:(1) 隔離——伺服器暫存檔不與其他程序在全域 %TEMP% 相互汙染/碰撞,隨實例 purge 清除
+	// (mirror 容器 /tmp 隔離);(2) 規避——JDK 於 Windows 以 AF_UNIX self-pipe 初始化 netty selector,
+	// 某些使用者 %TEMP% 位置(如受安全軟體攔截或為 reparse point 的 AppData\Local 子樹)會使 AF_UNIX
+	// connect 失敗("Invalid argument"),導致 Minecraft 等 netty 伺服器一啟動即崩潰(T13 E2E 實測
+	// 2026-07-17)。改指向資料磁碟上的一般 NTFS 目錄即避開。.gsm-tmp 前綴使其自動排除於備份/用量統計。
+	if tmp, terr := b.ensureInstanceTemp(root); terr == nil {
+		cmd.Env = append(cmd.Env, "TEMP="+tmp, "TMP="+tmp, "TMPDIR="+tmp)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		rl.close()
@@ -1048,17 +1073,14 @@ func startTimeMatches(recorded, osCreated time.Time) bool {
 // {memory_mb} {instance_dir} 與 {port:<name>}。未知 {port:name} 回錯。
 //
 // 啟動來源語意(R7):Forge/NeoForge 以官方 installer 產出啟動腳本(StartScript,如 run.bat)而非
-// 單一 server jar,範本應以 {start_script} 為啟動來源;若這類實例的範本仍引用 {server_jar}(無 jar),
-// 展開後會得空字串、啟動命令失效——此處回明確錯誤指引範本改用 {start_script},刻意不做魔法替換
-// (範本層 forge variant 的 launch 覆寫屬 T13 範本校正)。
+// 單一 server jar。LaunchSpec 是範本級(非變體級,見 protocol.LaunchSpec),故 forge/neoforge 變體
+// 與 vanilla/paper/fabric 共用同一條 jar 型 command。當實例的啟動來源實為腳本(StartScript 非空、
+// 無 server jar)時,rewriteForStartScript 就地把 jar 型命令改寫為等價的腳本啟動(丟棄 {java}
+// -Xmx -jar {server_jar},保留 {server_jar} 之後的伺服器參數如 nogui,前置 {start_script});記憶體
+// 上限改由 injectMemoryArgs 注入 user_jvm_args.txt(見 Create)。此為 T13 選定的小刀解法(a):不擴充
+// LaunchSpec 至變體級,改由 backend 依實際供應產物在啟動期橋接。
 func expandLaunchTokens(argv []string, m nativeMeta, instanceDir string) ([]string, error) {
-	if m.StartScript != "" && m.ServerJar == "" {
-		for _, a := range argv {
-			if strings.Contains(a, "{server_jar}") {
-				return nil, fmt.Errorf("agent: 此變體以啟動腳本供應(無 server jar),但啟動命令引用 {server_jar};請於範本 [native].launch.command 改用 {start_script}")
-			}
-		}
-	}
+	argv = rewriteForStartScript(argv, m)
 	portByName := make(map[string]int, len(m.Ports))
 	for _, p := range m.Ports {
 		hp := p.HostPort
@@ -1082,6 +1104,67 @@ func expandLaunchTokens(argv []string, m nativeMeta, instanceDir string) ([]stri
 		out = append(out, expanded)
 	}
 	return out, nil
+}
+
+// rewriteForStartScript 在「啟動來源實為腳本(StartScript 非空且無 server jar)」時,把 jar 型
+// 啟動命令改寫為等價的腳本啟動:丟棄 {server_jar} token 及其之前的所有元素(即 {java} / -Xmx /
+// -jar 等 jar 專屬前綴),以 {start_script} 取代,並保留 {server_jar} 之後的伺服器參數(如 nogui)。
+// 記憶體上限不再經 -Xmx 傳遞(改注入 user_jvm_args.txt,見 Create.injectMemoryArgs)。
+//
+// 不符改寫條件(有 server jar,或命令本就以 {start_script} 表達)時原樣返回。命令未引用 {server_jar}
+// 的腳本型範本(直接寫 {start_script})不受影響。
+func rewriteForStartScript(argv []string, m nativeMeta) []string {
+	if m.StartScript == "" || m.ServerJar != "" {
+		return argv
+	}
+	jarIdx := -1
+	for i, a := range argv {
+		if strings.Contains(a, "{server_jar}") {
+			jarIdx = i
+			break
+		}
+	}
+	if jarIdx < 0 {
+		return argv // 已是 {start_script} 型(或無 jar token):不改寫。
+	}
+	out := make([]string, 0, len(argv)-jarIdx+1)
+	out = append(out, "{start_script}")
+	out = append(out, argv[jarIdx+1:]...) // 保留 server jar 之後的參數(nogui 等)
+	return out
+}
+
+// wrapBatchLaunch 於 argv[0] 為 .bat/.cmd(Forge/NeoForge 的 run.bat)時前置 cmd /c 以透過命令
+// 直譯器執行(Windows;os/exec 不直接執行批次檔)。其他情況(jar 型 java 命令、非 Windows)原樣返回。
+func wrapBatchLaunch(argv []string) []string {
+	if len(argv) == 0 || runtime.GOOS != "windows" {
+		return argv
+	}
+	switch strings.ToLower(filepath.Ext(argv[0])) {
+	case ".bat", ".cmd":
+		return append([]string{"cmd", "/c"}, argv...)
+	}
+	return argv
+}
+
+// injectMemoryArgs 把記憶體上限以 `-Xmx<mem>M` 追加寫入 Forge/NeoForge 的 user_jvm_args.txt
+// (installer 產出的 JVM 參數檔;run.bat 以 @user_jvm_args.txt 讀入)。argsFile 不存在時視為無此
+// loader 結構、跳過(不視為錯誤)。memMB<=0 時 no-op。冪等性非必要:每實例僅 Create 一次呼叫。
+func injectMemoryArgs(argsFile string, memMB int) error {
+	if memMB <= 0 {
+		return nil
+	}
+	if _, err := os.Stat(argsFile); err != nil {
+		return nil // 無 args 檔(非現代 forge 結構或測試假件未落檔):跳過。
+	}
+	f, err := os.OpenFile(argsFile, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("開啟 %s 注入記憶體參數失敗: %w", filepath.Base(argsFile), err)
+	}
+	defer f.Close()
+	if _, err := fmt.Fprintf(f, "\n-Xmx%dM\n", memMB); err != nil {
+		return fmt.Errorf("寫入記憶體參數至 %s 失敗: %w", filepath.Base(argsFile), err)
+	}
+	return nil
 }
 
 // expandPortTokens 展開字串中所有 {port:<name>} 為對應主機埠;找不到具名埠回錯。
@@ -1235,6 +1318,19 @@ func (b *NativeBackend) hostDirForContainerPath(uuid, containerPath string) stri
 
 func (b *NativeBackend) hostDirForMount(uuid, name string) string {
 	return filepath.Join(b.instanceDataRoot(uuid), mountsSubdir, sanitizeMountName(name))
+}
+
+// nativeTempSubdir 是 native 實例的專屬暫存子目錄名(實例根下)。.gsm- 前綴使 tarDir 與
+// dataDirUsage 自動整棵排除(不入備份、不計資料用量)。
+const nativeTempSubdir = ".gsm-tmp"
+
+// ensureInstanceTemp 於實例根下建專屬暫存目錄並回其絕對路徑(供 Start 設子行程 TEMP/TMP)。
+func (b *NativeBackend) ensureInstanceTemp(root string) (string, error) {
+	dir := filepath.Join(root, nativeTempSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // workingDir 解析啟動工作目錄:相對 WorkingDir 落在實例根下;空則為實例根。

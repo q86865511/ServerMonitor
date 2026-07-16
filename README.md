@@ -8,11 +8,10 @@
 
 ## 快速開始(使用者)
 
-1. 開啟 Docker Desktop(必要)。
-2. 執行 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。
-3. 「建立伺服器」→ 選 Minecraft → 變體 Paper → 勾 EULA → 設 RCON 密碼 → 建立(首次拉映像需數分鐘)。
-4. 卡片「啟動」→ 開「主控台」看 log、輸入 `list` 測指令 → 設定頁玩備份/排程/告警。
-5. 遊戲連線:`localhost:25565`。應用資料在 `%LOCALAPPDATA%\ServerMonitor\`;**關閉本工具不會停伺服器**(容器由 Docker 維持,重開自動接管)。
+1. 執行 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。**Windows 預設 native 執行後端(免 Docker)**;若要用 Docker 後端,先開啟 Docker Desktop。
+2. 「建立伺服器」→ 選 Minecraft → 選變體 → 勾 EULA → 設 RCON 密碼 →(可選)選執行後端 → 建立(native 首次下載 JRE + 伺服器檔案、Docker 首次拉映像,均需數分鐘)。
+3. 卡片「啟動」→ 開「主控台」看 log、輸入 `list` 測指令 → 設定頁玩備份/排程/告警。
+4. 遊戲連線:`localhost:25565`。應用資料在 `%LOCALAPPDATA%\ServerMonitor\`;**關閉本工具不會停伺服器**(Docker 由容器維持、native 由收養機制接管,重開自動接管)。詳見下方「Native 執行模式」。
 
 ## 特色(規劃中)
 
@@ -32,7 +31,9 @@ Go + Wails(桌面)+ web 前端 + Docker。
 ## 需求環境
 
 - Windows 11
-- **Docker Desktop(WSL2 後端)** — 執行遊戲容器與真 Docker 整合測試的唯一執行後端。個人/小型企業用途免費(見 [Docker Desktop 授權](https://docs.docker.com/subscription/desktop-license/));安裝見 [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/),安裝時選 **WSL 2 backend**。首次啟動遊戲需下載映像(Minecraft 約 1.2GB、Palworld 約 6-8GB)。
+- **執行後端(擇一,可逐實例混用)**:
+  - **Native(預設,免 Docker)** — 無外部安裝需求;JRE / 伺服器檔案 / SteamCMD 由工具自動下載供應(見「Native 執行模式」)。
+  - **Docker Desktop(WSL2 後端)** — 執行遊戲容器與真 Docker 整合測試的後端(可選)。個人/小型企業用途免費(見 [Docker Desktop 授權](https://docs.docker.com/subscription/desktop-license/));安裝見 [Docker Desktop for Windows](https://docs.docker.com/desktop/install/windows-install/),安裝時選 **WSL 2 backend**。首次啟動遊戲需下載映像(Minecraft 約 1.2GB、Palworld 約 6-8GB)。
 - Go 1.26+、Wails CLI v2(開發用)、Node 18+/npm(前端)
 
 ## 安裝與執行
@@ -56,6 +57,15 @@ go test -tags docker -run TestE2E_Palworld ./internal/app/            # 需先 d
 go test -tags docker -run TestPerf_LogThroughput ./internal/core/     # log 高流量 fanout 基準
 ```
 
+Native 執行後端測試(build tag `native`;僅 Windows,非 Windows 自動 skip;heavy E2E `-short` 跳過):
+
+```
+go test -tags native ./...                                                       # native 單元/整合測試(免 Docker)
+go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m   # 真下載 JRE+server.jar,全流程
+GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m  # SteamCMD 約 6-8GB,opt-in
+go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/  # docker↔native 備份互轉(需 Docker daemon)
+```
+
 ## 範本撰寫指南
 
 新增「沿用既有 adapter」的遊戲 = 加一份 `templates/<id>.toml`,**不改核心**。範本放內建目錄(執行檔旁 `templates/`)或使用者目錄(`%LOCALAPPDATA%\ServerMonitor\templates\`),啟動時載入;缺欄位/版本/ID 重複/adapter 不存在會拒載並記 `TEMPLATE_LOAD_FAILED` 事件。schema 由 `internal/protocol/template.go` 定義,最小可跑範例見 `templates/minecraft.toml`、`templates/palworld.toml`。
@@ -73,6 +83,19 @@ schema 欄位速查(對映 `GameTemplate`):
 - **`[health]`**(就緒/存活探針,R8):`kind`(tcp/rcon/rest/docker;未定義=容器 running 即就緒)、`port_ref`、`action_id`(可選,僅 kind=rest)。⚠️ tcp 探針撥的是 Docker 發布埠,其 userland proxy 會在容器程序尚未真正綁定前即接受連線→就緒「假陽性」提早;遊戲伺服器建議用 `rcon`/`rest`(協定就緒才算健康),tcp 僅適合無指令協定的簡單服務。kind=rest **建議搭配 `action_id`**(指向某具名 rest 動作,如 Palworld `info`)——探測經指令協定送出、帶該協定的 Basic Auth 認證;省略 `action_id` 則對 `port_ref` 根路徑發**未認證** GET 判 2xx,只適合無認證的簡單服務(對「全端點需認證」的伺服器會恆判不就緒)。
 - **`[players_query]`**(線上玩家數,R6):`kind`(rcon/rest)、`command`(rcon)或 `action_id`(rest);省略則 GUI 顯示「不適用」。
 - **`[mods]`**(itzg 原生模組/模組包,R11):`owner`(如 `image-native`)、`plugin_dir`、`modpack_env`(如 `["MODRINTH","AUTO_CURSEFORGE"]`)、`manual_formats`、`manual_mount`、`modpack_loaders`(允許套用模組包的變體 loader;外掛平台如 paper 不列)。工具不解壓 `/data`,交 itzg 自管。
+
+## Native 執行模式(免 Docker,Windows)
+
+除了 Docker 執行後端,Windows 上另提供 **native 執行後端**:伺服器以本機子行程直接執行,**只需安裝本主程式即可**——JVM(Adoptium JRE)、Minecraft 各 loader 伺服器檔案、Palworld 的 SteamCMD 全部由工具自動下載供應,無任何外部安裝需求(乾淨 Windows 機器亦可全流程建立→啟動→主控台→備份)。
+
+- **runtime 選擇(逐實例)**:建立實例時可選執行後端。**Windows 預設 native**;偵測到 Docker 可用時亦可改選 docker(Docker 不可用時 docker 選項置灰並說明原因)。Linux 平台強制 Docker(native 選項不可見)。範本以 `[docker]`/`[native]` 區段宣告支援哪些後端(兩者至少其一;僅含其一時該遊戲只能以該 runtime 建立)。
+- **支援矩陣**:
+  - Minecraft 五種 loader:**Vanilla**(Mojang manifest + sha1)、**Paper**(PaperMC v3 Fill API + sha256)、**Fabric**(官方 installer)、**Forge**/**NeoForge**(官方 `--installServer` 產出 `run.bat` + `user_jvm_args.txt`,由後端於啟動期橋接為腳本啟動、記憶體上限注入 args 檔)。
+  - **Palworld**:SteamCMD 匿名載點下載 + `app_update 2394010`;`update_on_start` 可於每次啟動前檢查更新。
+- **資源上限(Windows Job Objects)**:記憶體/CPU 上限與 Docker 後端同一實例設定來源,以 Job Objects 強制;記憶體超限產生可辨識的「超出記憶體上限」告警(區別於一般 crash)。agent 退出不連坐殺伺服器——重啟後自動收養仍在執行的行程、重新納入 Job 管理。
+- **與 Docker 模式的差異**:native **無容器級隔離**(檔案系統/網路);埠衝突由 OS bind 失敗直接回報(而非 Docker 埠映射)。監控/日誌/指令/備份/自動重啟/告警等上層行為與 Docker 後端一致,GUI 無須分辨後端。
+- **備份互通**:native 與 docker 後端的備份格式相同(停機一致 tar 快照 + checksum),**同一實例資料可經備份在兩後端間互轉**(同範本、同 data_dirs 前提)。
+- **共用快取**:JRE 與 SteamCMD 為跨實例共用快取(位於 `%LOCALAPPDATA%\ServerMonitor\cache\`),不隨實例重複下載;解除安裝可整目錄清除。
 
 ## CurseForge 模組包(native 模式,R14)
 

@@ -127,6 +127,10 @@ type NativeConfigMap struct {
 	Format  string            `json:"format"`            // "properties" | "palworld-ini"
 	Section string            `json:"section,omitempty"` // palworld-ini 用(ini section 名)
 	Map     map[string]string `json:"map"`               // paramKey(索引 Env) -> configKey
+	// Set 是不經 param 的固定/衍生設定值(configKey -> 字面值或 {port:<name>} token);NativeBackend
+	// 寫檔時展開埠 token。用於 native 執行需要、但非使用者參數的設定(如 MC 的 enable-rcon/rcon.port/
+	// server-port,docker 由 itzg 注入、native 於此宣告)。與 Map 產出同鍵時 Set 優先。
+	Set map[string]string `json:"set,omitempty"`
 }
 
 // ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,

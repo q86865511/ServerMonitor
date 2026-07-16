@@ -75,7 +75,12 @@ type ConfigMapping struct {
 	File    string            `toml:"file"`    // 設定檔名(如 "server.properties" | "PalWorldSettings.ini")
 	Format  string            `toml:"format"`  // "properties" | "palworld-ini"
 	Section string            `toml:"section"` // palworld-ini 用(ini section 名)
-	Map     map[string]string `toml:"map"`     // paramKey -> configKey
+	Map     map[string]string `toml:"map"`     // paramKey(索引 Env) -> configKey
+	// Set 是不經 param 的固定/衍生設定值(configKey -> 字面值或 {port:<name>} token),由
+	// NativeBackend 於寫檔時展開埠 token。用於「非使用者參數但 native 執行需要」的設定:如
+	// Minecraft server.properties 的 enable-rcon/rcon.port/server-port(docker 由 itzg 代勞注入,
+	// native 無 itzg 故於此宣告)。configKey 與 Map 的產出鍵相同時,Set 優先(後寫覆蓋)。
+	Set map[string]string `toml:"set"`
 }
 
 // NativeModsSpec 對應 [native.mods]:native 模式下模組/模組包的落位設定(native-backend R11)。

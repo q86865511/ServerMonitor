@@ -132,7 +132,7 @@ func TestWriteConfigFile_Properties(t *testing.T) {
 		Map:    map[string]string{"maxplayers": "max-players", "motd": "motd"},
 	}
 	env := map[string]string{"maxplayers": "20", "motd": "Hi", "unused": "x"}
-	if err := writeConfigFile(dir, cm, env); err != nil {
+	if err := writeConfigFile(dir, cm, env, nil); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "server.properties"))
@@ -154,7 +154,7 @@ func TestWriteConfigFile_PalworldIni(t *testing.T) {
 		Map:     map[string]string{"diff": "Difficulty", "rate": "DayTimeSpeedRate"},
 	}
 	env := map[string]string{"diff": "None", "rate": "1.000000"}
-	if err := writeConfigFile(dir, cm, env); err != nil {
+	if err := writeConfigFile(dir, cm, env, nil); err != nil {
 		t.Fatalf("writeConfigFile: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dir, "PalWorldSettings.ini"))
@@ -171,8 +171,51 @@ func TestWriteConfigFile_PalworldIni(t *testing.T) {
 func TestWriteConfigFile_UnknownFormat(t *testing.T) {
 	dir := t.TempDir()
 	cm := protocol.NativeConfigMap{File: "x.cfg", Format: "yaml", Map: map[string]string{"a": "b"}}
-	if err := writeConfigFile(dir, cm, map[string]string{"a": "1"}); err == nil {
+	if err := writeConfigFile(dir, cm, map[string]string{"a": "1"}, nil); err == nil {
 		t.Fatal("未知格式應回錯")
+	}
+}
+
+// TestWriteConfigFile_SetWithPortTokens 驗證 [native.config.set] 的固定/衍生值:字面值直落、
+// {port:<name>} 展開為對應主機埠、且 Set 覆蓋同 configKey 的 Map 產出(native 執行必需值優先)。
+func TestWriteConfigFile_SetWithPortTokens(t *testing.T) {
+	dir := t.TempDir()
+	cm := protocol.NativeConfigMap{
+		File:   "server.properties",
+		Format: "properties",
+		Map:    map[string]string{"RCON_PASSWORD": "rcon.password", "SERVER_PORT_PARAM": "server-port"},
+		Set: map[string]string{
+			"enable-rcon": "true",
+			"rcon.port":   "{port:rcon}",
+			"server-port": "{port:game}", // 與 Map 的 server-port 撞鍵:Set 應覆蓋
+		},
+	}
+	env := map[string]string{"RCON_PASSWORD": "sekret", "SERVER_PORT_PARAM": "19999"}
+	ports := []protocol.PortBinding{{Name: "game", HostPort: 25565}, {Name: "rcon", HostPort: 0, Container: 25575}}
+	if err := writeConfigFile(dir, cm, env, ports); err != nil {
+		t.Fatalf("writeConfigFile: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "server.properties"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// 依 configKey 排序:enable-rcon < rcon.password < rcon.port < server-port。
+	want := "enable-rcon=true\nrcon.password=sekret\nrcon.port=25575\nserver-port=25565\n"
+	if string(got) != want {
+		t.Fatalf("properties=%q want %q", string(got), want)
+	}
+}
+
+// TestWriteConfigFile_SetUnknownPort 驗證 Set 值引用未宣告的埠 token 時回錯(避免靜默寫入空值)。
+func TestWriteConfigFile_SetUnknownPort(t *testing.T) {
+	dir := t.TempDir()
+	cm := protocol.NativeConfigMap{
+		File:   "server.properties",
+		Format: "properties",
+		Set:    map[string]string{"server-port": "{port:nope}"},
+	}
+	if err := writeConfigFile(dir, cm, nil, []protocol.PortBinding{{Name: "game", HostPort: 25565}}); err == nil {
+		t.Fatal("未知埠 token 應回錯")
 	}
 }
 
@@ -200,6 +243,46 @@ func TestExpandLaunchTokens_UnknownPort(t *testing.T) {
 	m := nativeMeta{Ports: []protocol.PortBinding{{Name: "game", HostPort: 25565}}}
 	if _, err := expandLaunchTokens([]string{"{port:nope}"}, m, "/x"); err == nil {
 		t.Fatal("未知埠 token 應回錯")
+	}
+}
+
+// TestExpandLaunchTokens_StartScriptRewrite 驗證 T13 解法(a):jar 型範本命令在啟動來源實為腳本
+// (StartScript 非空、無 server jar,即 Forge/NeoForge)時,改寫為 {start_script} 啟動並保留 nogui,
+// 丟棄 {java}/-Xmx/-jar 前綴(記憶體改注入 args 檔)。
+func TestExpandLaunchTokens_StartScriptRewrite(t *testing.T) {
+	m := nativeMeta{
+		JavaPath:    "/opt/jre/bin/java",
+		StartScript: "/srv/inst/run.bat",
+		MemoryMB:    4096,
+	}
+	argv := []string{"{java}", "-Xmx{memory_mb}M", "-jar", "{server_jar}", "nogui"}
+	got, err := expandLaunchTokens(argv, m, "/srv/inst")
+	if err != nil {
+		t.Fatalf("expandLaunchTokens: %v", err)
+	}
+	want := []string{"/srv/inst/run.bat", "nogui"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("start-script 改寫=%v want %v", got, want)
+	}
+}
+
+// TestInjectMemoryArgs 驗證記憶體上限被追加寫入 user_jvm_args.txt;檔案不存在時為 no-op(不報錯)。
+func TestInjectMemoryArgs(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "user_jvm_args.txt")
+	if err := os.WriteFile(argsFile, []byte("# JVM args\n-XX:+UseG1GC\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := injectMemoryArgs(argsFile, 4096); err != nil {
+		t.Fatalf("injectMemoryArgs: %v", err)
+	}
+	got, _ := os.ReadFile(argsFile)
+	if !strings.Contains(string(got), "-Xmx4096M") {
+		t.Fatalf("args 檔未含 -Xmx4096M: %q", string(got))
+	}
+	// 檔案不存在:no-op、不報錯。
+	if err := injectMemoryArgs(filepath.Join(dir, "nope.txt"), 4096); err != nil {
+		t.Fatalf("缺檔應為 no-op,得 %v", err)
 	}
 }
 

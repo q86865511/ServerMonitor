@@ -123,12 +123,34 @@ java_major = 21                        # 對齊既有 docker.image 的 java21 ta
 
 [native.launch]
 # argv 模板;token 由 NativeBackend 展開:{java}=供應的 JRE、{memory_mb}=由 MEMORY 換算、{server_jar}=安裝器產出。
+# 此為 jar 型(vanilla/paper/fabric)的啟動來源。forge/neoforge 變體無單一 server jar(installer
+# 產出 run.bat + user_jvm_args.txt),LaunchSpec 為範本級無法逐變體覆寫,故由 NativeBackend 於啟動期
+# 偵測「啟動來源為腳本」時就地改寫為等價的 run.bat 啟動(丟棄 -jar {server_jar}、保留 nogui),記憶體
+# 上限改注入 user_jvm_args.txt(T13 解法 a;見 internal/agent/native.go rewriteForStartScript)。
 command = ["{java}", "-Xmx{memory_mb}M", "-jar", "{server_jar}", "nogui"]
 
 [[native.config]]
-# 既有 [[params]](VERSION/MEMORY/EULA)分屬 provision(jar 版本)、JVM 引數、eula.txt,皆不直落
-# server.properties;server-port(由 game 埠)、rcon 啟用/埠/密碼(由 rcon 埠與 RCON_PASSWORD 機密)
-# 屬 NativeBackend 執行時注入,非 param 直映。故 map 暫空,待 T13 E2E 依實跑校正補齊。
+# native 無 itzg 代勞,server.properties 由本區段產出。分兩來源:
+#   [native.config.map] paramKey→configKey:使用者參數落檔(僅 Env 存在者;itzg 亦讀同名 env)。
+#   [native.config.set] configKey→字面值/{port:<name>}:native 執行必需但非使用者參數的值。
+# T13 E2E 校正:server-port/rcon.port 綁定必須與就緒探針(RCON,綁 rcon 埠)一致,否則就緒永不成立。
 file = "server.properties"
 format = "properties"
-map = {}
+[native.config.map]
+# RCON_PASSWORD 為機密(明文注入 Env),供 RCON 認證;MOTD/MAX_PLAYERS 為選填參數(未宣告為 param
+# 時不落檔、交伺服器預設,itzg 慣例同名鍵,保留映射以利日後增設 param 即生效)。
+RCON_PASSWORD = "rcon.password"
+MOTD = "motd"
+MAX_PLAYERS = "max-players"
+[native.config.set]
+# RCON 為就緒探針所需:啟用 + 埠對齊 [[ports]] rcon(25575)、密碼由上方 map 取 RCON_PASSWORD。
+# server-port 綁 game 埠(25565);query.port 對齊 game 埠。埠 token 由 NativeBackend 展開為實際主機埠。
+"enable-rcon" = "true"
+"rcon.port" = "{port:rcon}"
+"server-port" = "{port:game}"
+"query.port" = "{port:game}"
+
+[native.mods]
+# native 模組/模組包落位目錄(相對實例根),對齊 vanilla/forge/fabric 慣例 mods/(R11)。
+# docker 路徑由 itzg 依 loader 自管,故 [mods] 另述;此欄僅 native 安裝器(Modrinth/CurseForge)用。
+mods_dir = "mods"

@@ -123,7 +123,7 @@ func TestNativeAdopt_DeadProcessSynthesizesDie(t *testing.T) {
 }
 
 // TestExpandLaunchTokens_StartScript:{start_script} 展開為腳本路徑;StartScript 供應(無 jar)卻
-// 引用 {server_jar} 時回明確錯誤(指引改用 {start_script},不做魔法替換)。
+// 引用 {server_jar} 時,T13 解法(a)就地改寫為腳本啟動(丟棄 jar 前綴、保留尾隨參數),不回錯。
 func TestExpandLaunchTokens_StartScript(t *testing.T) {
 	m := nativeMeta{JavaPath: "java", StartScript: "/srv/run.bat", MemoryMB: 1024}
 	got, err := expandLaunchTokens([]string{"{start_script}", "--dir", "{instance_dir}"}, m, "/srv")
@@ -133,9 +133,13 @@ func TestExpandLaunchTokens_StartScript(t *testing.T) {
 	if got[0] != "/srv/run.bat" || got[2] != "/srv" {
 		t.Fatalf("expanded=%v", got)
 	}
-	// StartScript 供應但範本仍引用 {server_jar}(無 jar):應回錯。
-	if _, err := expandLaunchTokens([]string{"{java}", "-jar", "{server_jar}"}, m, "/srv"); err == nil {
-		t.Fatal("StartScript 實例引用 {server_jar} 應回錯")
+	// StartScript 供應、範本仍為 jar 型命令(引用 {server_jar}):改寫為 [start_script, <尾隨參數>]。
+	got2, err := expandLaunchTokens([]string{"{java}", "-jar", "{server_jar}", "nogui"}, m, "/srv")
+	if err != nil {
+		t.Fatalf("改寫路徑不應回錯: %v", err)
+	}
+	if len(got2) != 2 || got2[0] != "/srv/run.bat" || got2[1] != "nogui" {
+		t.Fatalf("start-script 改寫=%v,期望 [/srv/run.bat nogui]", got2)
 	}
 }
 
