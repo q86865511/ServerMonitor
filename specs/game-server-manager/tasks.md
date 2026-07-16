@@ -4,6 +4,7 @@
 > 本檔為 /pipeline 任務清單來源:pipeline 第 1 步直接採用本清單與 HARD/NORMAL 標記,不重新拆解。
 > 勾選(`- [x]`)只由 pipeline 第 5 步收尾回寫,其他階段不動。
 > 依賴為 DAG 無環;spike(T6/T14 內含)為對應功能的前置 gate。持久化/事件基礎(T2)排在需要它的核心之前。
+> 2026-07-16:後續功能 native-backend(免 Docker 本機行程後端)見 specs/native-backend/tasks.md。
 
 ## 任務
 

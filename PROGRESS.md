@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-**🏁 game-server-manager 16/16 全數完成**(規格 rev.3)。三條真機 E2E 通過:Minecraft 全流程(建立→rcon 真就緒→監控→list→備份→還原→移除,706s)、重啟對帳接管、Palworld REST(認證就緒探測+players 動作,284s);效能基準回填 design.md(閒置 ~18MB,每實例 +5.4MB);文件完稿(README 快速開始/範本指南/版本鎖定/spike 索引)。**唯一留給使用者:GUI 視窗真機一輪**(功能等價流程已由 E2E 程式化驗證)。次期候選:NativeBackend(免 Docker)、動態埠、Email 告警。
+**game-server-manager 16/16 完成;native-backend(免 Docker 本機行程後端)規格已核可(2026-07-16),進入 /pipeline 實作**(specs/native-backend,T1–T14)。前功能留給使用者:GUI 視窗真機一輪(功能等價流程已由 E2E 程式化驗證)。
 
 ## 已完成
 
+- [2026-07-16] 📄 native-backend 規格三件套核可落檔於 `specs/native-backend/`(R1–R14,T1–T14):免 Docker 本機行程後端——dispatchBackend 分派(native: 前綴、docker 裸穿零遷移)、供應子系統(Adoptium JRE/五 loader 安裝器/SteamCMD/Modrinth)、Job Objects 資源上限+行程樹統計、收養(proc.json+日誌落檔)、CurseForge R14 可獨立延後(比照 Prism 專案 key 嵌入,經研究查證合規)。既有 game-server-manager 三件套完成 Docker 語境加註修訂(不改原文語意)。
 - [2026-07-16] 🏁 R1 實作 T16+雙審修正+16/16 收官(/pipeline):E2E(Minecraft 全流程/重啟對帳/Palworld REST)、效能基準回填、文件完稿。雙審 8 成立全修:**Minecraft 就緒探針 tcp→rcon**(Docker proxy 假陽性,真產品 bug)、**Palworld rest 探針帶認證**(health 加 action_id 經 CommandService,原裸 GET 對全認證 API 永遠失敗——15 分逾時實測抓到)、**palworld 映像 tag 2.5.1→v2.5.1**(Hub 命名帶 v,pull 實測抓到)、NodeClient 逾時分級(Stop 90s/備份還原 30min)、perf 測試 atomic+緩衝、E2E 失敗路徑清理、README REST 欄位/wails 鎖版。全部修正由真機 E2E 或單元測試實證關閉。
 - [2026-07-15] 🚀 R1 實作 T15+雙審修正(/pipeline):**波1** `internal/app` 生產組裝(bootstrap 全元件接線/CrashHook 組合接 INSTANCE_CRASHED 告警/journal 目錄與 loopback 斷言/優雅關閉)+25 Wails bindings+`logs:/stats:` 事件推送;**波2** Svelte 六子項(卡片/建立精靈/主控台/排程備份告警/事件檢視/錯誤矩陣)。雙審 11 成立全修:registry 委派 dialer(解 nil panic+RetryDocker 舊連線)、Palworld REST 主控台(Capability DTO+動作下拉)、關閉收束(rootCtx+inflight 排空+readEvents closeOnCancel 解死鎖)、前端數值綁定字串化、Remove 埠失敗中止+機密鍵清單持久化、OnlineProber 適配、訂閱競態/輪詢序號/purge 勾選。聚焦複審 11 項全關閉。GUI 真機一輪待使用者。
 - [2026-07-15] 🚀 R1 實作 T12+T13+雙審修正(/pipeline):**T12** BackupService(planned-stop 一致快照→原 desired 收斂、RetentionPolicy N=7 經 BackupDeleter 鏈+DELETE 端點、op-journal 獨立於建立 journal、RecoverInterrupted 掛鉤);**T13** AlertDispatcher(AlertSink 生產實作、dedup cooldown)+DiscordWebhookChannel(429 Retry-After/5xx/4xx 策略)+ThresholdMonitor(60s 窗口/遲滯/邊緣觸發)。雙審 11 成立全修:backupID 路徑遍歷雙層防禦(server 400+backend 容器斷言+findBackup 同補)、RecoverInterrupted 失敗保留 journal、收斂改依 desired(stopLocked 污染前擷取)、事件語意去矛盾、journal 記 newRuntimeID 認養、空清單不修剪、alertDispatchTimeout=90s、dedup 成功才佔 cooldown、Retry-After 小數/HTTP-date、URL 不洩漏、dedup 惰性清理。聚焦複審 11 項全關閉;真 Docker 全整合(backup→刪最舊→restore 迴圈 PASS)。中途兩代理撞用量上限,SendMessage 原地續跑完成。
@@ -20,14 +21,15 @@
 
 ## 進行中
 
-(無——pipeline 16/16 收官;等使用者 GUI 視窗真機一輪實測回報)
+- native-backend 實作(/pipeline native-backend,依 specs/native-backend/tasks.md T1–T14)
 
 ## 待辦
 
 > 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
-- [ ] 次期候選:NativeBackend(SteamCMD 免 Docker,R4 縫已留)、動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證
+- [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
+- [ ] CurseForge API key 申請(console.curseforge.com,使用者動作;T14 前置)
 - [ ] 打包:`wails build` 不自動隨附 `templates/`(exe 找「執行檔目錄/templates」);發佈需複製隨附或改 go:embed(本機 build/bin 已手動補)
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 
@@ -44,4 +46,5 @@
 - [2026-07-13] 首版取捨:告警只做 Discord webhook;模組包含 Modrinth/CurseForge 串接;Palworld REST+RCON 皆做。
 - [2026-07-13] rev.2(依 Codex 二審修訂):Palworld 改「REST 具名動作為主、RCON 標 legacy(需查證)」;CurseForge 改「itzg 原生 AUTO_CURSEFORGE + 手動」,自建下載器延後;新增 R13 啟動對帳/單一實例、R14 結構化事件記錄;代理 API 加 bearer token 認證;備份改經 RuntimeBackend Archive/Restore;鎖定依賴版本(Wails v2 stable 等)。
 - [2026-07-13] rev.3(依 Codex 兩輪二審深修):restart 由 core 單一編排(agent 不開 /restart);Docker 事件納入 `RuntimeBackend.Events`;敏感值改 `SecretRef` 型別(輸入即入金鑰庫+redaction);備份首版=停機快照+bind mount、agent 擁有備份根+opaque `BackupID`;首版不支援線上 update(改參數=重建);Palworld/備份/模組三個 spike 設為對應功能前置 gate;依賴版本鎖定給具體下限。
+- [2026-07-16] native-backend 規格裁決:新開 specs/native-backend(不改寫已交付規格,僅加註);逐實例選 runtime、Windows 預設 native、Linux 強制 Docker;資源上限首版即用 Windows Job Objects;涵蓋 MC 全 loader+Palworld+Modrinth;CurseForge 納入為 R14 可獨立延後(採 Prism 模式:專案專屬 key 嵌入+opted-out 手動下載 fallback;CDN 直連/社群代理不合規不採用);唯一依賴變動=x/sys 提為直接相依(版本不變)。
 - [2026-07-13] 開發環境:本機經 winget 裝 Go 1.26.5、`go install` 裝 Wails v2.13.0(WebView2 / Node 24 已備、`wails doctor` 通過);Docker Desktop 29.4.1。**注意:winget 裝的 Go/Wails 不在本 session 既有 shell 的 PATH**,執行 go/wails 前需 `export PATH="/c/Program Files/Go/bin:$HOME/go/bin:$PATH"`。鎖版:docker v27.5.1(go-connections **必須** v0.5.0,v0.7.0 會壞 Windows 編譯)、gorilla/websocket v1.5.3、modernc/sqlite v1.34.5、go-keyring v0.2.8、go-toml/v2。
