@@ -29,7 +29,7 @@
 
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
-- [ ] CurseForge API key 申請(console.curseforge.com,使用者動作;T14 前置)
+- [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
 - [ ] 打包:`wails build` 不自動隨附 `templates/`(exe 找「執行檔目錄/templates」);發佈需複製隨附或改 go:embed(本機 build/bin 已手動補)
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 

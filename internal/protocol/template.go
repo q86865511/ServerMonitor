@@ -16,7 +16,7 @@ type GameTemplate struct {
 	SchemaVersion    int               `toml:"schema_version"`
 	ID               string            `toml:"id"`
 	Name             string            `toml:"name"`
-	Runtime          string            `toml:"runtime"` // 首版:"docker"
+	Runtime          string            `toml:"runtime"` // 預設 runtime:"docker" | "native"(能力另由 [docker]/[native] 區段存在推導)
 	DataDirs         []string          `toml:"data_dirs"`
 	Docker           *DockerImage      `toml:"docker"`
 	Variants         []Variant         `toml:"variants"`
@@ -28,12 +28,60 @@ type GameTemplate struct {
 	Health           *HealthProbe      `toml:"health"`
 	PlayersQuery     *PlayersQuery     `toml:"players_query"`
 	Mods             *ModsSpec         `toml:"mods"`
+	Native           *NativeSpec       `toml:"native"` // native-backend R3:本機行程模式的供應/啟動/設定映射
 }
+
+// SupportsDocker 回報範本是否宣告 docker 執行能力(能力由 [docker] 區段存在推導;native-backend R3)。
+func (t *GameTemplate) SupportsDocker() bool { return t.Docker != nil }
+
+// SupportsNative 回報範本是否宣告 native 執行能力(能力由 [native] 區段存在推導;native-backend R3)。
+func (t *GameTemplate) SupportsNative() bool { return t.Native != nil }
 
 // DockerImage 對應 [docker]:鎖定映像來源(R11 鎖 tag 或 digest)。
 type DockerImage struct {
 	Image       string `toml:"image"`
 	ImageDigest string `toml:"image_digest"`
+}
+
+// NativeSpec 對應 [native]:免 Docker 本機行程模式的宣告(native-backend R3)。
+// 供應(JRE/SteamCMD)、啟動命令模板、params→遊戲設定檔映射皆在此宣告;實際供應與啟動
+// 由 agent 側 NativeBackend 執行(T2 以降)。
+type NativeSpec struct {
+	Provision ProvisionSpec   `toml:"provision"`
+	Launch    LaunchSpec      `toml:"launch"`
+	Config    []ConfigMapping `toml:"config"`
+	Mods      *NativeModsSpec `toml:"mods"` // native 模組落位目錄等(可選)
+}
+
+// ProvisionSpec 對應 [native.provision]:本機執行環境/伺服器檔案的供應方式(native-backend R4/R5/R6)。
+type ProvisionSpec struct {
+	Kind          string `toml:"kind"`            // "java" | "steamcmd"
+	JavaMajor     int    `toml:"java_major"`      // kind=java 時所需 Java major 版(如 21)
+	SteamAppID    string `toml:"steam_app_id"`    // kind=steamcmd 時的 Steam App ID(如 "2394010")
+	UpdateOnStart bool   `toml:"update_on_start"` // R6:啟動前重跑 app_update 檢查更新
+}
+
+// LaunchSpec 對應 [native.launch]:啟動命令模板(native-backend R7)。
+// Command 為 argv 模板,支援 token:{java} {server_jar} {memory_mb} {instance_dir} {port:<name>};
+// 由 NativeBackend 於啟動時展開為實際參數。
+type LaunchSpec struct {
+	Command    []string `toml:"command"`     // argv 模板
+	WorkingDir string   `toml:"working_dir"` // 相對 instance 資料根;空=資料根
+}
+
+// ConfigMapping 對應 [[native.config]]:一個 params→遊戲設定檔的映射(native-backend R3)。
+// Format 決定編碼器:"properties"(k=v 逐行)與 "palworld-ini"(單行 OptionSettings=(K=V,...) 打包)。
+type ConfigMapping struct {
+	File    string            `toml:"file"`    // 設定檔名(如 "server.properties" | "PalWorldSettings.ini")
+	Format  string            `toml:"format"`  // "properties" | "palworld-ini"
+	Section string            `toml:"section"` // palworld-ini 用(ini section 名)
+	Map     map[string]string `toml:"map"`     // paramKey -> configKey
+}
+
+// NativeModsSpec 對應 [native.mods]:native 模式下模組/模組包的落位設定(native-backend R11)。
+// 首版僅最小欄位(落位目錄);完整 native 模組安裝(Modrinth 解析、依賴下載)於 T10 擴充。
+type NativeModsSpec struct {
+	ModsDir string `toml:"mods_dir"` // 模組落位目錄(相對 instance 資料根),如 "mods"
 }
 
 // Variant 對應 [[variants]]:一種可選的伺服器變體(如 Paper/Forge),env 於建立時透傳。

@@ -67,6 +67,18 @@ type InstanceSpec struct {
 	Mounts     []MountSpec       `json:"mounts,omitempty"` // 非備份範圍的具名掛載(R11 手動模組包檔傳輸)
 	Labels     map[string]string `json:"labels"`           // gsm.uuid / gsm.managed-by / gsm.node / gsm.schema
 	Node       string            `json:"node"`
+	// Runtime 選定此實例的執行後端(native-backend R2)。空字串=docker,相容既有呼叫端;
+	// agent 依此分派至 docker/native 後端。
+	Runtime string `json:"runtime,omitempty"` // "docker" | "native"
+	// Modpack 為遠端模組包來源(native-backend R11/R14)。手動上傳的模組包檔仍走 Mounts。
+	Modpack *ModpackRef `json:"modpack,omitempty"`
+}
+
+// ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,
+// Ref 為 slug / project id / URL,由對應安裝器解讀。
+type ModpackRef struct {
+	Type string `json:"type"` // "modrinth" | "curseforge"(R14)
+	Ref  string `json:"ref"`  // slug / project id / URL
 }
 
 // MountSpec 描述一個「備份範圍之外」的具名掛載點(R11 手動模組包檔傳輸)。agent 為每個
@@ -130,7 +142,18 @@ const (
 	RuntimeEventOOM    RuntimeEventKind = "oom"    // 記憶體不足
 	// RuntimeEventResync 表示串流偵測到緩衝已逐出、發生漏事件:消費端應改走完整對帳(R4/R13)。
 	RuntimeEventResync RuntimeEventKind = "resync"
+	// RuntimeEventProvision 是 native 後端建立時的供應進度(JRE/伺服器檔案/SteamCMD 下載;
+	// native-backend R4/R5/R6/R12)。攜帶 Progress 明細;既有 docker 路徑不產生此事件。
+	RuntimeEventProvision RuntimeEventKind = "provision"
 )
+
+// ProvisionProgress 是 native 供應階段的進度明細(native-backend R12),隨
+// RuntimeEventProvision 事件回報供 GUI 顯示進度條。
+type ProvisionProgress struct {
+	Stage   string  `json:"stage"`            // 供應階段(如 "jre" / "server-jar" / "steamcmd")
+	Percent float64 `json:"percent"`          // 完成百分比(0-100);總量不可知時為 0
+	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名)
+}
 
 // RuntimeEvent 是 RuntimeBackend.Events 串流上的一則執行事件,亦為節點代理 WS /events 的
 // wire 契約——故與同為 RuntimeBackend 輸出的 RuntimeStatus/ResourceStats 並置於此,供核心
@@ -146,6 +169,8 @@ type RuntimeEvent struct {
 	TsUTC    time.Time        `json:"ts_utc"`
 	ExitCode *int             `json:"exit_code,omitempty"` // die 時的退出碼
 	Health   string           `json:"health,omitempty"`    // health 時的健康狀態
+	// Progress 於 Kind=provision 時有值(native 供應進度);其餘事件種類為 nil(native-backend R12)。
+	Progress *ProvisionProgress `json:"progress,omitempty"`
 }
 
 // GameCommand 是一則遊戲指令(R7):rcon 用 Raw 自由字串;rest 用 ActionID + Args 具名動作。

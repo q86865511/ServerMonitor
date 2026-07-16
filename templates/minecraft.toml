@@ -112,3 +112,23 @@ manual_formats = ["mrpack", "curseforge-zip"]
 manual_mount = "/modpacks"             # 手動檔掛載處,交由 itzg 對應 env 取用
 # 允許套用模組包的變體 loader(前置相容檢查);paper=外掛平台故排除,選模組包 + paper → 建立前擋
 modpack_loaders = ["vanilla", "forge", "fabric", "quilt", "neoforge"]
+
+# ── 本機行程模式(native-backend R3/R4/R5) ──
+# 宣告 [native] 使本範本亦可以 native runtime 建立(免 Docker)。頂層 runtime 仍為 docker
+# (預設 runtime);能力由區段存在推導(同時有 [docker]/[native] = 兩者皆可)。
+# 供應(依變體 loader 選 vanilla/paper/fabric/forge 安裝器)與 eula.txt 寫入由 T5 NativeBackend 落地。
+[native.provision]
+kind = "java"                          # 需 JVM;實際 server.jar 依變體 loader 由安裝器供應(T5)
+java_major = 21                        # 對齊既有 docker.image 的 java21 tag;升 VERSION 前需確認相容
+
+[native.launch]
+# argv 模板;token 由 NativeBackend 展開:{java}=供應的 JRE、{memory_mb}=由 MEMORY 換算、{server_jar}=安裝器產出。
+command = ["{java}", "-Xmx{memory_mb}M", "-jar", "{server_jar}", "nogui"]
+
+[[native.config]]
+# 既有 [[params]](VERSION/MEMORY/EULA)分屬 provision(jar 版本)、JVM 引數、eula.txt,皆不直落
+# server.properties;server-port(由 game 埠)、rcon 啟用/埠/密碼(由 rcon 埠與 RCON_PASSWORD 機密)
+# 屬 NativeBackend 執行時注入,非 param 直映。故 map 暫空,待 T13 E2E 依實跑校正補齊。
+file = "server.properties"
+format = "properties"
+map = {}
