@@ -91,16 +91,16 @@ func (a *provisionAdapter) WriteEula(ctx context.Context, instanceDir string, ac
 	return nil
 }
 
-// InstallModpack 依 req.Type 分派模組包安裝(native-backend R11)。req.ArchivePath 非空時安裝
+// InstallModpack 依 req.Type 分派模組包安裝(native-backend R11/R14)。req.ArchivePath 非空時安裝
 // 既有本機封存檔(手動上傳路徑,略過遠端解析);否則以 req.Ref 委由對應 ModProvider 解析遠端來源。
-// "curseforge" 尚未接線(R14,無 key 前不註冊 ModProvider),回明確的「尚未支援」錯誤——刻意不
-// 落入下方 map 查無的通用錯誤訊息,使呼叫端(GUI/使用者)能立即理解原因而非誤判為設定錯誤。
+// "curseforge" 僅在建置內嵌或設定覆蓋了 API key 時才註冊 ModProvider(R14);未啟用時回明確的
+// 「未啟用」錯誤——刻意不落入下方 map 查無的通用訊息,使呼叫端(GUI/使用者)能立即理解原因。
 func (a *provisionAdapter) InstallModpack(ctx context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error {
-	if req.Type == "curseforge" {
-		return fmt.Errorf("agent: CurseForge 模組包於 native 模式尚未支援(R14)")
-	}
 	provider, ok := a.p.ModProviders[req.Type]
 	if !ok {
+		if req.Type == "curseforge" {
+			return fmt.Errorf("agent: CurseForge 模組包未啟用(建置未內嵌 API key 且設定未覆蓋;native-backend R14)")
+		}
 		return fmt.Errorf("agent: 不支援的模組包來源 %q", req.Type)
 	}
 	var ref *provision.ModpackRef
@@ -114,6 +114,12 @@ func (a *provisionAdapter) InstallModpack(ctx context.Context, req ModpackInstal
 		MCVersion:   req.MCVersion,
 		Loader:      req.Loader,
 	}, wrapProgress(progress))
+}
+
+// CurseForgeEnabled 回報供應器是否啟用 CurseForge 模組包(native-backend R14:建置內嵌或設定覆蓋
+// 了 API key)。NativeBackend 以 curseForgeCapable 可選介面查詢之,一路透出至 GUI 綁定。
+func (a *provisionAdapter) CurseForgeEnabled() bool {
+	return a.p.CurseForgeEnabled()
 }
 
 // deriveMCVersion 由 native 側的 Variant 導出 provision 需要的 Minecraft 版本號。native 的 Variant

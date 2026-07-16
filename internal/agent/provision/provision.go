@@ -71,6 +71,13 @@ type Provisioner struct {
 	// modrinthAPIBase 是 Modrinth API v2 base URL,經 WithModrinthAPIBase 選項決定後傳入
 	// ModrinthProvider(測試以 httptest server URL 注入)。
 	modrinthAPIBase string
+
+	// curseforgeAPIBase 是 CurseForge API base URL,經 WithCurseForgeAPIBase 選項決定後傳入
+	// CurseForgeProvider(測試以 httptest server URL 注入)。
+	curseforgeAPIBase string
+	// curseforgeKey 是有效的 CurseForge API 金鑰:預設取編譯期內嵌值(curseforge.go 的
+	// curseforgeAPIKey),經 WithCurseForgeAPIKey 以使用者設定覆蓋(非空才覆蓋)。空=CF 模組包停用。
+	curseforgeKey string
 }
 
 // Option 以函式選項調整 Provisioner 建構參數。
@@ -103,12 +110,32 @@ func WithModrinthAPIBase(base string) Option {
 	}
 }
 
+// WithCurseForgeAPIBase 覆寫 CurseForge API base URL(測試以 httptest server URL 注入)。
+func WithCurseForgeAPIBase(base string) Option {
+	return func(p *Provisioner) {
+		if base != "" {
+			p.curseforgeAPIBase = base
+		}
+	}
+}
+
+// WithCurseForgeAPIKey 以使用者設定覆蓋內嵌的 CurseForge API 金鑰(native-backend R14:比照 Prism,
+// 使用者可在設定填自己的 key 覆蓋專案內嵌 key)。key 為空時不覆蓋(維持內嵌值,可能仍為空=停用)。
+func WithCurseForgeAPIKey(key string) Option {
+	return func(p *Provisioner) {
+		if key != "" {
+			p.curseforgeKey = key
+		}
+	}
+}
+
 // New 建構 Provisioner。cacheRoot 為共用快取根;opts 依序套用後再建構各子供應器。
 func New(cacheRoot string, opts ...Option) *Provisioner {
 	p := &Provisioner{
-		CacheRoot:   cacheRoot,
-		client:      &http.Client{}, // 無整體逾時:大型下載(JRE/SteamCMD)由 context 控制生命週期。
-		javaAPIBase: defaultAdoptiumBase,
+		CacheRoot:     cacheRoot,
+		client:        &http.Client{}, // 無整體逾時:大型下載(JRE/SteamCMD)由 context 控制生命週期。
+		javaAPIBase:   defaultAdoptiumBase,
+		curseforgeKey: curseforgeAPIKey, // 內嵌值(ldflags);WithCurseForgeAPIKey 選項可覆蓋。
 	}
 	for _, o := range opts {
 		o(p)
@@ -126,12 +153,22 @@ func New(cacheRoot string, opts ...Option) *Provisioner {
 	// SteamCMD 共用同一 client;快取根與 Provisioner 一致。
 	p.SteamCMD = NewSteamCMDProvisioner(cacheRoot, WithSteamCMDHTTPClient(p.client))
 
-	// 模組包提供者(R11):"modrinth" 首發;"curseforge" 待 T14(需 CF API key)。
+	// 模組包提供者:"modrinth" 首發(R11);"curseforge" 僅在有有效 key 時註冊(R14)——無 key 時
+	// 不註冊,adapter 遂對該型別回明確的「未啟用」錯誤,且 GUI 據 CurseForgeEnabled 隱藏該選項。
 	p.ModProviders = map[string]ModProvider{
 		"modrinth": NewModrinthProvider(p.client, p.modrinthAPIBase),
 	}
+	if p.CurseForgeEnabled() {
+		p.ModProviders["curseforge"] = NewCurseForgeProvider(p.client, p.curseforgeAPIBase, p.curseforgeKey)
+	}
 
 	return p
+}
+
+// CurseForgeEnabled 回報 CurseForge 模組包功能是否啟用:有內嵌或設定覆蓋的 API key 即啟用
+// (native-backend R14)。供 agent/app 一路透出至 GUI,決定是否顯示 native CurseForge 選項。
+func (p *Provisioner) CurseForgeEnabled() bool {
+	return strings.TrimSpace(p.curseforgeKey) != ""
 }
 
 // InstallServerByLoader 依 loader 名(vanilla|paper|fabric|forge|neoforge,大小寫不敏感)分派至

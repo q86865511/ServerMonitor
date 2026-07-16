@@ -14,6 +14,10 @@ export function DeleteSchedule(arg1) {
   return window['go']['main']['App']['DeleteSchedule'](arg1);
 }
 
+export function CurseForgeEnabled() {
+  return window['go']['main']['App']['CurseForgeEnabled']();
+}
+
 export function DockerAvailable() {
   return window['go']['main']['App']['DockerAvailable']();
 }

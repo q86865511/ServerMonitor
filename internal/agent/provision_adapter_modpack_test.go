@@ -1,8 +1,9 @@
 package agent
 
-// provisionAdapter.InstallModpack 的路由單元測試(native-backend R11/T10):"curseforge" 尚未
-// 支援時回明確錯誤且不誤觸 ModProviders 查找;"modrinth" 正確委派並轉譯 Ref/ArchivePath。
-// 真實 mrpack 解析/下載屬 internal/agent/provision 套件單元測(modprovider_test.go/modrinth_test.go)。
+// provisionAdapter.InstallModpack 的路由單元測試(native-backend R11/R14):無 key 建置的
+// "curseforge" 回明確的「未啟用」錯誤且不誤觸 ModProviders 通用查無訊息;"modrinth" 正確委派並
+// 轉譯 Ref/ArchivePath。真實 mrpack/cfzip 解析/下載屬 internal/agent/provision 套件單元測
+// (modprovider_test.go/modrinth_test.go/curseforge_test.go)。
 
 import (
 	"archive/zip"
@@ -15,17 +16,22 @@ import (
 	"servermonitor/internal/protocol"
 )
 
-func TestProvisionAdapter_InstallModpack_CurseForgeNotSupported(t *testing.T) {
+func TestProvisionAdapter_InstallModpack_CurseForgeDisabledWithoutKey(t *testing.T) {
+	// 無 key 建置(NewProvisionAdapter 不帶 WithCurseForgeAPIKey):curseforge 未註冊 ModProvider,
+	// 回明確的「未啟用」錯誤(而非通用「不支援的模組包來源」)。
 	adapter := NewProvisionAdapter(t.TempDir())
 	err := adapter.InstallModpack(context.Background(), ModpackInstallRequest{
-		Type: "curseforge", Ref: "all-the-mods-8", TargetDir: t.TempDir(),
+		Type: "curseforge", Ref: "123:456", TargetDir: t.TempDir(),
 	}, nil)
 	if err == nil {
-		t.Fatal("期望 CurseForge 回明確錯誤,實際成功")
+		t.Fatal("期望無 key 時 CurseForge 回明確錯誤,實際成功")
 	}
-	const want = "CurseForge 模組包於 native 模式尚未支援"
+	const want = "CurseForge 模組包未啟用"
 	if got := err.Error(); !strings.Contains(got, want) {
 		t.Fatalf("錯誤訊息 = %q,應包含 %q", got, want)
+	}
+	if adapter.CurseForgeEnabled() {
+		t.Error("無 key 時 CurseForgeEnabled 應為 false")
 	}
 }
 

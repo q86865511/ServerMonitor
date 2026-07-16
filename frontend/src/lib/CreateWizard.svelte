@@ -1,8 +1,13 @@
 <script lang="ts">
   import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { main } from '../../wailsjs/go/models';
-  import { ListTemplates, CreateInstance, DockerAvailable } from '../../wailsjs/go/main/App';
-  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
+  import {
+    ListTemplates,
+    CreateInstance,
+    DockerAvailable,
+    CurseForgeEnabled,
+  } from '../../wailsjs/go/main/App';
+  import { EventsOn, EventsOff, BrowserOpenURL } from '../../wailsjs/runtime/runtime';
   import { call } from './api';
   import { pushToast } from './stores';
   import Modal from './Modal.svelte';
@@ -33,14 +38,34 @@
   let provDetail = '';
   let unlistenProv: (() => void) | null = null;
 
-  // 模組包(R11):type 空=無;curseforge/manual-cfzip 需 CF_API_KEY。
+  // 模組包(R11):type 空=無;docker/itzg 路徑的 curseforge/manual-cfzip 需使用者填 CF_API_KEY。
   const CF_KEY = 'CF_API_KEY';
   let modpackType = '';
   let modpackRef = '';
   let cfApiKey = '';
 
+  // CurseForge 於 native 模式(R14):由建置內嵌/設定覆蓋的專案 key 啟用,使用者不另填 key。
+  // cfEnabled=false 時 native 路徑的 CurseForge 選項置灰並提示。
+  let cfEnabled = false;
+
+  // 被擋模組(R14):CurseForge 作者停用第三方散布(downloadUrl=null)時,provision 事件
+  // stage="blocked-mods" 攜 JSON 清單;解析後彈出對話框引導使用者手動下載。
+  type BlockedMod = {
+    project_id: number;
+    file_id: number;
+    file_name: string;
+    url: string;
+  };
+  let blockedMods: BlockedMod[] = [];
+
   $: tmpl = templates.find((t) => t.id === templateId);
-  $: needsCFKey = modpackType === 'curseforge' || modpackType === 'manual-cfzip';
+  $: isCFSource = modpackType === 'curseforge' || modpackType === 'manual-cfzip';
+  // 使用者填 key 的 CF_API_KEY 欄位僅 docker/itzg 路徑需要;native 用內嵌/設定 key,不另填。
+  $: needsCFKey = isCFSource && runtime !== 'native';
+  // native + CF 但未啟用(無內嵌/設定 key):不可送出,提示改用其他來源或於設定填 key。
+  $: cfNativeUnavailable = isCFSource && runtime === 'native' && !cfEnabled;
+  // native 模式且 CF 未啟用時,下拉的 CurseForge 選項置灰。
+  $: cfDisabled = runtime === 'native' && !cfEnabled;
   // 範本自身已宣告 CF_API_KEY 機密時,不再另立欄位(避免重複)。
   $: templateHasCFSecret = (tmpl?.secrets ?? []).some((s) => s.key === CF_KEY);
   $: modpackRefPlaceholder =
@@ -62,6 +87,11 @@
       dockerAvailable = await call(() => DockerAvailable(), { silent: true });
     } catch {
       dockerAvailable = false; // 查詢失敗一律視為不可用(保守置灰)
+    }
+    try {
+      cfEnabled = await call(() => CurseForgeEnabled(), { silent: true });
+    } catch {
+      cfEnabled = false; // 查詢失敗視為未啟用(保守隱藏 native CF)
     }
     loading = false;
   });
@@ -117,7 +147,8 @@
     missingParams.length === 0 &&
     missingSecrets.length === 0 &&
     !modpackIncomplete &&
-    !cfKeyMissing;
+    !cfKeyMissing &&
+    !cfNativeUnavailable;
 
   async function submit(): Promise<void> {
     if (!tmpl || !canSubmit) return;
@@ -126,7 +157,16 @@
     resetProvision();
 
     // 訂閱供應進度:須在 CreateInstance 之前註冊(供應事件於建立同步期間送達)。
+    // stage="blocked-mods" 為 R14 特例:detail 為被擋模組 JSON 清單,解析後彈對話框引導手動下載。
     unlistenProv = EventsOn('provision', (p: Provision) => {
+      if (p.stage === 'blocked-mods') {
+        try {
+          blockedMods = JSON.parse(p.detail ?? '[]') as BlockedMod[];
+        } catch {
+          blockedMods = [];
+        }
+        return;
+      }
       provStage = p.stage ?? '';
       provPercent = typeof p.percent === 'number' ? p.percent : -1;
       provDetail = p.detail ?? '';
@@ -169,12 +209,18 @@
     provStage = '';
     provPercent = -1;
     provDetail = '';
+    blockedMods = [];
   }
 
   // parseIntOr0 把選填數字輸入轉為非負整數;空白或非法值視為 0(不限)。
   function parseIntOr0(v: string): number {
     const n = parseInt(v.trim(), 10);
     return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  // openBlockedModPage 以系統瀏覽器開啟被擋模組的手動下載頁(R14 降級方案:使用者下載後重試建立)。
+  function openBlockedModPage(url: string): void {
+    if (url) BrowserOpenURL(url);
   }
 </script>
 
@@ -316,11 +362,26 @@
           <select id="mp-type" bind:value={modpackType}>
             <option value="">無</option>
             <option value="modrinth">Modrinth</option>
-            <option value="curseforge">CurseForge</option>
+            <option value="curseforge" disabled={cfDisabled}
+              >CurseForge{cfDisabled ? '(未啟用)' : ''}</option
+            >
             <option value="manual-mrpack">手動 .mrpack 檔</option>
-            <option value="manual-cfzip">手動 CurseForge zip 檔</option>
+            <option value="manual-cfzip" disabled={cfDisabled}
+              >手動 CurseForge zip 檔{cfDisabled ? '(未啟用)' : ''}</option
+            >
           </select>
+          {#if cfDisabled}
+            <div class="hint">
+              native 模式的 CurseForge 需建置內嵌 API 金鑰,或於設定填入自己的金鑰(比照 Prism
+              Launcher);目前未啟用。可改用 Modrinth,或改以 Docker 後端(使用者自填 CF_API_KEY)。
+            </div>
+          {/if}
         </div>
+        {#if cfNativeUnavailable}
+          <div class="err-box">
+            已選 CurseForge 但 native 模式未啟用 CurseForge(無內嵌/設定金鑰)。請改選其他來源或後端。
+          </div>
+        {/if}
         {#if modpackType !== ''}
           <div class="field">
             <label for="mp-ref">來源位置<span class="req">*</span></label>
@@ -362,6 +423,27 @@
     {/if}
   {/if}
 </Modal>
+
+{#if blockedMods.length > 0}
+  <Modal title="需手動下載的模組(CurseForge)" on:close={() => (blockedMods = [])}>
+    <div class="hint" style="margin-bottom:12px">
+      以下模組的作者已停用第三方 API 散布,無法自動下載。請點各項「開啟下載頁」以瀏覽器手動下載
+      對應檔案,放入實例的匯入資料夾後重新建立(系統會以檔名比對自動匯入續裝)。其餘可下載的模組
+      與設定已安裝完成。
+    </div>
+    <ul class="blocked-list">
+      {#each blockedMods as m}
+        <li class="blocked-item">
+          <div class="blocked-name" title={m.file_name}>{m.file_name || `檔案 #${m.file_id}`}</div>
+          <button class="link-btn" on:click={() => openBlockedModPage(m.url)}>開啟下載頁</button>
+        </li>
+      {/each}
+    </ul>
+    <div class="actions">
+      <button class="primary" on:click={() => (blockedMods = [])}>知道了</button>
+    </div>
+  </Modal>
+{/if}
 
 <style>
   .sect {
@@ -459,5 +541,31 @@
     justify-content: flex-end;
     gap: 10px;
     margin-top: 20px;
+  }
+  .blocked-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .blocked-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .blocked-name {
+    font-size: 13px;
+    color: var(--fg-0);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .link-btn {
+    flex: 0 0 auto;
+    font-size: 12px;
   }
 </style>

@@ -78,6 +78,22 @@ type provisionRunner interface {
 	InstallModpack(ctx context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error
 }
 
+// curseForgeCapable 由供應器實作以回報 CurseForge 模組包能力是否啟用(有內嵌或設定覆蓋的 API key)。
+// 以可選介面表達,使 provisionRunner 的測試假件無須實作;NativeBackend.CurseForgeEnabled 於未實作時
+// 回 false(native-backend R14)。
+type curseForgeCapable interface {
+	CurseForgeEnabled() bool
+}
+
+// CurseForgeEnabled 回報本後端的供應器是否啟用 CurseForge 模組包(native-backend R14)。供上層
+// (dispatchBackend→Runtime→Wails 綁定)決定 GUI 是否顯示 native CurseForge 模組包選項。
+func (b *NativeBackend) CurseForgeEnabled() bool {
+	if cc, ok := b.prov.(curseForgeCapable); ok {
+		return cc.CurseForgeEnabled()
+	}
+	return false
+}
+
 // ServerInstallRequest 是 provisionRunner.InstallServer 的輸入(native-backend R5)。
 type ServerInstallRequest struct {
 	InstanceDir string // 伺服器檔案落位目錄(絕對路徑)

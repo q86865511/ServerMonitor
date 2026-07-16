@@ -49,6 +49,9 @@ type BackendOptions struct {
 	BackupRoot    string // 備份根(docker/native 互通)
 	CacheRoot     string // native 供應共用快取根(JRE/SteamCMD);docker 忽略
 	Node          string // gsm.node 標籤值
+	// CurseForgeAPIKey 是使用者設定覆蓋的 CurseForge API 金鑰(native-backend R14):非空時覆蓋
+	// 建置內嵌 key,透傳給 native 供應器的 CurseForgeProvider。空=用內嵌 key(可能仍空=停用)。
+	CurseForgeAPIKey string
 }
 
 // DockerCapable 由 dispatchBackend 實作,暴露 docker 子後端的能力查詢與熱替換(供 app 層
@@ -62,6 +65,23 @@ type DockerCapable interface {
 }
 
 var _ DockerCapable = (*dispatchBackend)(nil)
+
+// CurseForgeCapable 由 dispatchBackend 實作,暴露 native 供應器的 CurseForge 模組包能力查詢
+// (native-backend R14),供 app 層 GUI 綁定判斷是否顯示 native CurseForge 選項。以介面表達使 app
+// 層無需相依具體型別,並讓非 dispatch 的頂層後端(測試 MockBackend)自然不符合、GUI 視為停用。
+type CurseForgeCapable interface {
+	CurseForgeEnabled() bool
+}
+
+var _ CurseForgeCapable = (*dispatchBackend)(nil)
+
+// CurseForgeEnabled 委派 native 子後端回報 CurseForge 模組包能力;native 不存在(Linux)或未實作時回 false。
+func (d *dispatchBackend) CurseForgeEnabled() bool {
+	if cc, ok := d.native.(CurseForgeCapable); ok {
+		return cc.CurseForgeEnabled()
+	}
+	return false
+}
 
 // NewDispatchBackend 建立組合後端。native 與 docker 皆可為 nil,但至少一個非 nil。建構後立即為
 // 各非 nil 子後端起事件 pump。

@@ -9,6 +9,8 @@ export function CreateInstance(arg1:main.CreateInstanceRequest):Promise<string>;
 
 export function DeleteSchedule(arg1:string):Promise<void>;
 
+export function CurseForgeEnabled():Promise<boolean>;
+
 export function DockerAvailable():Promise<boolean>;
 
 export function GetAlertSettings(arg1:string):Promise<main.AlertSettingsDTO>;

@@ -17,6 +17,10 @@ type AppConfig struct {
 	Node string `json:"node"`
 	// EventRetentionMax 是事件保留上限(0 = 用內建預設)。
 	EventRetentionMax int `json:"event_retention_max"`
+	// CurseForgeAPIKey 是使用者自填的 CurseForge API 金鑰(native-backend R14):非空時覆蓋建置內嵌
+	// 的專案 key(比照 Prism Launcher,使用者可用自己的 key)。空=用內嵌 key(可能仍空=CF 功能停用)。
+	// 屬使用者本機設定,存於設定檔;不同於機密的金鑰庫存放(此為建置級能力開關,非逐實例機密)。
+	CurseForgeAPIKey string `json:"curseforge_api_key,omitempty"`
 }
 
 // DefaultAppConfig 回傳內建預設設定。

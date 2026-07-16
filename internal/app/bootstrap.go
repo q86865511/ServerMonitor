@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"servermonitor/internal/agent"
+	"servermonitor/internal/agent/provision"
 	"servermonitor/internal/core"
 	"servermonitor/internal/protocol"
 )
@@ -47,7 +48,7 @@ func defaultBackendFactory(opts agent.BackendOptions) (agent.RuntimeBackend, err
 		BackupRoot: opts.BackupRoot,
 		CacheRoot:  opts.CacheRoot,
 		Node:       opts.Node,
-		Prov:       agent.NewProvisionAdapter(opts.CacheRoot),
+		Prov:       agent.NewProvisionAdapter(opts.CacheRoot, provision.WithCurseForgeAPIKey(opts.CurseForgeAPIKey)),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("建立 native 後端失敗: %w", err)
@@ -290,7 +291,7 @@ func Bootstrap(opts Options) (*Runtime, error) {
 
 	// 8) 節點代理(loopback);Docker 不可用時標離線但不致命(Windows dispatch 頂層恆在線,詳見
 	//    startAgentLocked/RetryDocker)。
-	r.backendOpts = agent.BackendOptions{InstancesRoot: instancesDir, BackupRoot: backupsDir, CacheRoot: cacheDir, Node: node}
+	r.backendOpts = agent.BackendOptions{InstancesRoot: instancesDir, BackupRoot: backupsDir, CacheRoot: cacheDir, Node: node, CurseForgeAPIKey: cfg.CurseForgeAPIKey}
 	r.backendFactory = factory
 	r.dockerFactory = dockerFactory
 	if err := r.startAgentLocked(factory); err != nil {
@@ -490,6 +491,18 @@ func (r *Runtime) DockerAvailable() bool {
 	}
 	if st, ok := r.registry.Status(r.node); ok {
 		return st.Online
+	}
+	return false
+}
+
+// CurseForgeEnabled 回報本節點是否啟用 CurseForge 模組包(native-backend R14:建置內嵌或設定覆蓋
+// 了 API key)。dispatch 頂層委派 native 子後端;非 dispatch 頂層(docker-only/測試)一律回 false。
+// 供 Wails 綁定(App.CurseForgeEnabled)決定 GUI 是否顯示 native CurseForge 模組包選項。
+func (r *Runtime) CurseForgeEnabled() bool {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if cc, ok := r.backend.(agent.CurseForgeCapable); ok {
+		return cc.CurseForgeEnabled()
 	}
 	return false
 }

@@ -559,6 +559,10 @@ func (a *App) NodeStatus() []NodeStatusDTO {
 // Docker 仍不可用;供建立表單決定是否置灰 docker 選項。
 func (a *App) DockerAvailable() bool { return a.rt.DockerAvailable() }
 
+// CurseForgeEnabled 回報本建置是否啟用 CurseForge 模組包(native-backend R14:建置內嵌或設定覆蓋了
+// API key)。供建立表單決定是否顯示 native CurseForge 模組包來源選項(未啟用時隱藏/置灰並提示)。
+func (a *App) CurseForgeEnabled() bool { return a.rt.CurseForgeEnabled() }
+
 // RetryDocker 重試連線 Docker(節點離線時)(R5)。
 func (a *App) RetryDocker() error { return a.rt.RetryDocker() }
 

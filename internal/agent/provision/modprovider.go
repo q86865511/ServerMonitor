@@ -37,6 +37,10 @@ type ModpackInstallRequest struct {
 	TargetDir   string // 模組落位目錄(mods)絕對路徑
 	MCVersion   string // 相容性檢查用(index.json dependencies.minecraft)
 	Loader      string // 相容性檢查用(fabric/forge/neoforge/quilt 才有對應依賴鍵可查)
+	// ImportDir 是被擋模組(CurseForge downloadUrl=null)的手動下載匯入資料夾(native-backend R14
+	// 降級方案):非空時 CurseForgeProvider 於安裝末以檔名(＋長度)匹配其中檔案自動補齊,仍缺者才回
+	// BlockedModsError。空=不匯入(直接回 BlockedModsError 引導手動下載)。僅 CurseForge 路徑使用。
+	ImportDir string
 }
 
 // ModProvider 依模組包來源解析並安裝模組/模組包至 TargetDir(native-backend R11/R14)。
