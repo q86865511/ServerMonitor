@@ -72,6 +72,10 @@ type provisionRunner interface {
 	InstallSteamApp(ctx context.Context, appID, instanceDir string, progress func(protocol.ProvisionProgress)) error
 	// WriteEula 於實例目錄寫入 eula.txt(native 無 itzg 代勞;R5)。accepted=false 時為 no-op。
 	WriteEula(ctx context.Context, instanceDir string, accepted bool) error
+	// InstallModpack 安裝模組包(遠端來源或本機既有封存檔擇一,見 ModpackInstallRequest)至
+	// req.TargetDir(native-backend R11)。遠端來源依 req.Type 分派 provision.ModProvider;
+	// "curseforge" 尚未支援(R14)一律回明確錯誤。
+	InstallModpack(ctx context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error
 }
 
 // ServerInstallRequest 是 provisionRunner.InstallServer 的輸入(native-backend R5)。
@@ -92,6 +96,19 @@ type ServerInstallResult struct {
 	ServerJar   string
 	StartScript string
 	ArgsFile    string
+}
+
+// ModpackInstallRequest 是 provisionRunner.InstallModpack 的輸入(native-backend R11)。Type/Ref
+// 描述遠端來源(對映 protocol.ModpackRef);ArchivePath 非空時改為安裝本機既有封存檔(手動上傳
+// 路徑,見 WriteMountFile),此時 Ref 忽略。Type 恆需有值(供 provisionAdapter 選 ModProvider,
+// 手動上傳路徑由 detectModpackArchiveType 依封存檔內容判定)。
+type ModpackInstallRequest struct {
+	Type        string // "modrinth" | "curseforge"(R14)
+	Ref         string // 遠端來源 ref(slug/版本 id);ArchivePath 非空時不用
+	ArchivePath string // 本機既有封存檔絕對路徑;非空時優先於 Ref
+	TargetDir   string // 模組落位目錄絕對路徑(ModsDir 展開後)
+	MCVersion   string
+	Loader      string
 }
 
 // NativeOptions 是 NativeBackend 的建構選項。
@@ -249,6 +266,26 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	for _, cm := range spec.Native.Config {
 		if err := writeConfigFile(workDir, cm, spec.Env); err != nil {
 			return "", err
+		}
+	}
+
+	// 遠端模組包安裝(native-backend R11):spec.Modpack 非 nil 時依 Type 分派安裝至 ModsDir。
+	// 手動上傳的模組包檔不在此處處理——Create 早於核心的 UploadMount 呼叫完成(見
+	// instance_service.go:295 上傳時序,建容器後才上傳),故手動路徑改由 WriteMountFile 於檔案
+	// 抵達時觸發安裝(見該方法)。
+	if spec.Modpack != nil {
+		modsDir, derr := b.modsInstallDir(root, spec)
+		if derr != nil {
+			return "", derr
+		}
+		if err := b.prov.InstallModpack(ctx, ModpackInstallRequest{
+			Type:      spec.Modpack.Type,
+			Ref:       spec.Modpack.Ref,
+			TargetDir: modsDir,
+			MCVersion: spec.Native.Provision.MCVersion,
+			Loader:    spec.Native.Provision.Loader,
+		}, progress); err != nil {
+			return "", fmt.Errorf("安裝模組包失敗: %w", err)
 		}
 	}
 
@@ -1190,6 +1227,16 @@ func (b *NativeBackend) workingDir(root, rel string) string {
 		return root
 	}
 	return filepath.Join(root, filepath.FromSlash(rel))
+}
+
+// modsInstallDir 解析範本宣告的 native 模組落位目錄(NativeSpecPayload.ModsDir,相對實例根)
+// 為絕對路徑;未宣告時回明確錯誤,不臆測預設值(R11——範本須以 [native.mods] mods_dir 宣告
+// 才能安裝模組包)。
+func (b *NativeBackend) modsInstallDir(root string, spec protocol.InstanceSpec) (string, error) {
+	if spec.Native == nil || spec.Native.ModsDir == "" {
+		return "", fmt.Errorf("agent: 範本未宣告 native mods 落位目錄(mods_dir),無法安裝模組包")
+	}
+	return filepath.Join(root, filepath.FromSlash(spec.Native.ModsDir)), nil
 }
 
 // instanceExists 以 native.json 存在判定實例是否為本後端所管(Remove 後即不存在)。

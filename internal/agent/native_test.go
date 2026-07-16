@@ -38,6 +38,9 @@ type fakeProv struct {
 	startScript string // 非空時模擬 Forge/NeoForge 啟動來源(無 server jar)
 	argsFile    string
 	progress    []protocol.ProvisionProgress
+
+	modpackCalls []ModpackInstallRequest // InstallModpack 每次呼叫的入參,供斷言(T10)
+	modpackErr   error                   // 非 nil 時 InstallModpack 回此錯誤(供測 Create 回滾路徑)
 }
 
 func (f *fakeProv) EnsureJava(_ context.Context, _ int, progress func(protocol.ProvisionProgress)) (string, error) {
@@ -65,6 +68,24 @@ func (f *fakeProv) WriteEula(_ context.Context, dir string, accepted bool) error
 		return nil
 	}
 	return os.WriteFile(filepath.Join(dir, "eula.txt"), []byte("eula=true\n"), 0o644)
+}
+
+func (f *fakeProv) InstallModpack(_ context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error {
+	f.modpackCalls = append(f.modpackCalls, req)
+	if f.modpackErr != nil {
+		return f.modpackErr
+	}
+	if progress != nil {
+		progress(protocol.ProvisionProgress{Stage: "modpack", Percent: 100})
+	}
+	// 落地一個可觀察的標記檔,供測試確認 TargetDir 正確展開(不解真 mrpack,單元測不觸網)。
+	if req.TargetDir != "" {
+		if err := os.MkdirAll(req.TargetDir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(req.TargetDir, "installed.marker"), []byte(req.Type+"|"+req.Ref+"|"+req.ArchivePath), 0o644)
+	}
+	return nil
 }
 
 // newTestNativeBackend 建立一個以暫存目錄與假供應器為底的 NativeBackend。

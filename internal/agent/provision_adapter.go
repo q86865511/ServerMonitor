@@ -91,6 +91,31 @@ func (a *provisionAdapter) WriteEula(ctx context.Context, instanceDir string, ac
 	return nil
 }
 
+// InstallModpack 依 req.Type 分派模組包安裝(native-backend R11)。req.ArchivePath 非空時安裝
+// 既有本機封存檔(手動上傳路徑,略過遠端解析);否則以 req.Ref 委由對應 ModProvider 解析遠端來源。
+// "curseforge" 尚未接線(R14,無 key 前不註冊 ModProvider),回明確的「尚未支援」錯誤——刻意不
+// 落入下方 map 查無的通用錯誤訊息,使呼叫端(GUI/使用者)能立即理解原因而非誤判為設定錯誤。
+func (a *provisionAdapter) InstallModpack(ctx context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error {
+	if req.Type == "curseforge" {
+		return fmt.Errorf("agent: CurseForge 模組包於 native 模式尚未支援(R14)")
+	}
+	provider, ok := a.p.ModProviders[req.Type]
+	if !ok {
+		return fmt.Errorf("agent: 不支援的模組包來源 %q", req.Type)
+	}
+	var ref *provision.ModpackRef
+	if req.ArchivePath == "" {
+		ref = &provision.ModpackRef{Type: req.Type, Ref: req.Ref}
+	}
+	return provider.InstallModpack(ctx, provision.ModpackInstallRequest{
+		Ref:         ref,
+		ArchivePath: req.ArchivePath,
+		TargetDir:   req.TargetDir,
+		MCVersion:   req.MCVersion,
+		Loader:      req.Loader,
+	}, wrapProgress(progress))
+}
+
 // deriveMCVersion 由 native 側的 Variant 導出 provision 需要的 Minecraft 版本號。native 的 Variant
 // 慣例為 "<loader>-<version>"(如 "paper-1.21");去除 loader 前綴後即版本號。無前綴可去時原樣回傳
 // (讓 provision 端以明確錯誤反映版本缺失,而非在此臆測)。

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,9 +73,15 @@ func (a *App) bgCtx() context.Context { return context.Background() }
 
 // TemplateDTO 是範本的前端視圖(供建立表單渲染)。
 type TemplateDTO struct {
-	ID       string       `json:"id"`
-	Name     string       `json:"name"`
-	Runtime  string       `json:"runtime"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Runtime 是建立表單應預選的「預設 runtime」(native-backend R12)。對齊 core.resolveRuntime
+	// 的預設分派(Windows 且範本支援 native → native;否則支援 docker → docker),使表單預選與
+	// 空 Runtime 建立實際落到的後端一致。
+	Runtime string `json:"runtime"`
+	// Runtimes 是範本宣告的可用 runtime 能力清單(由 [docker]/[native] 區段存在推導;native-backend
+	// R3/R12)。順序固定 docker、native。供表單渲染 runtime 選項與置灰判斷。
+	Runtimes []string     `json:"runtimes"`
 	Variants []VariantDTO `json:"variants"`
 	Params   []ParamDTO   `json:"params"`
 	Secrets  []SecretDTO  `json:"secrets"`
@@ -119,6 +127,9 @@ type InstanceDTO struct {
 	Node          string `json:"node"`
 	DesiredState  string `json:"desired_state"`
 	ObservedState string `json:"observed_state"`
+	// Runtime 是此實例的執行後端標記("native" | "docker";native-backend R12),由 RuntimeID
+	// 前綴推導(見 runtimeFromID),供清單/卡片顯示 runtime badge。
+	Runtime string `json:"runtime"`
 }
 
 // SnapshotDTO 是聚合監控快照的前端視圖(R6)。
@@ -140,6 +151,13 @@ type CreateInstanceRequest struct {
 	Secrets    map[string]string `json:"secrets"`
 	Node       string            `json:"node"`
 	Modpack    *ModpackRequest   `json:"modpack"`
+	// Runtime 為使用者所選執行後端("docker" | "native";空=依平台/範本能力預設,見
+	// core.resolveRuntime)。native-backend R2/R12。
+	Runtime string `json:"runtime"`
+	// MemoryMB / CPUPercent 為 native 資源上限(Job Objects;native-backend R9),0=不限。
+	// 僅 runtime=native 有意義;轉填 core CreateOptions.Resources(兩者皆 0 時為 nil)。
+	MemoryMB   int `json:"memory_mb"`
+	CPUPercent int `json:"cpu_percent"`
 }
 
 // ModpackRequest 是模組包來源輸入(R11)。
@@ -207,9 +225,12 @@ type QueryEventsRequest struct {
 
 // NodeStatusDTO 是節點狀態的前端視圖。
 type NodeStatusDTO struct {
-	Node    string `json:"node"`
-	Online  bool   `json:"online"`
-	LastErr string `json:"last_err"`
+	Node   string `json:"node"`
+	Online bool   `json:"online"`
+	// DockerAvailable 表示本節點 Docker 能力是否就緒(節點在線與 Docker 能力分離;native-backend
+	// R12/R13)。native 恆在使節點可在線但 Docker 仍不可用;供表單 docker 選項置灰判斷。
+	DockerAvailable bool   `json:"docker_available"`
+	LastErr         string `json:"last_err"`
 }
 
 // ---- 範本 / 建立 ----
@@ -225,22 +246,45 @@ func (a *App) ListTemplates() []TemplateDTO {
 }
 
 // CreateInstance 一鍵建立實例(R2)。回傳新實例 UUID;失敗回可讀錯誤。
+//
+// 建立為同步阻塞:native 後端於 Create 內供應 JRE/伺服器檔案/SteamCMD。期間訂閱 native 供應
+// 進度並轉推 Wails "provision" 事件供建立精靈顯示進度(native-backend R12)。訂閱為 best-effort:
+// 失敗(節點離線等)不阻斷建立,僅無進度顯示。因建立精靈一次僅建一個實例,採全域(非以 uuid
+// 索引)事件名——建立當下前端尚未取得 uuid。
 func (a *App) CreateInstance(req CreateInstanceRequest) (string, error) {
+	if ch, stop, err := a.rt.SubscribeProvision(a.bgCtx()); err == nil {
+		defer stop()
+		go func() {
+			for p := range ch {
+				wailsruntime.EventsEmit(a.ctx, "provision", p)
+			}
+		}()
+	}
+	rec, err := a.rt.Create(a.bgCtx(), req.toCreateOptions())
+	if err != nil {
+		return "", fmt.Errorf("建立實例失敗: %w", err)
+	}
+	return rec.UUID, nil
+}
+
+// toCreateOptions 把建立請求轉為 core.CreateOptions(含 native-backend R2 runtime 與 R9 資源上限)。
+// 抽為獨立方法以利單元測轉填正確性,不需啟動整個後端。
+func (req CreateInstanceRequest) toCreateOptions() core.CreateOptions {
 	opts := core.CreateOptions{
 		TemplateID: req.TemplateID,
 		Variant:    req.Variant,
 		Params:     req.Params,
 		Secrets:    req.Secrets,
 		Node:       req.Node,
+		Runtime:    req.Runtime,
 	}
 	if req.Modpack != nil && (req.Modpack.Type != "" || req.Modpack.Ref != "") {
 		opts.Modpack = &core.ModpackSource{Type: core.ModpackType(req.Modpack.Type), Ref: req.Modpack.Ref}
 	}
-	rec, err := a.rt.Create(a.bgCtx(), opts)
-	if err != nil {
-		return "", fmt.Errorf("建立實例失敗: %w", err)
+	if req.MemoryMB != 0 || req.CPUPercent != 0 {
+		opts.Resources = &protocol.ResourceLimits{MemoryMB: req.MemoryMB, CPUPercent: req.CPUPercent}
 	}
-	return rec.UUID, nil
+	return opts
 }
 
 // ---- 生命週期 ----
@@ -270,6 +314,7 @@ func (a *App) ListInstances() ([]InstanceDTO, error) {
 		out = append(out, InstanceDTO{
 			UUID: r.UUID, TemplateID: r.TemplateID, Variant: r.Variant, Node: r.Node,
 			DesiredState: string(r.DesiredState), ObservedState: string(r.ObservedState),
+			Runtime: runtimeFromID(r.RuntimeID),
 		})
 	}
 	return out, nil
@@ -498,23 +543,61 @@ func (a *App) QueryEvents(req QueryEventsRequest) ([]EventDTO, error) {
 
 // ---- 節點 ----
 
-// NodeStatus 回傳所有節點狀態(離線顯示/重試依據)(R5)。
+// NodeStatus 回傳所有節點狀態(離線顯示/重試依據)(R5)。DockerAvailable 為節點層 Docker 能力
+// (與在線分離;native-backend R12/R13):單機下對本機節點填 a.rt.DockerAvailable()。
 func (a *App) NodeStatus() []NodeStatusDTO {
 	sts := a.rt.NodeStatuses()
+	dockerOK := a.rt.DockerAvailable()
 	out := make([]NodeStatusDTO, 0, len(sts))
 	for _, s := range sts {
-		out = append(out, NodeStatusDTO{Node: s.Node, Online: s.Online, LastErr: s.LastErr})
+		out = append(out, NodeStatusDTO{Node: s.Node, Online: s.Online, DockerAvailable: dockerOK, LastErr: s.LastErr})
 	}
 	return out
 }
+
+// DockerAvailable 回報本節點 Docker 能力是否就緒(native-backend R12)。native 恆在使節點可在線但
+// Docker 仍不可用;供建立表單決定是否置灰 docker 選項。
+func (a *App) DockerAvailable() bool { return a.rt.DockerAvailable() }
 
 // RetryDocker 重試連線 Docker(節點離線時)(R5)。
 func (a *App) RetryDocker() error { return a.rt.RetryDocker() }
 
 // ---- DTO 轉換 ----
 
+// defaultRuntime 回傳建立表單應預選的預設 runtime,對齊 core.resolveRuntime 的預設分派
+// (native-backend R2/R12):Windows 且範本支援 native → native;否則支援 docker → docker;
+// 僅支援 native 的非 Windows 邊角回 native;皆非(理論上不可達,範本驗證保證至少宣告其一)
+// 退回範本宣告的 runtime。goos 以參數注入以利單元測。
+func defaultRuntime(t *protocol.GameTemplate, goos string) string {
+	if goos == "windows" && t.SupportsNative() {
+		return "native"
+	}
+	if t.SupportsDocker() {
+		return "docker"
+	}
+	if t.SupportsNative() {
+		return "native"
+	}
+	return t.Runtime
+}
+
+// runtimeFromID 由 RuntimeID 前綴推導實例的執行後端標記(native-backend R12):帶 "native:" 前綴
+// → "native";其餘(裸容器 ID,既有 docker 實例零遷移)→ "docker"。
+func runtimeFromID(id protocol.RuntimeID) string {
+	if strings.HasPrefix(string(id), "native:") {
+		return "native"
+	}
+	return "docker"
+}
+
 func toTemplateDTO(t *protocol.GameTemplate) TemplateDTO {
-	dto := TemplateDTO{ID: t.ID, Name: t.Name, Runtime: t.Runtime, Modpack: t.Mods != nil}
+	dto := TemplateDTO{ID: t.ID, Name: t.Name, Runtime: defaultRuntime(t, runtime.GOOS), Modpack: t.Mods != nil}
+	if t.SupportsDocker() {
+		dto.Runtimes = append(dto.Runtimes, "docker")
+	}
+	if t.SupportsNative() {
+		dto.Runtimes = append(dto.Runtimes, "native")
+	}
 	for _, v := range t.Variants {
 		dto.Variants = append(dto.Variants, VariantDTO{ID: v.ID, Loader: v.Loader})
 	}

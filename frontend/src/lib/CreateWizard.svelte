@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { onMount, onDestroy, createEventDispatcher } from 'svelte';
   import { main } from '../../wailsjs/go/models';
-  import { ListTemplates, CreateInstance } from '../../wailsjs/go/main/App';
+  import { ListTemplates, CreateInstance, DockerAvailable } from '../../wailsjs/go/main/App';
+  import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime';
   import { call } from './api';
   import { pushToast } from './stores';
   import Modal from './Modal.svelte';
@@ -17,6 +18,20 @@
   let variant = '';
   let paramValues: Record<string, string> = {};
   let secretValues: Record<string, string> = {};
+
+  // Runtime 選擇(native-backend R12):runtime 為選定後端;dockerAvailable 決定 docker 選項是否置灰。
+  let runtime = '';
+  let dockerAvailable = true;
+  // native 資源上限(選填;R9)。空字串=不限。
+  let memoryMB = '';
+  let cpuPercent = '';
+
+  // 供應進度(建立期間;R12)。stage 空=尚無進度;percent<0=不確定態(如查版本/跑 installer)。
+  type Provision = { stage?: string; percent?: number; detail?: string };
+  let provStage = '';
+  let provPercent = -1;
+  let provDetail = '';
+  let unlistenProv: (() => void) | null = null;
 
   // 模組包(R11):type 空=無;curseforge/manual-cfzip 需 CF_API_KEY。
   const CF_KEY = 'CF_API_KEY';
@@ -42,9 +57,18 @@
       templates = await call(() => ListTemplates());
     } catch {
       /* toast 已呈現 */
-    } finally {
-      loading = false;
     }
+    try {
+      dockerAvailable = await call(() => DockerAvailable(), { silent: true });
+    } catch {
+      dockerAvailable = false; // 查詢失敗一律視為不可用(保守置灰)
+    }
+    loading = false;
+  });
+
+  onDestroy(() => {
+    if (unlistenProv) unlistenProv();
+    EventsOff('provision');
   });
 
   function onTemplateChange(): void {
@@ -54,6 +78,13 @@
     modpackType = '';
     modpackRef = '';
     cfApiKey = '';
+    memoryMB = '';
+    cpuPercent = '';
+    // 預選範本的預設 runtime;若預設為 docker 但不可用,退回其他可用能力(避免預選一個置灰項)。
+    runtime = tmpl?.runtime ?? '';
+    if (runtime === 'docker' && !dockerAvailable) {
+      runtime = (tmpl?.runtimes ?? []).find((r) => r !== 'docker') ?? runtime;
+    }
     variant = tmpl && tmpl.variants.length > 0 ? tmpl.variants[0].id : '';
     for (const p of tmpl?.params ?? []) {
       paramValues[p.key] = p.default != null ? String(p.default) : p.type === 'bool' ? 'false' : '';
@@ -92,6 +123,14 @@
     if (!tmpl || !canSubmit) return;
     error = '';
     submitting = true;
+    resetProvision();
+
+    // 訂閱供應進度:須在 CreateInstance 之前註冊(供應事件於建立同步期間送達)。
+    unlistenProv = EventsOn('provision', (p: Provision) => {
+      provStage = p.stage ?? '';
+      provPercent = typeof p.percent === 'number' ? p.percent : -1;
+      provDetail = p.detail ?? '';
+    });
 
     const secrets = { ...secretValues };
     if (needsCFKey && !templateHasCFSecret && cfApiKey.trim() !== '') {
@@ -103,6 +142,9 @@
       params: paramValues,
       secrets,
       node: '',
+      runtime,
+      memory_mb: runtime === 'native' ? parseIntOr0(memoryMB) : 0,
+      cpu_percent: runtime === 'native' ? parseIntOr0(cpuPercent) : 0,
       modpack:
         modpackType !== '' ? { type: modpackType, ref: modpackRef.trim() } : undefined,
     });
@@ -112,10 +154,27 @@
       pushToast('success', `已建立實例 ${uuid}`);
       dispatch('created', uuid);
     } catch (e) {
-      error = e == null ? '建立失敗' : typeof e === 'string' ? e : String((e as Error).message ?? e);
+      // 失敗訊息帶最後的供應階段,便於指出卡在哪個供應步驟(R12)。
+      const base = e == null ? '建立失敗' : typeof e === 'string' ? e : String((e as Error).message ?? e);
+      error = provStage ? `${base}(供應階段:${provStage})` : base;
     } finally {
       submitting = false;
+      if (unlistenProv) unlistenProv();
+      EventsOff('provision');
+      unlistenProv = null;
     }
+  }
+
+  function resetProvision(): void {
+    provStage = '';
+    provPercent = -1;
+    provDetail = '';
+  }
+
+  // parseIntOr0 把選填數字輸入轉為非負整數;空白或非法值視為 0(不限)。
+  function parseIntOr0(v: string): number {
+    const n = parseInt(v.trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
   }
 </script>
 
@@ -145,6 +204,63 @@
             {/each}
           </select>
         </div>
+      {/if}
+
+      {#if (tmpl.runtimes ?? []).length > 0}
+        <div class="field">
+          <label>執行後端<span class="req">*</span></label>
+          <div class="runtime-opts">
+            {#each tmpl.runtimes as rt}
+              {@const disabled = rt === 'docker' && !dockerAvailable}
+              <label class="runtime-opt" class:disabled>
+                <input
+                  type="radio"
+                  name="runtime"
+                  value={rt}
+                  checked={runtime === rt}
+                  {disabled}
+                  on:change={() => (runtime = rt)}
+                />
+                <span class="rt-name">{rt === 'native' ? '本機行程(native)' : 'Docker 容器'}</span>
+                {#if disabled}<span class="rt-note">未偵測到 Docker</span>{/if}
+              </label>
+            {/each}
+          </div>
+          <div class="hint">
+            {runtime === 'native'
+              ? '本機行程:直接在本機執行,無容器隔離;自動供應 Java／伺服器檔案,免安裝 Docker。'
+              : runtime === 'docker'
+                ? 'Docker 容器:需 Docker Desktop,提供檔案系統與網路隔離。'
+                : '選擇此實例的執行方式。'}
+          </div>
+        </div>
+
+        {#if runtime === 'native'}
+          <div class="field grid2">
+            <div>
+              <label for="mem-mb">記憶體上限 MB(選填)</label>
+              <input
+                id="mem-mb"
+                type="number"
+                min="0"
+                bind:value={memoryMB}
+                placeholder="不限"
+              />
+            </div>
+            <div>
+              <label for="cpu-pct">CPU 上限 %(選填)</label>
+              <input
+                id="cpu-pct"
+                type="number"
+                min="0"
+                max="100"
+                bind:value={cpuPercent}
+                placeholder="不限"
+              />
+            </div>
+          </div>
+          <div class="hint">留空表示不限額;native 以 Windows Job Objects 強制上限。</div>
+        {/if}
       {/if}
 
       {#if tmpl.params.length > 0}
@@ -220,6 +336,19 @@
         {/if}
       {/if}
 
+      {#if submitting && (provStage || runtime === 'native')}
+        <div class="prov-box">
+          <div class="prov-head">
+            <span class="prov-stage">{provStage || '準備供應…'}</span>
+            {#if provPercent >= 0}<span class="prov-pct">{Math.round(provPercent)}%</span>{/if}
+          </div>
+          <div class="bar" class:indet={provPercent < 0}>
+            <div class="fill" style={provPercent >= 0 ? `width:${Math.min(100, provPercent)}%` : ''}></div>
+          </div>
+          {#if provDetail}<div class="prov-detail muted">{provDetail}</div>{/if}
+        </div>
+      {/if}
+
       {#if error}
         <div class="err-box">{error}</div>
       {/if}
@@ -250,6 +379,80 @@
     color: var(--fg-0);
     white-space: pre-wrap;
     font-size: 13px;
+  }
+  .runtime-opts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  .runtime-opt {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .runtime-opt.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .runtime-opt .rt-note {
+    font-size: 11px;
+    color: var(--fg-2);
+  }
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .prov-box {
+    background: var(--bg-2, rgba(127, 127, 127, 0.08));
+    border: 1px solid var(--line);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+    margin: 14px 0;
+  }
+  .prov-head {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    margin-bottom: 8px;
+  }
+  .prov-pct {
+    font-variant-numeric: tabular-nums;
+    color: var(--fg-1);
+  }
+  .prov-detail {
+    font-size: 12px;
+    margin-top: 6px;
+    word-break: break-all;
+  }
+  .bar {
+    height: 6px;
+    background: var(--bg-3);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .bar .fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s ease;
+  }
+  /* 不確定態:百分比未知(percent<0),以動畫條表達進行中。 */
+  .bar.indet .fill {
+    width: 40%;
+    animation: indet 1.1s ease-in-out infinite;
+  }
+  @keyframes indet {
+    0% {
+      margin-left: -40%;
+    }
+    100% {
+      margin-left: 100%;
+    }
   }
   .actions {
     display: flex;

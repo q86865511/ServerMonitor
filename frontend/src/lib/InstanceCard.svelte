@@ -96,7 +96,14 @@
 <div class="card instance">
   <div class="spread top">
     <div class="ident">
-      <div class="name mono">{inst.uuid}</div>
+      <div class="name mono">
+        {inst.uuid}
+        {#if inst.runtime}
+          <span class="rt-badge" class:native={inst.runtime === 'native'} title="執行後端">
+            {inst.runtime === 'native' ? 'native' : 'docker'}
+          </span>
+        {/if}
+      </div>
       <div class="sub muted">{inst.template_id} · {inst.variant || '預設'} · {inst.node}</div>
     </div>
     <StatePill state={inst.observed_state} desired={inst.desired_state} />
@@ -175,6 +182,23 @@
     font-size: 14px;
     font-weight: 600;
     word-break: break-all;
+  }
+  .rt-badge {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+    background: var(--bg-3);
+    color: var(--fg-2);
+  }
+  .rt-badge.native {
+    background: rgba(63, 185, 80, 0.16);
+    color: var(--ok, #3fb950);
   }
   .sub {
     font-size: 12px;

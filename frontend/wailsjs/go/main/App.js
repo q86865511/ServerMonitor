@@ -14,6 +14,10 @@ export function DeleteSchedule(arg1) {
   return window['go']['main']['App']['DeleteSchedule'](arg1);
 }
 
+export function DockerAvailable() {
+  return window['go']['main']['App']['DockerAvailable']();
+}
+
 export function GetAlertSettings(arg1) {
   return window['go']['main']['App']['GetAlertSettings'](arg1);
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ type checksumSpec struct {
 func (c checksumSpec) skip() bool { return strings.TrimSpace(c.Value) == "" }
 
 // newHasher 依演算法名回傳對應的 hash.Hash。MC 安裝器需 sha1(Vanilla)與 sha256(Paper),
+// 模組包安裝器(R11)需 sha512(mrpack hashes 官方保證必含,優先採用)與 sha1(次選),
 // 故此處讓演算法可由呼叫端指定,不寫死 sha256。
 func newHasher(algo string) (hash.Hash, error) {
 	switch strings.ToLower(strings.TrimSpace(algo)) {
@@ -35,6 +37,8 @@ func newHasher(algo string) (hash.Hash, error) {
 		return sha256.New(), nil
 	case "sha1":
 		return sha1.New(), nil
+	case "sha512":
+		return sha512.New(), nil
 	default:
 		return nil, fmt.Errorf("provision: 不支援的校驗演算法 %q", algo)
 	}

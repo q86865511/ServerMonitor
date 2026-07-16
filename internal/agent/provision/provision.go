@@ -3,8 +3,8 @@
 // 落地。本套件只做「取得位元組並安全落地」,不碰 Job Object / PID(那是 supervisor 的職責),
 // 也刻意不依賴 agent 內部型別——進度以自定義 ProgressFunc 回呼傳出,便於 httptest 獨立單元測。
 //
-// 對應規格:specs/native-backend R4(本檔與 java.go 實作 JRE 供應);R5/R6/R11 的安裝器
-// 於後續任務(T4~T6、T11)加入,New 已預留組合位。
+// 對應規格:specs/native-backend R4(本檔與 java.go 實作 JRE 供應);R5/R6 安裝器見
+// mc_*.go/steamcmd.go;R11 模組包安裝器見 modprovider.go/modrinth.go(T10)。
 package provision
 
 import (
@@ -63,7 +63,14 @@ type Provisioner struct {
 	// SteamCMD 供應 SteamCMD 並安裝 Steam 專用伺服器(R6,如 Palworld)。
 	SteamCMD *SteamCMDProvisioner
 
-	// TODO(T11/R11、R14):ModProvider——Modrinth(首發)/CurseForge(R14)模組包解析與落位。
+	// ModProviders 依模組包來源型別("modrinth"｜"curseforge")分派模組包解析與安裝(R11/R14)。
+	// "modrinth" 於 New 註冊首發實作;"curseforge" 留空位(T14,需 CF API key 才啟用,見
+	// requirements.md R14),呼叫端(provisionAdapter)對此型別回明確的「尚未支援」錯誤。
+	ModProviders map[string]ModProvider
+
+	// modrinthAPIBase 是 Modrinth API v2 base URL,經 WithModrinthAPIBase 選項決定後傳入
+	// ModrinthProvider(測試以 httptest server URL 注入)。
+	modrinthAPIBase string
 }
 
 // Option 以函式選項調整 Provisioner 建構參數。
@@ -83,6 +90,15 @@ func WithJavaAPIBase(base string) Option {
 	return func(p *Provisioner) {
 		if base != "" {
 			p.javaAPIBase = base
+		}
+	}
+}
+
+// WithModrinthAPIBase 覆寫 Modrinth API base URL(測試以 httptest server URL 注入)。
+func WithModrinthAPIBase(base string) Option {
+	return func(p *Provisioner) {
+		if base != "" {
+			p.modrinthAPIBase = base
 		}
 	}
 }
@@ -109,6 +125,11 @@ func New(cacheRoot string, opts ...Option) *Provisioner {
 
 	// SteamCMD 共用同一 client;快取根與 Provisioner 一致。
 	p.SteamCMD = NewSteamCMDProvisioner(cacheRoot, WithSteamCMDHTTPClient(p.client))
+
+	// 模組包提供者(R11):"modrinth" 首發;"curseforge" 待 T14(需 CF API key)。
+	p.ModProviders = map[string]ModProvider{
+		"modrinth": NewModrinthProvider(p.client, p.modrinthAPIBase),
+	}
 
 	return p
 }
