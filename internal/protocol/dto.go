@@ -72,6 +72,48 @@ type InstanceSpec struct {
 	Runtime string `json:"runtime,omitempty"` // "docker" | "native"
 	// Modpack 為遠端模組包來源(native-backend R11/R14)。手動上傳的模組包檔仍走 Mounts。
 	Modpack *ModpackRef `json:"modpack,omitempty"`
+	// Native 為 native 執行後端所需的供應/啟動/設定透傳資訊(native-backend R1/R3)。
+	// InstanceSpec 本身不帶範本;如同 docker 路徑由 core 把鎖定映像放入 Image,native 路徑由 core
+	// 從範本 [native] 區段擷取此子集填入(buildSpec,T9 接線),使 agent.NativeBackend 於 Create
+	// 時無需查詢範本即可供應與啟動。Runtime!="native" 時為 nil。
+	Native *NativeSpecPayload `json:"native,omitempty"`
+}
+
+// NativeSpecPayload 是 core 透傳給 NativeBackend 的 native 執行資訊子集(native-backend R1/R3)。
+// 刻意以獨立 JSON 契約型別表達(而非直接引用範本層 TOML 型別),使 wire DTO 與範本內部欄位解耦;
+// T9 buildSpec 負責由 protocol.NativeSpec(範本)翻譯為本型別。
+type NativeSpecPayload struct {
+	Provision NativeProvision   `json:"provision"`
+	Launch    NativeLaunch      `json:"launch"`
+	Config    []NativeConfigMap `json:"config,omitempty"`  // params→遊戲設定檔映射(具名編碼器)
+	ModsDir   string            `json:"mods_dir,omitempty"` // native 模組落位目錄(相對實例根;T10 用)
+}
+
+// NativeProvision 是 native 建立期的供應宣告(native-backend R4/R5/R6)。
+type NativeProvision struct {
+	Kind          string `json:"kind"`                     // "java" | "steamcmd" | ""(免供應)
+	JavaMajor     int    `json:"java_major,omitempty"`     // kind=java:所需 Java major 版
+	Loader        string `json:"loader,omitempty"`         // kind=java:變體 loader(vanilla/paper/fabric/forge/neoforge),供 MC 安裝器選取
+	EULA          bool   `json:"eula,omitempty"`           // kind=java:接受 EULA → 寫 eula.txt(R5)
+	SteamAppID    string `json:"steam_app_id,omitempty"`   // kind=steamcmd:Steam App ID(如 "2394010")
+	UpdateOnStart bool   `json:"update_on_start,omitempty"` // R6:啟動前重跑 app_update(T7 起用)
+}
+
+// NativeLaunch 是 native 啟動命令模板(native-backend R7)。Command 為 argv 模板,支援 token:
+// {java} {server_jar} {memory_mb} {instance_dir} {port:<name>},由 NativeBackend 於 Start 展開。
+type NativeLaunch struct {
+	Command    []string `json:"command"`
+	WorkingDir string   `json:"working_dir,omitempty"` // 相對實例資料根;空=資料根
+}
+
+// NativeConfigMap 是一個 params→遊戲設定檔的映射(native-backend R3)。Format 決定編碼器:
+// "properties"(k=v 逐行)與 "palworld-ini"(單行 OptionSettings=(K=V,...) 打包)。
+// Map 的鍵索引進 InstanceSpec.Env(paramKey → env 值),值為設定檔內的鍵名(configKey)。
+type NativeConfigMap struct {
+	File    string            `json:"file"`              // 設定檔名(相對實例根)
+	Format  string            `json:"format"`            // "properties" | "palworld-ini"
+	Section string            `json:"section,omitempty"` // palworld-ini 用(ini section 名)
+	Map     map[string]string `json:"map"`               // paramKey(索引 Env) -> configKey
 }
 
 // ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,
