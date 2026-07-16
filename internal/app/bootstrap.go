@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -23,13 +24,49 @@ import (
 	"servermonitor/internal/protocol"
 )
 
-// BackendFactory 依 agent.DockerOptions 建立一個執行後端。生產為 NewDockerBackend;
-// 測試注入回傳 agent.MockBackend 的工廠以免 Docker。
-type BackendFactory func(agent.DockerOptions) (agent.RuntimeBackend, error)
+// BackendFactory 依 agent.BackendOptions 建立節點代理的頂層執行後端(native-backend R2)。
+// 生產為 defaultBackendFactory(Windows 回 dispatchBackend 併 native+docker;非 Windows 回
+// docker-only);測試注入回傳 agent.MockBackend 的工廠以免 Docker。
+type BackendFactory func(agent.BackendOptions) (agent.RuntimeBackend, error)
 
-// defaultBackendFactory 是生產預設:官方 Docker SDK 後端。
-func defaultBackendFactory(opts agent.DockerOptions) (agent.RuntimeBackend, error) {
-	return agent.NewDockerBackend(opts)
+// DockerFactory 只建立一個 docker 子後端,供 RetryDocker 於 dispatch 頂層熱替換 docker 能力
+// (不重建整個 agent);非 dispatch 頂層(docker-only/測試)不用它。
+type DockerFactory func(agent.BackendOptions) (agent.RuntimeBackend, error)
+
+// defaultBackendFactory 是生產預設頂層後端工廠(native-backend R2/R13):
+//   - Windows:建 NativeBackend(恆成功,免 Docker 亦可運行)+ 盡力建 DockerBackend(失敗則
+//     docker=nil,節點不因 Docker down 離線)→ 回 dispatchBackend。
+//   - 非 Windows:維持 docker-only 現行為(native 不支援)——docker 建構失敗即回錯,沿用既有
+//     離線啟動流程。
+func defaultBackendFactory(opts agent.BackendOptions) (agent.RuntimeBackend, error) {
+	if runtime.GOOS != "windows" {
+		return defaultDockerFactory(opts)
+	}
+	native, err := agent.NewNativeBackend(agent.NativeOptions{
+		DataRoot:   opts.InstancesRoot,
+		BackupRoot: opts.BackupRoot,
+		CacheRoot:  opts.CacheRoot,
+		Node:       opts.Node,
+		Prov:       agent.NewProvisionAdapter(opts.CacheRoot),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("建立 native 後端失敗: %w", err)
+	}
+	var docker agent.RuntimeBackend
+	if d, derr := defaultDockerFactory(opts); derr == nil {
+		docker = d
+	}
+	return agent.NewDispatchBackend(native, docker)
+}
+
+// defaultDockerFactory 由 BackendOptions 建立官方 Docker SDK 後端(dispatch 子後端與非 Windows
+// 頂層共用)。
+func defaultDockerFactory(opts agent.BackendOptions) (agent.RuntimeBackend, error) {
+	return agent.NewDockerBackend(agent.DockerOptions{
+		DataRoot:   opts.InstancesRoot,
+		BackupRoot: opts.BackupRoot,
+		Node:       opts.Node,
+	})
 }
 
 // Options 是 Bootstrap 的輸入。零值皆有合理預設。
@@ -38,8 +75,11 @@ type Options struct {
 	DataRoot string
 	// BuiltinTemplateDir 是隨執行檔散布的內建範本目錄;空字串用「執行檔目錄/templates」。
 	BuiltinTemplateDir string
-	// BackendFactory 建立執行後端;nil 用 Docker SDK 後端。
+	// BackendFactory 建立頂層執行後端;nil 用 defaultBackendFactory(Windows dispatch、其餘 docker)。
 	BackendFactory BackendFactory
+	// DockerFactory 只建 docker 子後端,供 RetryDocker 於 dispatch 頂層熱替換;nil 用 defaultDockerFactory。
+	// 主要供測試注入假 docker 後端以驗證熱替換,不必真連 Docker daemon。
+	DockerFactory DockerFactory
 	// AlertChannel 覆寫告警送出通道(nil 用 Discord webhook 通道)。供測試注入 fake 觀測告警。
 	AlertChannel core.AlertChannel
 	// Now 供測試注入固定時鐘;nil 用 time.Now。
@@ -57,6 +97,7 @@ const (
 	subDirJournalOps    = "journal/ops"    // 備份/還原 op-journal(必與 create 相異)
 	subDirInstances     = "instances"      // agent dataRoot
 	subDirBackups       = "backups"        // agent backupRoot
+	subDirCache         = "cache"          // native 供應共用快取根(JRE/SteamCMD)
 	subDirTemplates     = "templates"      // 使用者自訂範本
 	appDBFileName       = "app.db"
 	fallbackFileName    = "events-fallback.ndjson"
@@ -104,8 +145,9 @@ type Runtime struct {
 	threshold *core.ThresholdMonitor
 	monitor   *core.MonitorHub
 
-	backendOpts    agent.DockerOptions // 供 RetryDocker 重建後端用的固定參數
-	backendFactory BackendFactory      // 建立後端的工廠(RetryDocker 沿用與 Bootstrap 同一個;測試可注入)
+	backendOpts    agent.BackendOptions // 供 RetryDocker 重建後端用的固定參數
+	backendFactory BackendFactory       // 建立頂層後端的工廠(RetryDocker 於非 dispatch 頂層沿用;測試可注入)
+	dockerFactory  DockerFactory        // 只建 docker 子後端(RetryDocker 於 dispatch 頂層熱替換用)
 
 	// 背景迴圈的 context(各自獨立以支援 Shutdown 的有序收束)。
 	rootCtx      context.Context
@@ -148,6 +190,10 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	if factory == nil {
 		factory = defaultBackendFactory
 	}
+	dockerFactory := opts.DockerFactory
+	if dockerFactory == nil {
+		dockerFactory = defaultDockerFactory
+	}
 
 	// 1) 解析資料根:先讀設定(可指定 data_root),再定案有效根。
 	baseRoot := opts.DataRoot
@@ -175,8 +221,9 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	opsDir := filepath.Join(dataRoot, subDirJournalOps)
 	instancesDir := filepath.Join(dataRoot, subDirInstances)
 	backupsDir := filepath.Join(dataRoot, subDirBackups)
+	cacheDir := filepath.Join(dataRoot, subDirCache)
 	userTemplatesDir := filepath.Join(dataRoot, subDirTemplates)
-	for _, d := range []string{dataRoot, createDir, opsDir, instancesDir, backupsDir, userTemplatesDir} {
+	for _, d := range []string{dataRoot, createDir, opsDir, instancesDir, backupsDir, cacheDir, userTemplatesDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, fmt.Errorf("建立目錄 %s 失敗: %w", d, err)
 		}
@@ -241,9 +288,11 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	// 7) 節點登錄。
 	r.registry = core.NewNodeRegistry(events)
 
-	// 8) 節點代理(loopback);Docker 不可用時標離線但不致命。
-	r.backendOpts = agent.DockerOptions{DataRoot: instancesDir, BackupRoot: backupsDir, Node: node}
+	// 8) 節點代理(loopback);Docker 不可用時標離線但不致命(Windows dispatch 頂層恆在線,詳見
+	//    startAgentLocked/RetryDocker)。
+	r.backendOpts = agent.BackendOptions{InstancesRoot: instancesDir, BackupRoot: backupsDir, CacheRoot: cacheDir, Node: node}
 	r.backendFactory = factory
+	r.dockerFactory = dockerFactory
 	if err := r.startAgentLocked(factory); err != nil {
 		// R5:daemon 不可用→節點離線、GUI 可啟動;註冊佔位 client 使呼叫自然失敗、可經 RetryDocker 重試。
 		placeholder := core.NewNodeClient(offlinePlaceholderURL, "", nil)
@@ -396,11 +445,30 @@ func (r *Runtime) startAgentLocked(factory BackendFactory) error {
 	return nil
 }
 
-// RetryDocker 於節點離線時重試建立 Docker 後端與代理(R5)。成功→節點恢復線上並更新 MonitorHub
-// 的 dialer 指向新 client。失敗→維持離線並回錯誤。
+// RetryDocker 重試 Docker 能力(native-backend R5/R13)。兩種頂層後端型態:
+//   - dispatch 頂層(Windows 生產):節點已因 native 在線,只需重建 docker 子後端並熱替換
+//     (SwapDocker),不重建整個 agent、不動 native 與既有 client/listener。docker 已可用則 no-op。
+//   - 非 dispatch 頂層(docker-only/測試):沿用整個 agent 重建的離線恢復路徑(節點在線即 no-op)。
+//
+// dispatch 熱替換後,MonitorHub 的 registry-dialer 與 client/listener 均不變(agent 未重建),
+// docker 事件經 dispatchBackend 的 pump 於替換後自動接上(見 dispatchBackend.SwapDocker)。
 func (r *Runtime) RetryDocker() error {
 	r.agentMu.Lock()
 	defer r.agentMu.Unlock()
+
+	if dc, ok := r.backend.(agent.DockerCapable); ok {
+		if dc.DockerAvailable() {
+			return nil // docker 子後端已可用
+		}
+		docker, err := r.dockerFactory(r.backendOpts)
+		if err != nil {
+			return err // 節點維持在線(native),僅 docker 能力仍缺
+		}
+		dc.SwapDocker(docker)
+		return nil
+	}
+
+	// 非 dispatch 頂層:沿用既有整個 agent 重建的離線恢復流程(T15 雙審 #1(b))。
 	if st, ok := r.registry.Status(r.node); ok && st.Online {
 		return nil // 已線上,無需重試
 	}
@@ -408,10 +476,22 @@ func (r *Runtime) RetryDocker() error {
 		r.registry.MarkOffline(r.node, err)
 		return err
 	}
-	// startAgentLocked 已以新 client 覆蓋 registry 登錄;MonitorHub 的 dialer 是 registry 委派
-	// (每次重連撥號取當前 client,見 NewRegistryStreamDialer),故重建後串流會於下一次退避重連
-	// 自動改用新連線,無需重啟應用(T15 雙審 #1(b))。
 	return nil
+}
+
+// DockerAvailable 回報本節點 Docker 能力是否就緒(native-backend R12/R13:節點在線與 Docker
+// 能力分離)。dispatch 頂層直接查子後端;非 dispatch 頂層(docker-only)則等同節點在線。
+// 供上層(Wails 綁定,T12)顯示 docker 選項是否置灰。
+func (r *Runtime) DockerAvailable() bool {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	if dc, ok := r.backend.(agent.DockerCapable); ok {
+		return dc.DockerAvailable()
+	}
+	if st, ok := r.registry.Status(r.node); ok {
+		return st.Online
+	}
+	return false
 }
 
 // closeBackend 關閉實作了 Close 的後端(Mock/Docker 皆有;介面未含 Close,故型別斷言)。

@@ -77,6 +77,18 @@ type InstanceSpec struct {
 	// 從範本 [native] 區段擷取此子集填入(buildSpec,T9 接線),使 agent.NativeBackend 於 Create
 	// 時無需查詢範本即可供應與啟動。Runtime!="native" 時為 nil。
 	Native *NativeSpecPayload `json:"native,omitempty"`
+	// Resources 為此實例的資源上限(native Job Objects / docker cgroup 同來源;native-backend R9)。
+	// 由範本/GUI 於 T9/T12 填入;nil 或零值欄位表示該維度不限額。native 後端據此建 Job Object 強制
+	// 記憶體/CPU 上限並取 {memory_mb} token 值(缺值退回既有 Env 路徑)。
+	Resources *ResourceLimits `json:"resources,omitempty"`
+}
+
+// ResourceLimits 是一個實例的資源上限(native-backend R9),與 Docker 後端同一設定來源。
+// native 後端以 Windows Job Objects 強制:MemoryMB→JOB_OBJECT_LIMIT_JOB_MEMORY;
+// CPUPercent→Job CPU rate control(hard cap)。零值欄位=該維度不限額。
+type ResourceLimits struct {
+	MemoryMB   int `json:"memory_mb,omitempty"`   // 記憶體上限(MB);0=不限
+	CPUPercent int `json:"cpu_percent,omitempty"` // CPU 上限:占所有核心的百分比(1-100,語意同 ResourceStats.CPUPercent);0=不限
 }
 
 // NativeSpecPayload 是 core 透傳給 NativeBackend 的 native 執行資訊子集(native-backend R1/R3)。
@@ -85,17 +97,17 @@ type InstanceSpec struct {
 type NativeSpecPayload struct {
 	Provision NativeProvision   `json:"provision"`
 	Launch    NativeLaunch      `json:"launch"`
-	Config    []NativeConfigMap `json:"config,omitempty"`  // params→遊戲設定檔映射(具名編碼器)
+	Config    []NativeConfigMap `json:"config,omitempty"`   // params→遊戲設定檔映射(具名編碼器)
 	ModsDir   string            `json:"mods_dir,omitempty"` // native 模組落位目錄(相對實例根;T10 用)
 }
 
 // NativeProvision 是 native 建立期的供應宣告(native-backend R4/R5/R6)。
 type NativeProvision struct {
-	Kind          string `json:"kind"`                     // "java" | "steamcmd" | ""(免供應)
-	JavaMajor     int    `json:"java_major,omitempty"`     // kind=java:所需 Java major 版
-	Loader        string `json:"loader,omitempty"`         // kind=java:變體 loader(vanilla/paper/fabric/forge/neoforge),供 MC 安裝器選取
-	EULA          bool   `json:"eula,omitempty"`           // kind=java:接受 EULA → 寫 eula.txt(R5)
-	SteamAppID    string `json:"steam_app_id,omitempty"`   // kind=steamcmd:Steam App ID(如 "2394010")
+	Kind          string `json:"kind"`                      // "java" | "steamcmd" | ""(免供應)
+	JavaMajor     int    `json:"java_major,omitempty"`      // kind=java:所需 Java major 版
+	Loader        string `json:"loader,omitempty"`          // kind=java:變體 loader(vanilla/paper/fabric/forge/neoforge),供 MC 安裝器選取
+	EULA          bool   `json:"eula,omitempty"`            // kind=java:接受 EULA → 寫 eula.txt(R5)
+	SteamAppID    string `json:"steam_app_id,omitempty"`    // kind=steamcmd:Steam App ID(如 "2394010")
 	UpdateOnStart bool   `json:"update_on_start,omitempty"` // R6:啟動前重跑 app_update(T7 起用)
 }
 

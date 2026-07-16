@@ -76,7 +76,7 @@ func t15Opts(t *testing.T, factory BackendFactory) Options {
 func TestOfflineBootstrapRetryDockerStats(t *testing.T) {
 	var attempts int32
 	var backend *t15Backend
-	factory := func(_ agent.DockerOptions) (agent.RuntimeBackend, error) {
+	factory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
 		if atomic.AddInt32(&attempts, 1) == 1 {
 			return nil, errors.New("docker 不可用(模擬離線啟動)")
 		}
@@ -129,7 +129,7 @@ func TestOfflineBootstrapRetryDockerStats(t *testing.T) {
 func TestShutdownDrainsInflightOp(t *testing.T) {
 	backend := newT15Backend()
 	backend.blockStart = true
-	factory := func(_ agent.DockerOptions) (agent.RuntimeBackend, error) {
+	factory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
 		return backend, nil
 	}
 	rt, err := Bootstrap(t15Opts(t, factory))
@@ -184,7 +184,7 @@ func TestShutdownDrainsInflightOp(t *testing.T) {
 // 避免對仍在執行的實例失去可觀測性。
 func TestStopFailureKeepsMonitoring(t *testing.T) {
 	backend := newT15Backend()
-	factory := func(_ agent.DockerOptions) (agent.RuntimeBackend, error) {
+	factory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
 		return backend, nil
 	}
 	rt, err := Bootstrap(t15Opts(t, factory))

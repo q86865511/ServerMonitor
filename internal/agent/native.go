@@ -157,6 +157,11 @@ type procHandle struct {
 	log       *rollingLog
 	done      chan struct{} // Wait 返回後關閉
 
+	// job 是強制資源上限並提供行程樹統計的 Windows Job Object(T7;非 Windows 為 no-op 存根)。
+	// 恆建立(即使不限額,僅為取 accounting);建立/掛入失敗時降級為 nil(僅監督不強制,見 Start)。
+	job    *jobObject
+	limits jobLimits // 本實例套用的資源上限(供 Stats 回報 MemoryLimit)
+
 	mu       sync.Mutex
 	finished bool
 	exitCode int
@@ -240,7 +245,7 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		ServerJar:  serverJar,
 		Command:    spec.Native.Launch.Command,
 		WorkingDir: spec.Native.Launch.WorkingDir,
-		MemoryMB:   resolveMemoryMB(spec.Env),
+		MemoryMB:   resolveMemoryMB(spec),
 		Ports:      spec.Ports,
 	}
 	if err := b.writeNativeMeta(uuid, meta); err != nil {
@@ -347,6 +352,7 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 		return fmt.Errorf("啟動行程失敗: %w", err)
 	}
 	now := time.Now().UTC()
+	limits := resolveJobLimits(spec)
 	h := &procHandle{
 		uuid:      uuid,
 		pid:       cmd.Process.Pid,
@@ -354,7 +360,12 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 		cmd:       cmd,
 		log:       rl,
 		done:      make(chan struct{}),
+		limits:    limits,
 	}
+	// Job Object:恆建立以取得行程樹 accounting(R8),有上限時一併強制記憶體/CPU(R9)。
+	// 建立或掛入失敗即降級為「僅監督不強制」——記可辨識事件、不阻斷啟動(design 風險節:收養/納管
+	// 失敗降級)。Job 刻意不設 KILL_ON_JOB_CLOSE,故 agent 退出不連坐殺伺服器(R9/R7 共存)。
+	h.job = b.attachJob(h, limits)
 	go captureStream(rl, "stdout", stdout)
 	go captureStream(rl, "stderr", stderr)
 
@@ -378,6 +389,10 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 
 // reap 等待行程結束,合成 die 事件(帶 exitCode),清 proc.json、收束日誌即時扇出。
 // 崩潰與計畫停止在事件層不可區分(與 Docker die 一致),planned 與否由核心依 token 對帳。
+//
+// OOM(R9):Job 記憶體上限被觸發時,先合成 oom 事件(供上層告警標「超出記憶體上限」、區別一般
+// crash),再合成 die 事件(仍驅動既有自動重啟狀態機 lifecycle.go:404,語意對齊 Docker 先 oom 後
+// die)。oom 訊號由 Job completion port 於配額命中時設旗標(jobObject.memoryLimitHit)。
 func (b *NativeBackend) reap(h *procHandle) {
 	werr := h.cmd.Wait()
 	code := 0
@@ -391,12 +406,31 @@ func (b *NativeBackend) reap(h *procHandle) {
 	h.setFinished(code)
 	_ = os.Remove(b.procMetaPath(h.uuid)) // 行程已歿,清執行中繼(收養不再視其存活)
 	h.log.close()
-	close(h.done)
-	b.hub.emit(RuntimeEvent{ID: nativeID(h.uuid), Kind: RuntimeEventDie, TsUTC: time.Now().UTC(), ExitCode: &code})
+	close(h.done) // 先解除 Stop 等待(die/oom 事件於其後 emit,不阻擋 Stop 返回)
+
+	// OOM 判定:記憶體配額命中訊號經 completion port 非同步投遞。乾淨退出(code==0)不可能是 OOM,
+	// 直接讀旗標;異常退出則給一小段 settle 窗等待可能仍在途的通知(fast-path:已命中即刻返回)。
+	oom := false
+	if h.job != nil {
+		if code == 0 {
+			oom = h.job.memoryLimitHit()
+		} else {
+			oom = h.job.awaitMemoryLimit(nativeOOMSettleWindow)
+		}
+	}
+	now := time.Now().UTC()
+	if oom {
+		b.hub.emit(RuntimeEvent{ID: nativeID(h.uuid), Kind: RuntimeEventOOM, TsUTC: now})
+	}
+	b.hub.emit(RuntimeEvent{ID: nativeID(h.uuid), Kind: RuntimeEventDie, TsUTC: now, ExitCode: &code})
+	if h.job != nil {
+		_ = h.job.close() // 釋放 Job/completion port 控制代碼(未設 KILL_ON_JOB_CLOSE,不影響已歿行程)
+	}
 }
 
 // Stop 等 opts.Grace 優雅退出(呼叫端已先送 hooks.stop),逾時強殺整棵行程樹(R1/R7)。
-// 過渡:以 taskkill /T(Windows)強殺行程樹;Job Objects TerminateJobObject 於 T7 取代。
+// 強殺以 TerminateJobObject 終止整個 Job(行程樹一次收束,T7);無 Job(降級或非 Windows 存根)
+// 時 fallback 至 taskkill /T(Windows)或行程 Kill。
 func (b *NativeBackend) Stop(ctx context.Context, id protocol.RuntimeID, opts StopOpts) error {
 	if err := ctxErr(ctx); err != nil {
 		return err
@@ -421,7 +455,7 @@ func (b *NativeBackend) Stop(ctx context.Context, id protocol.RuntimeID, opts St
 			return ctx.Err()
 		}
 	}
-	if err := killProcessTree(h.pid); err != nil {
+	if err := b.forceKill(h); err != nil {
 		return fmt.Errorf("強殺行程樹失敗: %w", err)
 	}
 	select {
@@ -532,7 +566,7 @@ func (b *NativeBackend) Remove(ctx context.Context, id protocol.RuntimeID, opts 
 	h := b.procs[uuid]
 	b.mu.Unlock()
 	if h != nil && !h.isFinished() {
-		_ = killProcessTree(h.pid)
+		_ = b.forceKill(h)
 		<-h.done
 	}
 	b.mu.Lock()
@@ -620,7 +654,10 @@ func (b *NativeBackend) ExecProcess(ctx context.Context, id protocol.RuntimeID, 
 	return ExecResult{ExitCode: code, Stdout: out.String(), Stderr: errBuf.String()}, nil
 }
 
-// Stats 回報資料磁碟用量;行程樹 CPU/記憶體統計屬 Job Objects,歸 T7(此處留零值)。
+// Stats 回報行程樹 CPU/記憶體(經 Job Object accounting)與資料磁碟用量(R6/R8)。CPU 正規化語意
+// 與 Docker 一致(占所有核心的百分比,docker_monitor.go:117):取兩次行程樹累計 CPU 時間,除以
+// 取樣牆鐘間隔 × NumCPU。記憶體=列舉 Job 內所有行程 WorkingSetSize 加總(涵蓋 java/steamcmd 子
+// 行程)。行程未執行或 Job 降級(無 h.job)時,CPU/記憶體留零值,由 GUI 呈現「不適用」。
 func (b *NativeBackend) Stats(ctx context.Context, id protocol.RuntimeID) (protocol.ResourceStats, error) {
 	if err := ctxErr(ctx); err != nil {
 		return protocol.ResourceStats{}, err
@@ -630,6 +667,24 @@ func (b *NativeBackend) Stats(ctx context.Context, id protocol.RuntimeID) (proto
 		return protocol.ResourceStats{}, ErrNotFound
 	}
 	stats := protocol.ResourceStats{TsUTC: time.Now().UTC()}
+
+	b.mu.Lock()
+	h := b.procs[uuid]
+	b.mu.Unlock()
+	if h != nil && !h.isFinished() && h.job != nil {
+		if s1, err := h.job.stats(); err == nil {
+			t0 := time.Now()
+			time.Sleep(nativeStatSampleWindow)
+			if s2, err := h.job.stats(); err == nil {
+				stats.CPUPercent = calcNativeCPUPercent(s2.CPUTime-s1.CPUTime, time.Since(t0), runtime.NumCPU())
+				stats.MemoryBytes = s2.WorkingSetSum
+			}
+		}
+		if h.limits.MemoryBytes > 0 {
+			stats.MemoryLimit = h.limits.MemoryBytes
+		}
+	}
+
 	if used, err := dataDirUsage(b.instanceDataRoot(uuid)); err == nil {
 		stats.DataDiskBytes = &used
 	}
@@ -829,10 +884,94 @@ func expandPortTokens(s string, ports map[string]int) (string, error) {
 	}
 }
 
-// ---- 行程樹強殺(T7 以 Job Objects 取代)----
+// ---- Job Objects:資源上限、行程樹統計與強殺(T7)----
 
-// killProcessTree 強制終止 pid 及其子行程樹。過渡實作:Windows 用 taskkill /T /F;其他平台
-// (單元測跑得到的 Linux CI)以行程 Kill。Windows Job Objects TerminateJobObject 於 T7 取代。
+// nativeStatSampleWindow 是 Stats 取兩次 Job accounting 之間的取樣窗;CPU% 為此窗內的行程樹
+// CPU 時間對牆鐘 × NumCPU 的比值(語意同 Docker 單次 stats 的 pre/cur 差分)。
+const nativeStatSampleWindow = 200 * time.Millisecond
+
+// nativeOOMSettleWindow 是行程異常退出後,reap 等待 Job completion port 投遞記憶體配額通知的上限。
+// 命中時 fast-path 立即返回;僅在異常退出且尚未命中時才走滿此窗(不影響 Stop 返回,見 reap)。
+const nativeOOMSettleWindow = 250 * time.Millisecond
+
+// newJob 是 newJobObject 的間接層,供測試注入建立失敗以驗降級路徑(平時即 newJobObject 本身)。
+var newJob = newJobObject
+
+// jobLimits 是建立 Job Object 時的資源上限。零值欄位=該維度不限額(Job 仍建立,僅為 accounting)。
+type jobLimits struct {
+	MemoryBytes uint64 // 記憶體上限(bytes);0=不限
+	CPUPercent  int    // CPU 上限:占所有核心的百分比(1-100);0=不限
+}
+
+// jobStats 是一次 Job Object 行程樹統計快照。
+type jobStats struct {
+	CPUTime       time.Duration // 行程樹累計 CPU 時間(TotalUser+TotalKernel)
+	WorkingSetSum uint64        // Job 內所有行程 WorkingSetSize 加總(bytes)
+}
+
+// resolveJobLimits 由實例資源設定(Resources,與 Docker 同來源)導出 Job Object 上限。無設定=全零
+// (不限額)。
+func resolveJobLimits(spec protocol.InstanceSpec) jobLimits {
+	var lim jobLimits
+	if r := spec.Resources; r != nil {
+		if r.MemoryMB > 0 {
+			lim.MemoryBytes = uint64(r.MemoryMB) * 1024 * 1024
+		}
+		if r.CPUPercent > 0 {
+			lim.CPUPercent = r.CPUPercent
+		}
+	}
+	return lim
+}
+
+// calcNativeCPUPercent 由兩次行程樹 CPU 累計時間差(cpuDelta)、取樣牆鐘間隔(wallDelta)與核心數
+// 算正規化 CPU%——占所有核心的百分比,語意同 docker_monitor.go calcCPUPercent(100=用滿全部核心):
+// 全機容量 = wallDelta × NumCPU(CPU·秒),cpuDelta 為實耗 CPU·秒,兩者比值 ×100 即得。
+func calcNativeCPUPercent(cpuDelta, wallDelta time.Duration, numCPU int) float64 {
+	if wallDelta <= 0 || numCPU <= 0 || cpuDelta < 0 {
+		return 0
+	}
+	pct := float64(cpuDelta) / (float64(wallDelta) * float64(numCPU)) * 100.0
+	if pct < 0 {
+		return 0
+	}
+	return pct
+}
+
+// attachJob 建立 Job Object 並掛入行程 pid;成功回 *jobObject,失敗降級回 nil 並向實例日誌記一則
+// 可辨識訊息(design 風險節:Job 納管失敗降級為僅監督不強制上限,不阻斷啟動)。恆嘗試建立——即使
+// 不限額,亦用於取行程樹 accounting(R8)。收養重掛(T11)共用 attachJob。
+func (b *NativeBackend) attachJob(h *procHandle, limits jobLimits) *jobObject {
+	job, err := newJob(limits)
+	if err != nil {
+		h.log.write("gsm", "資源上限套用失敗,降級為僅監督(不強制上限、不計行程樹統計): "+err.Error())
+		return nil
+	}
+	if job == nil {
+		return nil // 平台不支援 Job(非 Windows 存根 newJobObject 回 nil):走無 Job 路徑
+	}
+	if err := job.assign(h.pid); err != nil {
+		_ = job.close()
+		h.log.write("gsm", "行程掛入 Job 失敗(可能已在其他 Job 內),降級為僅監督: "+err.Error())
+		return nil
+	}
+	return job
+}
+
+// forceKill 強殺實例行程樹:有 Job 時以 TerminateJobObject 一次收束整個 Job;否則 fallback 至
+// taskkill /T(Windows)或行程 Kill。
+func (b *NativeBackend) forceKill(h *procHandle) error {
+	if h.job != nil {
+		if err := h.job.terminate(); err == nil {
+			return nil
+		}
+		// Terminate 失敗(罕見):退回 PID 層強殺,避免行程遺留。
+	}
+	return killProcessTree(h.pid)
+}
+
+// killProcessTree 強制終止 pid 及其子行程樹(Job 不可用時的 fallback)。Windows 用 taskkill /T /F;
+// 其他平台以行程 Kill。
 func killProcessTree(pid int) error {
 	if runtime.GOOS == "windows" {
 		return exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid)).Run()
@@ -979,12 +1118,15 @@ func (b *NativeBackend) readSpec(uuid string) (protocol.InstanceSpec, error) {
 	return spec, err
 }
 
-// resolveMemoryMB 由 spec.Env 解析 {memory_mb} 用的記憶體(MB)。
-// 過渡:實例資源設定(記憶體/CPU 上限,與 Docker 同來源)尚未進 InstanceSpec,故暫由慣用 env
-// 鍵(MEMORY_MB / MEMORY)取值,皆缺時採 2048 MB 預設;真實資源設定接線隨 Job Objects(T7)。
-func resolveMemoryMB(env map[string]string) int {
+// resolveMemoryMB 解析 {memory_mb} token 用的記憶體(MB):優先取實例資源上限
+// Resources.MemoryMB(與 Docker 同來源,T9/T12 填入);無值時退回慣用 env 鍵(MEMORY_MB /
+// MEMORY);皆缺時採 2048 MB 預設。
+func resolveMemoryMB(spec protocol.InstanceSpec) int {
+	if spec.Resources != nil && spec.Resources.MemoryMB > 0 {
+		return spec.Resources.MemoryMB
+	}
 	for _, k := range []string{"MEMORY_MB", "MEMORY"} {
-		if v, ok := env[k]; ok {
+		if v, ok := spec.Env[k]; ok {
 			if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
 				return n
 			}

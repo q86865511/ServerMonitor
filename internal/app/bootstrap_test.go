@@ -63,7 +63,7 @@ func bootOpts(t *testing.T) (Options, **agent.MockBackend, string) {
 
 	var mb *agent.MockBackend
 	holder := &mb
-	factory := func(_ agent.DockerOptions) (agent.RuntimeBackend, error) {
+	factory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
 		*holder = agent.NewMockBackend()
 		return labelInjectBackend{*holder}, nil
 	}
@@ -112,6 +112,50 @@ func TestBootstrapAssembly(t *testing.T) {
 	}
 }
 
+// TestBootstrapDispatchRetryDocker 驗證 dispatch 頂層(native-backend R13):native 恆在使節點在線,
+// docker=nil 時 DockerAvailable=false;RetryDocker 經 DockerFactory 熱替換 docker 子後端(不重建
+// 整個 agent),DockerAvailable 翻為 true。
+func TestBootstrapDispatchRetryDocker(t *testing.T) {
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "templates"), 0o755); err != nil {
+		t.Fatalf("建立範本目錄: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "templates", "testgame.toml"), []byte(minimalTemplate), 0o644); err != nil {
+		t.Fatalf("寫入範本: %v", err)
+	}
+	// 頂層為 dispatch(native=mock、docker=nil);DockerFactory 供 RetryDocker 熱替換用。
+	dispatchFactory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
+		return agent.NewDispatchBackend(agent.NewMockBackend(), nil)
+	}
+	dockerFactory := func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
+		return agent.NewMockBackend(), nil
+	}
+	rt, err := Bootstrap(Options{
+		DataRoot:           dataRoot,
+		BuiltinTemplateDir: t.TempDir(),
+		BackendFactory:     dispatchFactory,
+		DockerFactory:      dockerFactory,
+	})
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	defer rt.Shutdown()
+
+	// native 恆在 → 節點在線,即使 docker 不可用。
+	if st, ok := rt.registry.Status(rt.node); !ok || !st.Online {
+		t.Fatalf("dispatch 頂層節點應在線(native 恆在): %+v", st)
+	}
+	if rt.DockerAvailable() {
+		t.Fatal("初始 docker=nil,DockerAvailable 應為 false")
+	}
+	if err := rt.RetryDocker(); err != nil {
+		t.Fatalf("RetryDocker: %v", err)
+	}
+	if !rt.DockerAvailable() {
+		t.Fatal("RetryDocker 熱替換後 DockerAvailable 應為 true")
+	}
+}
+
 func TestBootstrapAppLockConflict(t *testing.T) {
 	opts, _, _ := bootOpts(t)
 	rt1, err := Bootstrap(opts)
@@ -122,7 +166,7 @@ func TestBootstrapAppLockConflict(t *testing.T) {
 
 	// 同一 dataRoot 二次啟動應被單一實例鎖拒絕。
 	opts2 := opts
-	opts2.BackendFactory = func(_ agent.DockerOptions) (agent.RuntimeBackend, error) {
+	opts2.BackendFactory = func(_ agent.BackendOptions) (agent.RuntimeBackend, error) {
 		return agent.NewMockBackend(), nil
 	}
 	_, err = Bootstrap(opts2)

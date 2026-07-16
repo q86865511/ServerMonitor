@@ -7,7 +7,12 @@
 // 於後續任務(T4~T6、T11)加入,New 已預留組合位。
 package provision
 
-import "net/http"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+)
 
 // ProvisionProgress 是一次供應步驟的進度快照。刻意與 agent 的事件型別解耦,由呼叫端
 // (NativeBackend)轉譯為 protocol.RuntimeEvent 後 emit 至 eventHub。
@@ -47,8 +52,17 @@ type Provisioner struct {
 	// Java 供應 Adoptium JRE(R4)。
 	Java *JavaProvisioner
 
-	// TODO(T5/R5):ServerInstaller 五實作(Vanilla/Paper/Fabric/Forge/NeoForge),依 Variant.Loader 選取。
-	// TODO(T6/R6):SteamCMDProvisioner——Valve 匿名載點下載 SteamCMD、app_update 安裝 Palworld。
+	// Minecraft 五 loader 安裝器(R5),依 loader 名經 InstallServerByLoader 選取。以 ServerInstaller
+	// 介面型別持有,便於測試以假實作替換(路由測試)與 T8 agent adapter 接線。
+	Vanilla  ServerInstaller
+	Paper    ServerInstaller
+	Fabric   ServerInstaller
+	Forge    ServerInstaller
+	NeoForge ServerInstaller
+
+	// SteamCMD 供應 SteamCMD 並安裝 Steam 專用伺服器(R6,如 Palworld)。
+	SteamCMD *SteamCMDProvisioner
+
 	// TODO(T11/R11、R14):ModProvider——Modrinth(首發)/CurseForge(R14)模組包解析與落位。
 }
 
@@ -84,5 +98,46 @@ func New(cacheRoot string, opts ...Option) *Provisioner {
 		o(p)
 	}
 	p.Java = newJavaProvisioner(cacheRoot, p.client, p.javaAPIBase)
+
+	// 五安裝器共用 Provisioner 的 http client(無整體逾時,長時供應由 context 控制);
+	// 各 base URL/exec 採官方預設(生產路徑),測試以直接建構或替換欄位注入。
+	p.Vanilla = NewVanillaInstaller(p.client, "")
+	p.Paper = NewPaperInstaller(p.client, "")
+	p.Fabric = NewFabricInstaller(p.client, "", nil)
+	p.Forge = NewForgeInstaller(p.client, "", "", nil)
+	p.NeoForge = NewNeoForgeInstaller(p.client, "", nil)
+
+	// SteamCMD 共用同一 client;快取根與 Provisioner 一致。
+	p.SteamCMD = NewSteamCMDProvisioner(cacheRoot, WithSteamCMDHTTPClient(p.client))
+
 	return p
+}
+
+// InstallServerByLoader 依 loader 名(vanilla|paper|fabric|forge|neoforge,大小寫不敏感)分派至
+// 對應安裝器並安裝伺服器至 req.TargetDir。這是 agent 端 provisionRunner adapter(T8)呼叫供應的
+// 統一入口——新增 loader 只需在此與 New 各加一列。未知 loader 回明確錯誤(不 panic、不預設猜測)。
+func (p *Provisioner) InstallServerByLoader(ctx context.Context, loader string, req InstallRequest, progress ProgressFunc) (InstalledServer, error) {
+	inst := p.installerFor(loader)
+	if inst == nil {
+		return InstalledServer{}, fmt.Errorf("provision: 不支援的 loader %q(支援:vanilla/paper/fabric/forge/neoforge)", loader)
+	}
+	return inst.Install(ctx, req, progress)
+}
+
+// installerFor 回傳 loader 名對應的安裝器;未知 loader 回 nil。
+func (p *Provisioner) installerFor(loader string) ServerInstaller {
+	switch strings.ToLower(strings.TrimSpace(loader)) {
+	case "vanilla":
+		return p.Vanilla
+	case "paper":
+		return p.Paper
+	case "fabric":
+		return p.Fabric
+	case "forge":
+		return p.Forge
+	case "neoforge":
+		return p.NeoForge
+	default:
+		return nil
+	}
 }
