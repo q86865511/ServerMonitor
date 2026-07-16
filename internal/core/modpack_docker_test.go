@@ -70,7 +70,7 @@ func TestModpackDocker_ModrinthTakesEffect(t *testing.T) {
 		t.Fatalf("resolveVariant: %v", verr)
 	}
 	// buildSpec 不觸碰 InstanceService 欄位,可於零值上呼叫以取得純 spec。
-	spec := (&InstanceService{}).buildSpec("mod-itest", "itest-mod", tmpl, opts, variantEnv)
+	spec := (&InstanceService{}).buildSpec("mod-itest", "itest-mod", tmpl, opts, variantEnv, runtimeDocker)
 
 	// 確認 core 端 env 透傳正確(前置健全檢查)。
 	if spec.Env["TYPE"] != "MODRINTH" || spec.Env["MODRINTH_MODPACK"] != modrinthTestSlug() {

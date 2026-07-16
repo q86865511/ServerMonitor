@@ -106,6 +106,7 @@ type NativeProvision struct {
 	Kind          string `json:"kind"`                      // "java" | "steamcmd" | ""(免供應)
 	JavaMajor     int    `json:"java_major,omitempty"`      // kind=java:所需 Java major 版
 	Loader        string `json:"loader,omitempty"`          // kind=java:變體 loader(vanilla/paper/fabric/forge/neoforge),供 MC 安裝器選取
+	MCVersion     string `json:"mc_version,omitempty"`      // kind=java:目標 Minecraft 版本,由 T9 buildSpec 自參數/範本填入;adapter 優先取此值(缺值才退回 Variant 慣例導出)
 	EULA          bool   `json:"eula,omitempty"`            // kind=java:接受 EULA → 寫 eula.txt(R5)
 	SteamAppID    string `json:"steam_app_id,omitempty"`    // kind=steamcmd:Steam App ID(如 "2394010")
 	UpdateOnStart bool   `json:"update_on_start,omitempty"` // R6:啟動前重跑 app_update(T7 起用)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,6 +110,12 @@ type CreateOptions struct {
 	Secrets    map[string]string // 機密值(範本 [[secrets]].key → 明文);寫入金鑰庫,不落 DB
 	Node       string            // 目標節點(可空,預設本機節點)
 	Modpack    *ModpackSource    // R11 模組包來源(可空;itzg 原生透傳,見 modpack.go)
+	// Runtime 為使用者所選執行後端("docker" | "native";可空=依平台/範本能力預設,見 resolveRuntime)。
+	// GUI(T12)填入;空字串沿用預設分派鏈(native-backend R2)。
+	Runtime string
+	// Resources 為此實例的資源上限(native Job Objects / docker cgroup 同來源;native-backend R9)。
+	// GUI(T12)填入;nil=不限額(沿用範本/映像預設)。
+	Resources *protocol.ResourceLimits
 }
 
 // InstanceService 實作 R2「一鍵建立」的原子建立骨幹:驗證必填/EULA → 機密入庫 →
@@ -122,6 +129,7 @@ type InstanceService struct {
 	registry *NodeRegistry
 	journal  *Journal
 	node     string
+	goos     string // 目標平台(runtime.GOOS;測試可注入,供 resolveRuntime 決定預設 runtime)
 
 	newUUID func() string
 	now     func() time.Time
@@ -148,6 +156,7 @@ type InstanceServiceConfig struct {
 	Registry *NodeRegistry
 	Journal  *Journal
 	Node     string        // 預設節點;空字串用 "local"
+	GOOS     string        // 目標平台;空字串用 runtime.GOOS(測試可注入以驗跨平台分派)
 	NewUUID  func() string // 測試可注入;預設 UUIDv4
 	Now      func() time.Time
 }
@@ -157,6 +166,10 @@ func NewInstanceService(cfg InstanceServiceConfig) *InstanceService {
 	node := cfg.Node
 	if node == "" {
 		node = defaultNode
+	}
+	goos := cfg.GOOS
+	if goos == "" {
+		goos = runtime.GOOS
 	}
 	newUUID := cfg.NewUUID
 	if newUUID == nil {
@@ -174,6 +187,7 @@ func NewInstanceService(cfg InstanceServiceConfig) *InstanceService {
 		registry: cfg.Registry,
 		journal:  cfg.Journal,
 		node:     node,
+		goos:     goos,
 		newUUID:  newUUID,
 		now:      now,
 	}
@@ -206,6 +220,11 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	// R11 模組包前置檢查(型別相容/CF_API_KEY/手動檔格式);無副作用,失敗前不動任何狀態。
 	if merr := validateModpack(tmpl, opts.Variant, opts); merr != nil {
 		return InstanceRecord{}, merr
+	}
+	// R2 runtime 分派:由範本能力 ∩ 平台決定執行後端(未知/不支援/平台不符回錯);無副作用。
+	rt, rterr := resolveRuntime(tmpl, opts.Runtime, s.goos)
+	if rterr != nil {
+		return InstanceRecord{}, rterr
 	}
 
 	uuid := s.newUUID()
@@ -261,7 +280,7 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	journalWritten = true
 
 	// 5. 經 NodeClient 呼叫代理建容器(機密於此邊界注入 Env:R12 runtime 明文例外,loopback 信任域)。
-	spec := s.buildSpec(uuid, node, tmpl, opts, variantEnv)
+	spec := s.buildSpec(uuid, node, tmpl, opts, variantEnv, rt)
 	var runtimeID protocol.RuntimeID
 	cerr := s.registry.Call(node, func(c *NodeClient) error {
 		resp, e := c.Create(ctx, spec)
@@ -554,7 +573,9 @@ func (s *InstanceService) reservePorts(ports []PortReservation) error {
 }
 
 // buildSpec 由範本 + 使用者輸入組出 InstanceSpec(env 解析、機密注入、標籤、映像鎖)。
-func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTemplate, opts CreateOptions, variantEnv map[string]string) protocol.InstanceSpec {
+// runtime 決定後端相關欄位:docker 路徑套 itzg 模組包 env;native 路徑翻譯 [native] 區段為
+// NativeSpecPayload 並以 Modpack 透傳遠端模組包(native-backend R2/R11)。
+func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTemplate, opts CreateOptions, variantEnv map[string]string, runtime string) protocol.InstanceSpec {
 	env := resolveEnv(tmpl, opts.Params, variantEnv)
 	// 機密以明文注入 Env(R12 runtime 明文例外;僅在 loopback 信任域內經 NodeClient 傳遞)。
 	for _, sec := range tmpl.Secrets {
@@ -562,14 +583,17 @@ func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTempla
 			env[sec.Key] = val
 		}
 	}
-	// R11 模組包 env(itzg 原生透傳):TYPE 由模組包機制接管(覆寫變體 TYPE),故置於機密注入之後。
-	applyModpackEnv(tmpl, opts.Modpack, env)
+	// R11 模組包 env(itzg 原生透傳)只在 docker 路徑生效:TYPE 由模組包機制接管(覆寫變體 TYPE),
+	// 故置於機密注入之後。native 路徑改由 agent 側 ModrinthInstaller 安裝,不寫 itzg env。
+	if runtime == runtimeDocker {
+		applyModpackEnv(tmpl, opts.Modpack, env)
+	}
 
 	// 手動模組包檔改走 Mounts 具名掛載(不併入 DataDirs,#3:解除備份汙染);檔案位元組於
-	// Create 建容器後經 UploadMount 送達。DataDirs 維持範本原樣。
+	// Create 建容器後經 UploadMount 送達。DataDirs 維持範本原樣。手動上傳於兩後端皆可用。
 	dataDirs := append([]string(nil), tmpl.DataDirs...)
 
-	return protocol.InstanceSpec{
+	spec := protocol.InstanceSpec{
 		UUID:       uuid,
 		TemplateID: tmpl.ID,
 		Variant:    opts.Variant,
@@ -584,8 +608,74 @@ func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTempla
 			labelNode:      node,
 			labelSchema:    strconv.Itoa(tmpl.SchemaVersion),
 		},
-		Node: node,
+		Node:      node,
+		Runtime:   runtime,
+		Resources: opts.Resources,
 	}
+
+	// native 路徑:翻譯範本 [native] 區段為透傳 payload,並以 Modpack 帶遠端模組包來源
+	// (手動上傳仍走上方 Mounts)。docker 路徑不填此二欄位(nil)。
+	if runtime == runtimeNative {
+		spec.Native = buildNativePayload(tmpl, opts, env)
+		spec.Modpack = nativeModpackRef(opts.Modpack)
+	}
+	return spec
+}
+
+// native 供應的參數鍵名(itzg 慣例;key 即 env 變數名,故自解析後 Env 取值)。
+const (
+	// mcVersionParamKey 是 Minecraft 版本參數鍵(minecraft.toml [[params]] VERSION)。
+	mcVersionParamKey = "VERSION"
+	// eulaParamKey 是 Minecraft EULA 同意參數鍵(minecraft.toml [[params]] EULA)。
+	eulaParamKey = "EULA"
+)
+
+// buildNativePayload 由範本 [native] 區段與已解析 env 翻譯出 agent 透傳的 NativeSpecPayload
+// (native-backend R1/R3)。MCVersion 取自 env 的版本參數(itzg 慣例 VERSION);EULA 取自 env 的
+// eula 參數布林。tmpl.Native 為 nil 時回 nil(呼叫端僅於 SupportsNative 時進入)。
+func buildNativePayload(tmpl *protocol.GameTemplate, opts CreateOptions, env map[string]string) *protocol.NativeSpecPayload {
+	n := tmpl.Native
+	if n == nil {
+		return nil
+	}
+	eula, _ := strconv.ParseBool(env[eulaParamKey]) // 非布林/未提供 → false(kind!=java 時無意義)
+
+	payload := &protocol.NativeSpecPayload{
+		Provision: protocol.NativeProvision{
+			Kind:          n.Provision.Kind,
+			JavaMajor:     n.Provision.JavaMajor,
+			Loader:        variantLoader(tmpl, opts.Variant), // kind=java:所選變體 loader,供 MC 安裝器選取
+			MCVersion:     env[mcVersionParamKey],            // 缺值留空;agent adapter 有 Variant 慣例 fallback
+			EULA:          eula,
+			SteamAppID:    n.Provision.SteamAppID,
+			UpdateOnStart: n.Provision.UpdateOnStart,
+		},
+		Launch: protocol.NativeLaunch{
+			Command:    n.Launch.Command,
+			WorkingDir: n.Launch.WorkingDir,
+		},
+	}
+	for _, cm := range n.Config {
+		payload.Config = append(payload.Config, protocol.NativeConfigMap{
+			File:    cm.File,
+			Format:  cm.Format,
+			Section: cm.Section,
+			Map:     cm.Map,
+		})
+	}
+	if n.Mods != nil {
+		payload.ModsDir = n.Mods.ModsDir
+	}
+	return payload
+}
+
+// nativeModpackRef 把遠端模組包來源(modrinth/curseforge)轉為 InstanceSpec.Modpack;手動上傳
+// 來源(mrpack/curseforge-zip)回 nil(改走 Mounts 具名掛載)。無模組包時回 nil。
+func nativeModpackRef(src *ModpackSource) *protocol.ModpackRef {
+	if src == nil || isManualModpack(src) {
+		return nil
+	}
+	return &protocol.ModpackRef{Type: string(src.Type), Ref: src.Ref}
 }
 
 func (s *InstanceService) recordCreateFailed(uuid, templateID, node string, cause error) {

@@ -33,9 +33,11 @@ func TestNativeHelperProcess(t *testing.T) {
 
 // fakeProv 是 provisionRunner 的假件:回可控路徑,不觸網。
 type fakeProv struct {
-	javaPath  string
-	serverJar string
-	progress  []protocol.ProvisionProgress
+	javaPath    string
+	serverJar   string
+	startScript string // 非空時模擬 Forge/NeoForge 啟動來源(無 server jar)
+	argsFile    string
+	progress    []protocol.ProvisionProgress
 }
 
 func (f *fakeProv) EnsureJava(_ context.Context, _ int, progress func(protocol.ProvisionProgress)) (string, error) {
@@ -47,11 +49,11 @@ func (f *fakeProv) EnsureJava(_ context.Context, _ int, progress func(protocol.P
 	return f.javaPath, nil
 }
 
-func (f *fakeProv) InstallServer(_ context.Context, _ ServerInstallRequest, progress func(protocol.ProvisionProgress)) (string, error) {
+func (f *fakeProv) InstallServer(_ context.Context, _ ServerInstallRequest, progress func(protocol.ProvisionProgress)) (ServerInstallResult, error) {
 	if progress != nil {
 		progress(protocol.ProvisionProgress{Stage: "server-jar", Percent: 100})
 	}
-	return f.serverJar, nil
+	return ServerInstallResult{ServerJar: f.serverJar, StartScript: f.startScript, ArgsFile: f.argsFile}, nil
 }
 
 func (f *fakeProv) InstallSteamApp(_ context.Context, _ string, _ string, _ func(protocol.ProvisionProgress)) error {

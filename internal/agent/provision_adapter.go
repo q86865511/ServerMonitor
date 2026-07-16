@@ -37,20 +37,34 @@ func (a *provisionAdapter) EnsureJava(ctx context.Context, major int, progress f
 	return a.p.Java.Ensure(ctx, major, wrapProgress(progress))
 }
 
-// InstallServer 依 loader 委派 Minecraft 伺服器安裝至實例目錄,回傳啟動用 server jar 路徑(R5)。
-// MCVersion 由 native 側的 Variant 依 "<loader>-<version>" 慣例導出(見 deriveMCVersion)。
-// Forge/NeoForge 的啟動腳本/args 檔(InstalledServer.StartScript/ArgsFile)不經此窄回傳值透出——
-// 屬 native.go 啟動來源的後續接線(seam),此處僅回 ServerJar。
-func (a *provisionAdapter) InstallServer(ctx context.Context, req ServerInstallRequest, progress func(protocol.ProvisionProgress)) (string, error) {
+// InstallServer 依 loader 委派 Minecraft 伺服器安裝至實例目錄,回傳啟動來源產物(R5/R7)。
+// MCVersion 優先取 payload 值(ServerInstallRequest.MCVersion,由 T9 buildSpec 經 native.go 傳入);
+// 缺值時才由 Variant 依 "<loader>-<version>" 慣例導出(見 deriveMCVersion)作為 fallback。
+// Forge/NeoForge 的啟動腳本/args 檔(InstalledServer.StartScript/ArgsFile)一併透出,供 native.go
+// 持久化進 native.json 並以 {start_script} token 展開啟動命令。
+func (a *provisionAdapter) InstallServer(ctx context.Context, req ServerInstallRequest, progress func(protocol.ProvisionProgress)) (ServerInstallResult, error) {
 	installed, err := a.p.InstallServerByLoader(ctx, req.Loader, provision.InstallRequest{
-		MCVersion: deriveMCVersion(req.Variant, req.Loader),
+		MCVersion: mcVersionOrDerive(req),
 		TargetDir: req.InstanceDir,
 		JavaExe:   req.JavaPath,
 	}, wrapProgress(progress))
 	if err != nil {
-		return "", err
+		return ServerInstallResult{}, err
 	}
-	return installed.ServerJar, nil
+	return ServerInstallResult{
+		ServerJar:   installed.ServerJar,
+		StartScript: installed.StartScript,
+		ArgsFile:    installed.ArgsFile,
+	}, nil
+}
+
+// mcVersionOrDerive 取 InstallServer 所需的 Minecraft 版本:優先 payload 明確值,缺值退回 Variant
+// 慣例導出(deriveMCVersion)。
+func mcVersionOrDerive(req ServerInstallRequest) string {
+	if v := strings.TrimSpace(req.MCVersion); v != "" {
+		return v
+	}
+	return deriveMCVersion(req.Variant, req.Loader)
 }
 
 // InstallSteamApp 委派 SteamCMD 供應並安裝/更新指定 Steam App 至實例目錄(R6)。

@@ -65,8 +65,9 @@ const (
 type provisionRunner interface {
 	// EnsureJava 確保指定 major 版 JRE 已供應於共用快取,回傳 java 執行檔絕對路徑。
 	EnsureJava(ctx context.Context, major int, progress func(protocol.ProvisionProgress)) (javaPath string, err error)
-	// InstallServer 依變體 loader 安裝 Minecraft 伺服器檔案至實例目錄,回傳啟動用 server jar 路徑(相對或絕對)。
-	InstallServer(ctx context.Context, req ServerInstallRequest, progress func(protocol.ProvisionProgress)) (serverJar string, err error)
+	// InstallServer 依變體 loader 安裝 Minecraft 伺服器檔案至實例目錄,回傳啟動來源產物路徑
+	// (ServerJar 或 Forge/NeoForge 的 StartScript/ArgsFile,依 loader 擇一有值)。
+	InstallServer(ctx context.Context, req ServerInstallRequest, progress func(protocol.ProvisionProgress)) (ServerInstallResult, error)
 	// InstallSteamApp 以 SteamCMD 安裝/更新指定 Steam App 至實例目錄。
 	InstallSteamApp(ctx context.Context, appID, instanceDir string, progress func(protocol.ProvisionProgress)) error
 	// WriteEula 於實例目錄寫入 eula.txt(native 無 itzg 代勞;R5)。accepted=false 時為 no-op。
@@ -78,8 +79,19 @@ type ServerInstallRequest struct {
 	InstanceDir string // 伺服器檔案落位目錄(絕對路徑)
 	Variant     string // 變體 ID(如 "paper-1.21")
 	Loader      string // loader 家族(vanilla/paper/fabric/forge/neoforge)
+	MCVersion   string // 目標 Minecraft 版本(T9 buildSpec 填入;adapter 優先取此值,缺值才由 Variant 慣例導出)
 	JavaMajor   int    // 所需 Java major(Forge/NeoForge installer 執行用)
 	JavaPath    string // 已供應的 java 執行檔路徑
+}
+
+// ServerInstallResult 是 provisionRunner.InstallServer 的產物(啟動來源;native-backend R5/R7)。
+// ServerJar 為可 `java -jar` 直接啟動的 jar(vanilla/paper/fabric);StartScript/ArgsFile 為
+// Forge/NeoForge 以官方 installer --installServer 產出的啟動腳本(run.bat)與 JVM args 檔
+// (現代結構無單一 loader server jar,見 provision.InstalledServer)。三者依 loader 擇一有值。
+type ServerInstallResult struct {
+	ServerJar   string
+	StartScript string
+	ArgsFile    string
 }
 
 // NativeOptions 是 NativeBackend 的建構選項。
@@ -126,13 +138,15 @@ func NewNativeBackend(opts NativeOptions) (*NativeBackend, error) {
 
 // nativeMeta 是 native 實例的建立期中繼(實例根下 native.json),供 Start 展開啟動命令。
 type nativeMeta struct {
-	UUID       string                 `json:"uuid"`
-	JavaPath   string                 `json:"java_path,omitempty"`
-	ServerJar  string                 `json:"server_jar,omitempty"`
-	Command    []string               `json:"command"`
-	WorkingDir string                 `json:"working_dir,omitempty"`
-	MemoryMB   int                    `json:"memory_mb,omitempty"`
-	Ports      []protocol.PortBinding `json:"ports,omitempty"`
+	UUID        string                 `json:"uuid"`
+	JavaPath    string                 `json:"java_path,omitempty"`
+	ServerJar   string                 `json:"server_jar,omitempty"`
+	StartScript string                 `json:"start_script,omitempty"` // Forge/NeoForge 啟動腳本(run.bat);{start_script} token 展開來源
+	ArgsFile    string                 `json:"args_file,omitempty"`    // Forge/NeoForge user_jvm_args.txt(供 supervisor 注入 JVM 參數;T13 範本校正落點)
+	Command     []string               `json:"command"`
+	WorkingDir  string                 `json:"working_dir,omitempty"`
+	MemoryMB    int                    `json:"memory_mb,omitempty"`
+	Ports       []protocol.PortBinding `json:"ports,omitempty"`
 }
 
 // procMeta 是執行中繼(實例根下 proc.json):PID + 啟動時刻(防 PID 重用的 start-time 比對)。
@@ -226,7 +240,7 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 
 	// 供應(進度經 eventHub emit)。
 	progress := b.progressEmitter(uuid)
-	javaPath, serverJar, err := b.provision(ctx, spec, workDir, progress)
+	javaPath, installed, err := b.provision(ctx, spec, workDir, progress)
 	if err != nil {
 		return "", err
 	}
@@ -238,15 +252,17 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		}
 	}
 
-	// 中繼快照。
+	// 中繼快照(含啟動來源:server jar 或 Forge/NeoForge 啟動腳本/args 檔)。
 	meta := nativeMeta{
-		UUID:       uuid,
-		JavaPath:   javaPath,
-		ServerJar:  serverJar,
-		Command:    spec.Native.Launch.Command,
-		WorkingDir: spec.Native.Launch.WorkingDir,
-		MemoryMB:   resolveMemoryMB(spec),
-		Ports:      spec.Ports,
+		UUID:        uuid,
+		JavaPath:    javaPath,
+		ServerJar:   installed.ServerJar,
+		StartScript: installed.StartScript,
+		ArgsFile:    installed.ArgsFile,
+		Command:     spec.Native.Launch.Command,
+		WorkingDir:  spec.Native.Launch.WorkingDir,
+		MemoryMB:    resolveMemoryMB(spec),
+		Ports:       spec.Ports,
 	}
 	if err := b.writeNativeMeta(uuid, meta); err != nil {
 		return "", err
@@ -257,40 +273,58 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	return nativeID(uuid), nil
 }
 
-// provision 依 native payload 的供應類型執行供應,回傳 javaPath 與 serverJar(steamcmd 皆為空)。
-func (b *NativeBackend) provision(ctx context.Context, spec protocol.InstanceSpec, workDir string, progress func(protocol.ProvisionProgress)) (javaPath, serverJar string, err error) {
+// provision 依 native payload 的供應類型執行供應,回傳 javaPath 與啟動來源產物(steamcmd 皆為空值)。
+func (b *NativeBackend) provision(ctx context.Context, spec protocol.InstanceSpec, workDir string, progress func(protocol.ProvisionProgress)) (javaPath string, installed ServerInstallResult, err error) {
 	np := spec.Native.Provision
 	switch np.Kind {
 	case "java":
 		javaPath, err = b.prov.EnsureJava(ctx, np.JavaMajor, progress)
 		if err != nil {
-			return "", "", fmt.Errorf("供應 Java 失敗: %w", err)
+			return "", ServerInstallResult{}, fmt.Errorf("供應 Java 失敗: %w", err)
 		}
-		serverJar, err = b.prov.InstallServer(ctx, ServerInstallRequest{
+		installed, err = b.prov.InstallServer(ctx, ServerInstallRequest{
 			InstanceDir: workDir,
 			Variant:     spec.Variant,
 			Loader:      np.Loader,
+			MCVersion:   np.MCVersion,
 			JavaMajor:   np.JavaMajor,
 			JavaPath:    javaPath,
 		}, progress)
 		if err != nil {
-			return "", "", fmt.Errorf("安裝伺服器失敗: %w", err)
+			return "", ServerInstallResult{}, fmt.Errorf("安裝伺服器失敗: %w", err)
 		}
 		if np.EULA {
 			if err := b.prov.WriteEula(ctx, workDir, true); err != nil {
-				return "", "", fmt.Errorf("寫入 eula.txt 失敗: %w", err)
+				return "", ServerInstallResult{}, fmt.Errorf("寫入 eula.txt 失敗: %w", err)
 			}
 		}
 	case "steamcmd":
 		if err := b.prov.InstallSteamApp(ctx, np.SteamAppID, workDir, progress); err != nil {
-			return "", "", fmt.Errorf("SteamCMD 安裝失敗: %w", err)
+			return "", ServerInstallResult{}, fmt.Errorf("SteamCMD 安裝失敗: %w", err)
 		}
 	case "":
 		// 免供應(如手動置檔或測試)。
 	default:
-		return "", "", fmt.Errorf("agent: 未知供應類型 %q", np.Kind)
+		return "", ServerInstallResult{}, fmt.Errorf("agent: 未知供應類型 %q", np.Kind)
 	}
-	return javaPath, serverJar, nil
+	return javaPath, installed, nil
+}
+
+// maybeUpdateOnStart 於 Provision.UpdateOnStart 且 kind=steamcmd 時,在起行程前重跑 SteamCMD
+// app_update(R6:「啟動前檢查更新」)。進度經 eventHub emit provision 事件;失敗回明確錯誤使
+// Start 失敗(不以過時檔案啟動)。非 steamcmd 或未開啟時為 no-op。
+func (b *NativeBackend) maybeUpdateOnStart(ctx context.Context, uuid string, spec protocol.InstanceSpec, workDir string) error {
+	if spec.Native == nil {
+		return nil
+	}
+	np := spec.Native.Provision
+	if !np.UpdateOnStart || np.Kind != "steamcmd" {
+		return nil
+	}
+	if err := b.prov.InstallSteamApp(ctx, np.SteamAppID, workDir, b.progressEmitter(uuid)); err != nil {
+		return fmt.Errorf("啟動前更新失敗(SteamCMD app_update %s): %w", np.SteamAppID, err)
+	}
+	return nil
 }
 
 // Start 展開啟動命令 token、起子行程、導日誌、寫 proc.json 並發 start 事件(R7)。
@@ -319,6 +353,11 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	}
 	root := b.instanceDataRoot(uuid)
 	workDir := b.workingDir(root, meta.WorkingDir)
+
+	// R6:啟動前更新(steamcmd app_update)。失敗即啟動失敗(帶明確錯誤),不起行程。
+	if err := b.maybeUpdateOnStart(ctx, uuid, spec, workDir); err != nil {
+		return err
+	}
 
 	argv, err := expandLaunchTokens(meta.Command, meta, workDir)
 	if err != nil {
@@ -403,9 +442,18 @@ func (b *NativeBackend) reap(h *procHandle) {
 			code = -1
 		}
 	}
+	b.finishReap(h, code)
+}
+
+// finishReap 是行程結束後的共用收束:設 finished、清 proc.json、收束日誌、解除 Stop 等待,再依 Job
+// 記憶體配額判定合成 oom(如有)後合成 die。由 reap(本 agent 起的行程,cmd.Wait 取碼)與
+// reapAdopted(收養行程,OS 等待取碼,T11)共用,語意一致。
+func (b *NativeBackend) finishReap(h *procHandle, code int) {
 	h.setFinished(code)
 	_ = os.Remove(b.procMetaPath(h.uuid)) // 行程已歿,清執行中繼(收養不再視其存活)
-	h.log.close()
+	if h.log != nil {
+		h.log.close()
+	}
 	close(h.done) // 先解除 Stop 等待(die/oom 事件於其後 emit,不阻擋 Stop 返回)
 
 	// OOM 判定:記憶體配額命中訊號經 completion port 非同步投遞。乾淨退出(code==0)不可能是 OOM,
@@ -426,6 +474,13 @@ func (b *NativeBackend) reap(h *procHandle) {
 	if h.job != nil {
 		_ = h.job.close() // 釋放 Job/completion port 控制代碼(未設 KILL_ON_JOB_CLOSE,不影響已歿行程)
 	}
+}
+
+// reapAdopted 監看一個收養行程的結束(T11)。收養無 exec.Cmd,以 OS 層等待行程結束並取退出碼
+// (waitForAdoptedExit,平台專屬),再走與 reap 相同的收束路徑(合成 die/oom、驅動崩潰復原)。
+func (b *NativeBackend) reapAdopted(h *procHandle) {
+	code := waitForAdoptedExit(h.pid)
+	b.finishReap(h, code)
 }
 
 // Stop 等 opts.Grace 優雅退出(呼叫端已先送 hooks.stop),逾時強殺整棵行程樹(R1/R7)。
@@ -826,18 +881,131 @@ func (b *NativeBackend) Close() error {
 
 // ---- 收養 seam(T11)----
 
-// adoptExisting 是 agent 重啟後掃描 proc.json 收養既有行程的接點(native-backend R7/R13)。
-// 本任務為 no-op seam:實作(PID 存活+start-time 比對→重掛 Job/接管 log tail/running;已死→
-// 合成 die 走崩潰復原)歸 T11。
+// adoptExisting 於 agent 重啟(NativeBackend 建構)時掃 <DataRoot>/*/proc.json,收養仍在執行的
+// 行程、恢復管理(native-backend R7/R13)。對每個帶 proc.json 的實例:
+//   - PID 存活且 OS 行程建立時間與記錄的起行程時刻相符(容忍時鐘誤差,防 PID 重用)→ 收養:
+//     OpenProcess/重掛 Job(新 Job＋AssignProcessToJobObject,含 Resources 上限重建;行程已在他 Job
+//     內致 Assign 失敗 → 沿用 T7 慣例降級為僅監督)、接管日誌 tail(續開 rollingLog)、恢復 reap
+//     監看(OS 等待→die/oom),Status 回 running。
+//   - PID 已死或起行程時刻不符 → 清 proc.json、合成 die 走既有崩潰復原路徑。
+//
+// 事件兜底:die/adopt 於建構期 emit,此時 eventHub 尚無即時訂閱者(核心於 agent 重啟後才重訂閱),
+// 事件僅留存於 hub 有界歷史;故收養結果對消費端的權威來源是 List/Status(收養活→running、死→exited),
+// 由核心 Reconciler 經聚合 List 對帳兜底(R13)。resubscribe 帶游標者仍會於 resync 補得該 die。
 func (b *NativeBackend) adoptExisting() {
-	// T11 實作。
+	entries, err := os.ReadDir(b.dataRoot)
+	if err != nil {
+		return // 無資料根(全新 agent):無可收養。
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		uuid := e.Name()
+		if !b.instanceExists(uuid) {
+			continue // 非本後端所管(無 native.json):略過。
+		}
+		pm, perr := b.readProcMeta(uuid)
+		if perr != nil {
+			continue // 無 proc.json:實例未在執行(或已乾淨停機),無需收養。
+		}
+		b.adoptOne(uuid, pm)
+	}
+}
+
+// adoptOne 依 proc.json 的 PID 存活與起行程時刻比對,決定收養(存活)或合成 die(已死/PID 重用)。
+func (b *NativeBackend) adoptOne(uuid string, pm procMeta) {
+	alive, createdAt := adoptedProcessStatus(pm.PID)
+	if !alive || !startTimeMatches(pm.StartTime, createdAt) {
+		b.adoptDead(uuid)
+		return
+	}
+	b.adoptAlive(uuid, pm, createdAt)
+}
+
+// adoptDead 處理「proc.json 存在但行程已歿(或 PID 已被重用)」:清 proc.json、登記一個已結束的
+// procHandle 使 Status/List 回 exited(供 Reconciler 修正 DB running→stopped,R13),並合成 die 走
+// 既有崩潰復原路徑(退出碼未知,記 -1)。
+func (b *NativeBackend) adoptDead(uuid string) {
+	_ = os.Remove(b.procMetaPath(uuid))
+	code := -1
+	now := time.Now().UTC()
+	h := &procHandle{uuid: uuid, done: make(chan struct{})}
+	h.setFinished(code)
+	close(h.done)
+	b.mu.Lock()
+	b.procs[uuid] = h
+	b.mu.Unlock()
+	b.hub.emit(RuntimeEvent{ID: nativeID(uuid), Kind: RuntimeEventDie, TsUTC: now, ExitCode: &code})
+}
+
+// adoptAlive 收養一個仍在執行的行程:重掛 Job(含 Resources 上限;失敗降級為僅監督)、續開滾動
+// 日誌(供 Logs follow tail——注意收養已失去原 stdout/stderr 管線,無法再擷取新輸出,follow 僅
+// 續 tail 既有內容,屬收養固有限制)、登記 running 的 procHandle 並起 OS 等待的 reap 監看。
+func (b *NativeBackend) adoptAlive(uuid string, pm procMeta, createdAt time.Time) {
+	spec, _ := b.readSpec(uuid)
+	root := b.instanceDataRoot(uuid)
+	rl, lerr := newRollingLog(root, defaultLogMaxBytes, defaultLogMaxFiles)
+	if lerr != nil {
+		rl = nil // 無法接管日誌不阻斷收養(history 仍可經 readLogHistory 提供)。
+	}
+	startedAt := createdAt
+	if startedAt.IsZero() {
+		startedAt = pm.StartTime // 取不到 OS 建立時間:退回記錄的起行程時刻。
+	}
+	h := &procHandle{
+		uuid:      uuid,
+		pid:       pm.PID,
+		startedAt: startedAt,
+		cmd:       nil, // 收養無 exec.Cmd(原起行程的 agent 已退出)。
+		log:       rl,
+		done:      make(chan struct{}),
+		limits:    resolveJobLimits(spec),
+	}
+	// 重掛 Job(R9:收養後重新納入 Job 管理)。失敗(如行程已在他人 Job 內)降級為僅監督不強制,
+	// 沿用 T7 attachJob 的降級慣例(記可辨識日誌、不阻斷收養)。
+	h.job = b.attachJob(h, h.limits)
+	b.mu.Lock()
+	b.procs[uuid] = h
+	b.mu.Unlock()
+	go b.reapAdopted(h)
+}
+
+// nativeAdoptStartSkew 是收養時「proc.json 記錄的起行程牆鐘時刻」與「OS 行程建立時間」的容忍誤差。
+// proc.json 的 StartTime 記為 agent 呼叫 cmd.Start() 當下的牆鐘,與 OS 實際建立時間僅相差毫秒級;
+// 若 PID 已被別的行程重用,其建立時間會與記錄時刻明顯不同(遠超此容忍),據以判 PID 重用→不收養。
+const nativeAdoptStartSkew = 30 * time.Second
+
+// startTimeMatches 比對記錄的起行程時刻與 OS 行程建立時間是否在容忍誤差內(防 PID 重用)。取不到
+// OS 建立時間(osCreated 為零值)時寬鬆採信「存活」即可(不因缺建立時間而拒收養活行程)。
+func startTimeMatches(recorded, osCreated time.Time) bool {
+	if osCreated.IsZero() {
+		return true
+	}
+	d := recorded.Sub(osCreated)
+	if d < 0 {
+		d = -d
+	}
+	return d <= nativeAdoptStartSkew
 }
 
 // ---- 啟動命令 token 展開 ----
 
-// expandLaunchTokens 展開 argv 模板的 token(子字串替換):{java} {server_jar} {memory_mb}
-// {instance_dir} 與 {port:<name>}。未知 {port:name} 回錯。
+// expandLaunchTokens 展開 argv 模板的 token(子字串替換):{java} {server_jar} {start_script}
+// {memory_mb} {instance_dir} 與 {port:<name>}。未知 {port:name} 回錯。
+//
+// 啟動來源語意(R7):Forge/NeoForge 以官方 installer 產出啟動腳本(StartScript,如 run.bat)而非
+// 單一 server jar,範本應以 {start_script} 為啟動來源;若這類實例的範本仍引用 {server_jar}(無 jar),
+// 展開後會得空字串、啟動命令失效——此處回明確錯誤指引範本改用 {start_script},刻意不做魔法替換
+// (範本層 forge variant 的 launch 覆寫屬 T13 範本校正)。
 func expandLaunchTokens(argv []string, m nativeMeta, instanceDir string) ([]string, error) {
+	if m.StartScript != "" && m.ServerJar == "" {
+		for _, a := range argv {
+			if strings.Contains(a, "{server_jar}") {
+				return nil, fmt.Errorf("agent: 此變體以啟動腳本供應(無 server jar),但啟動命令引用 {server_jar};請於範本 [native].launch.command 改用 {start_script}")
+			}
+		}
+	}
 	portByName := make(map[string]int, len(m.Ports))
 	for _, p := range m.Ports {
 		hp := p.HostPort
@@ -851,6 +1019,7 @@ func expandLaunchTokens(argv []string, m nativeMeta, instanceDir string) ([]stri
 		s := a
 		s = strings.ReplaceAll(s, "{java}", m.JavaPath)
 		s = strings.ReplaceAll(s, "{server_jar}", m.ServerJar)
+		s = strings.ReplaceAll(s, "{start_script}", m.StartScript)
 		s = strings.ReplaceAll(s, "{memory_mb}", strconv.Itoa(m.MemoryMB))
 		s = strings.ReplaceAll(s, "{instance_dir}", instanceDir)
 		expanded, err := expandPortTokens(s, portByName)
@@ -1106,6 +1275,12 @@ func (b *NativeBackend) readNativeMeta(uuid string) (nativeMeta, error) {
 
 func (b *NativeBackend) writeProcMeta(uuid string, m procMeta) error {
 	return writeJSONFile(b.procMetaPath(uuid), m)
+}
+
+func (b *NativeBackend) readProcMeta(uuid string) (procMeta, error) {
+	var m procMeta
+	err := readJSONFile(b.procMetaPath(uuid), &m)
+	return m, err
 }
 
 func (b *NativeBackend) writeSpec(spec protocol.InstanceSpec) error {
