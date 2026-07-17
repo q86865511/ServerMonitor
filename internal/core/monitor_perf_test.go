@@ -19,7 +19,7 @@ func TestPerf_LogThroughput(t *testing.T) {
 	// 抖動可能讓常態階段短暫積壓;加大餘裕使「零丟棄」斷言反映的是背壓機制的無損轉推,而非受制於
 	// 偏小緩衝的排程競態。加大緩衝不影響突發階段(B)對「丟舊留新、不阻塞」的展示——200k 無節流突發
 	// 遠超任何有界緩衝,消費者仍跟不上而丟棄,fanout 仍非阻塞。
-	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, MonitorConfig{LogBufferSize: 4096})
+	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, nil, MonitorConfig{LogBufferSize: 4096})
 	const uuid = "perf-uuid"
 	ch, sid := hub.SubscribeLogs(uuid)
 	mi := hub.insts[uuid]

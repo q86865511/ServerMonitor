@@ -8,6 +8,7 @@
 schema_version = 1
 id = "minecraft"
 name = "Minecraft: Java Edition"
+icon = "icons/minecraft.png"          # R14:範本圖示(範本目錄相對路徑;選配)
 runtime = "docker"
 data_dirs = ["/data"]                 # R9 備份範圍(頂層)
 

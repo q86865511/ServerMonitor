@@ -391,12 +391,13 @@ func Bootstrap(opts Options) (*Runtime, error) {
 
 	// 監控聚合:dialer=registry 委派(每次撥號取當前 client,解離線啟動 nil 與 RetryDocker 舊連線
 	// 兩問題,T15 #1)、sender=CommandService、prober=HealthProber 適配器(線上維度不再恆「不適用」,
-	// T15 #10)、lookup=Store+TemplateEngine。stats 來源供 ThresholdMonitor。
+	// T15 #10)、lookup=Store+TemplateEngine、fetcher=registry 委派(R11 uptime)。stats 來源供 ThresholdMonitor。
 	r.monitor = core.NewMonitorHub(
 		core.NewRegistryStreamDialer(r.registry, node),
 		r.commands,
 		core.NewHealthOnlineProber(r.prober),
 		core.NewStoreInstanceLookup(store, r.engine),
+		core.NewRegistryStatusFetcher(r.registry), // R11 uptime:經 registry 委派取 RuntimeStatus.StartedAt
 		core.MonitorConfig{},
 	)
 	r.threshold = core.NewThresholdMonitor(core.ThresholdMonitorConfig{

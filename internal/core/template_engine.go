@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"servermonitor/internal/protocol"
@@ -59,6 +60,7 @@ type TemplateEngine struct {
 	registry  *AdapterRegistry
 	events    *EventLog
 	templates map[string]*protocol.GameTemplate
+	sources   map[string]string // template ID → 其來源目錄(供 IconPath 解析範本相對 icon 路徑;R14)
 }
 
 // NewTemplateEngine 建立範本引擎。registry 為 nil 時採 DefaultAdapterRegistry;
@@ -71,6 +73,7 @@ func NewTemplateEngine(registry *AdapterRegistry, events *EventLog) *TemplateEng
 		registry:  registry,
 		events:    events,
 		templates: make(map[string]*protocol.GameTemplate),
+		sources:   make(map[string]string),
 	}
 }
 
@@ -100,7 +103,7 @@ func (e *TemplateEngine) LoadDir(dir string) (int, error) {
 			e.recordLoadFailed(name, "", templateError{field: "file", reason: rerr.Error()})
 			continue
 		}
-		if e.loadOne(name, data) {
+		if e.loadOne(dir, name, data) {
 			loaded++
 		}
 	}
@@ -108,7 +111,8 @@ func (e *TemplateEngine) LoadDir(dir string) (int, error) {
 }
 
 // loadOne 解析並登錄單一範本;成功回 true。無效範本記 TEMPLATE_LOAD_FAILED 並回 false。
-func (e *TemplateEngine) loadOne(file string, data []byte) bool {
+// dir 為範本來源目錄,登錄以供 IconPath 解析範本相對的 icon 路徑(R14)。
+func (e *TemplateEngine) loadOne(dir, file string, data []byte) bool {
 	tmpl, err := protocol.ParseTemplate(data)
 	if err != nil {
 		e.recordLoadFailed(file, "", templateError{field: "toml", reason: err.Error()})
@@ -129,6 +133,7 @@ func (e *TemplateEngine) loadOne(file string, data []byte) bool {
 		return false
 	}
 	e.templates[tmpl.ID] = tmpl
+	e.sources[tmpl.ID] = dir
 	e.mu.Unlock()
 	return true
 }
@@ -254,6 +259,62 @@ func (e *TemplateEngine) List() []*protocol.GameTemplate {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// IconPath 回傳範本 id 的 icon 絕對(解析後)檔案路徑與是否可服務(R14)。以下任一不成立即回
+// ("", false)——由 AssetServer handler 轉 404:範本不存在、未宣告 icon、路徑逃逸範本目錄、
+// 目標不存在或非一般檔案(拒目錄/裝置)、或經 symlink/junction 指向範本目錄之外。
+//
+// 路徑拘束刻意用 filepath.Rel(範本目錄, 目標) 判定「不以 .. 開頭」,而非字串前綴檢查:後者有
+// sibling-prefix 漏洞——`templates-secret` 亦以 `templates` 為前綴,字串前綴法會誤放行。解析
+// symlink(filepath.EvalSymlinks)後再次做邊界判定,使「icon 或其路徑組件為 symlink 指向目錄外」
+// 也被擋下(單純 os.Stat 會跟隨 symlink 而漏放)。
+func (e *TemplateEngine) IconPath(id string) (string, bool) {
+	e.mu.RLock()
+	tmpl, ok := e.templates[id]
+	dir, hasDir := e.sources[id]
+	e.mu.RUnlock()
+	if !ok || !hasDir || tmpl.Icon == "" {
+		return "", false
+	}
+
+	// 1) 宣告層邊界:清理後的目標須落在範本目錄內(擋 `../` 與 sibling-prefix)。
+	target := filepath.Join(dir, tmpl.Icon)
+	if !withinDir(dir, target) {
+		return "", false
+	}
+	// 2) 解析 symlink 後再次邊界判定:擋「symlink/junction 指向目錄外」。EvalSymlinks 亦要求存在。
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", false
+	}
+	realDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	if !withinDir(realDir, realTarget) {
+		return "", false
+	}
+	// 3) 須為一般檔案(拒目錄/裝置/具名管道等)。
+	info, err := os.Stat(realTarget)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return realTarget, true
+}
+
+// withinDir 回報 target 是否落在 dir 之內(含 dir 本身以下),以 filepath.Rel 的相對結果不以 `..`
+// 起頭判定。刻意不用 strings.HasPrefix(target, dir):那會把 sibling 目錄(如 `templates-secret`
+// 之於 `templates`)誤判為在內。跨磁碟或無法求相對路徑時(Rel 回錯)視為在外。
+func withinDir(dir, target string) bool {
+	rel, err := filepath.Rel(dir, target)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return true
 }
 
 // recordLoadFailed 寫入一筆 TEMPLATE_LOAD_FAILED 事件(R1:含原因與欄位)。

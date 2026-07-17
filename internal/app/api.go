@@ -14,6 +14,10 @@ import (
 // Templates 回傳所有已載入範本(供 GUI 列出可建立的遊戲類型)。
 func (r *Runtime) Templates() []*protocol.GameTemplate { return r.engine.List() }
 
+// TemplateIconPath 回傳範本 id 的 icon 檔案路徑與是否可服務(R14);供 AssetServer handler 服務
+// GET /tpl-icons/{id} 與 TemplateDTO.HasIcon 判定共用同一路徑安全判定(見 TemplateEngine.IconPath)。
+func (r *Runtime) TemplateIconPath(id string) (string, bool) { return r.engine.IconPath(id) }
+
 // Create 建立一個實例(R2 原子建立),回傳登錄的記錄。ctx 衍生自 rootCtx 並計入 in-flight
 // (關閉時取消/等待,T15 #3)。
 func (r *Runtime) Create(_ context.Context, opts core.CreateOptions) (core.InstanceRecord, error) {

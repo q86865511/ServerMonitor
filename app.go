@@ -86,7 +86,8 @@ type TemplateDTO struct {
 	Params   []ParamDTO   `json:"params"`
 	Secrets  []SecretDTO  `json:"secrets"`
 	Ports    []PortDTO    `json:"ports"`
-	Modpack  bool         `json:"modpack"` // 是否支援模組包(R11)
+	Modpack  bool         `json:"modpack"`  // 是否支援模組包(R11)
+	HasIcon  bool         `json:"has_icon"` // 範本是否有可服務的 icon(R14);true 時前端載入 /tpl-icons/{id},否則用佔位圖
 }
 
 // VariantDTO 是變體視圖。
@@ -153,6 +154,7 @@ type SnapshotDTO struct {
 	Stats         protocol.ResourceStats `json:"stats"`
 	PlayerCount   *int                   `json:"player_count"`
 	Online        *bool                  `json:"online"`
+	StartedAt     string                 `json:"started_at"` // 運行中實例啟動時刻(RFC3339;R11);停止/未知為空字串,前端顯示「—」
 	ObservedState string                 `json:"observed_state"`
 }
 
@@ -254,7 +256,9 @@ func (a *App) ListTemplates() []TemplateDTO {
 	tmpls := a.rt.Templates()
 	out := make([]TemplateDTO, 0, len(tmpls))
 	for _, t := range tmpls {
-		out = append(out, toTemplateDTO(t))
+		dto := toTemplateDTO(t)
+		_, dto.HasIcon = a.rt.TemplateIconPath(t.ID) // R14:engine 查得可服務 icon 才 true
+		out = append(out, dto)
 	}
 	return out
 }
@@ -360,9 +364,14 @@ func (a *App) GetSnapshot(uuid string) (SnapshotDTO, error) {
 	if !ok {
 		return SnapshotDTO{UUID: uuid, Monitored: false}, nil
 	}
+	startedAt := ""
+	if snap.StartedAt != nil {
+		startedAt = snap.StartedAt.UTC().Format(time.RFC3339)
+	}
 	return SnapshotDTO{
 		UUID: snap.UUID, Monitored: true, HasStats: snap.HasStats, Stats: snap.Stats,
-		PlayerCount: snap.PlayerCount, Online: snap.Online, ObservedState: string(snap.ObservedState),
+		PlayerCount: snap.PlayerCount, Online: snap.Online, StartedAt: startedAt,
+		ObservedState: string(snap.ObservedState),
 	}, nil
 }
 
