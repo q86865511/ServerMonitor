@@ -48,6 +48,25 @@ export function fmtTime(ts: string | undefined | null): string {
   return d.toLocaleString();
 }
 
+/**
+ * 運行時間(R11):RFC3339 起始時間 → 至 nowMs 的精簡經過時間顯示。
+ * 空/無效 → '—'(不適用語意同 R15);nowMs 由呼叫端傳入一個會遞增的時鐘值,驅動畫面本地遞增。
+ */
+export function fmtUptime(startedAt: string | undefined | null, nowMs: number = Date.now()): string {
+  if (!startedAt) return '—';
+  const start = Date.parse(startedAt);
+  if (isNaN(start)) return '—';
+  const diffSec = Math.max(0, Math.floor((nowMs - start) / 1000));
+  const d = Math.floor(diffSec / 86400);
+  const h = Math.floor((diffSec % 86400) / 3600);
+  const m = Math.floor((diffSec % 3600) / 60);
+  const s = diffSec % 60;
+  if (d > 0) return `${d} 天 ${h} 時`;
+  if (h > 0) return `${h} 時 ${m} 分`;
+  if (m > 0) return `${m} 分 ${s} 秒`;
+  return `${s} 秒`;
+}
+
 /** 實例狀態 → 中文標籤。 */
 const STATE_LABELS: Record<string, string> = {
   Created: '已建立',

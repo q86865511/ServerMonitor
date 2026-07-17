@@ -9,7 +9,7 @@
   import Topbar from './lib/shell/Topbar.svelte';
   import NodeBanner from './lib/shell/NodeBanner.svelte';
   import ToastHost from './lib/ui/ToastHost.svelte';
-  import CreateWizard from './lib/CreateWizard.svelte';
+  import CreateWizardModal from './lib/pages/wizard/CreateWizardModal.svelte';
 
   import DashboardPage from './lib/pages/DashboardPage.svelte';
   import ServersPage from './lib/pages/ServersPage.svelte';
@@ -23,7 +23,7 @@
   import SettingsPage from './lib/pages/SettingsPage.svelte';
   import NotFoundPage from './lib/pages/NotFoundPage.svelte';
 
-  // 全域「新增伺服器」主鈕(Topbar)沿用舊 CreateWizard,T12 換新精靈時汰換。
+  // 全域「新增伺服器」主鈕(Topbar)掛載 T12 四步驟精靈。
   let showCreate = $state(false);
 
   function onCreated(uuid: string): void {
@@ -79,7 +79,7 @@
 </div>
 
 {#if showCreate}
-  <CreateWizard on:close={() => (showCreate = false)} on:created={(e) => onCreated(e.detail)} />
+  <CreateWizardModal onClose={() => (showCreate = false)} onCreated={onCreated} />
 {/if}
 
 <ToastHost toasts={$toasts} onDismiss={onToastDismiss} />
