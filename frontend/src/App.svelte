@@ -1,95 +1,105 @@
 <script lang="ts">
+  // Application Shell(R2)+ hash 路由 outlet(R3)。輪詢與 toast 集中於此掛載/釋放;
+  // 頁面切換不重建 shell,僅 main 區塊依路由渲染對應頁面元件。
   import { onMount, onDestroy } from 'svelte';
-  import { ListInstances, NodeStatus } from '../wailsjs/go/main/App';
-  import { currentView, instances, nodeStatuses } from './lib/stores';
-  import { call } from './lib/api';
-  import Sidebar from './lib/Sidebar.svelte';
-  import NodeBanner from './lib/NodeBanner.svelte';
-  import ToastHost from './lib/ToastHost.svelte';
-  import InstanceList from './lib/InstanceList.svelte';
-  import EventsView from './lib/EventsView.svelte';
-  import SettingsView from './lib/SettingsView.svelte';
+  import { route, navigate } from './lib/router';
+  import { startPolling, stopPolling, refresh } from './lib/stores/instances';
+  import { toasts, dismissToast } from './lib/stores/toasts';
+  import Sidebar from './lib/shell/Sidebar.svelte';
+  import Topbar from './lib/shell/Topbar.svelte';
+  import NodeBanner from './lib/shell/NodeBanner.svelte';
+  import ToastHost from './lib/ui/ToastHost.svelte';
   import CreateWizard from './lib/CreateWizard.svelte';
-  import Console from './lib/Console.svelte';
 
-  const POLL_MS = 5000;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  import DashboardPage from './lib/pages/DashboardPage.svelte';
+  import ServersPage from './lib/pages/ServersPage.svelte';
+  import ServerDetailPage from './lib/pages/server/ServerDetailPage.svelte';
+  import TemplatesPage from './lib/pages/TemplatesPage.svelte';
+  import NodesPage from './lib/pages/NodesPage.svelte';
+  import BackupsPage from './lib/pages/BackupsPage.svelte';
+  import SchedulesPage from './lib/pages/SchedulesPage.svelte';
+  import AlertsPage from './lib/pages/AlertsPage.svelte';
+  import EventsPage from './lib/pages/EventsPage.svelte';
+  import SettingsPage from './lib/pages/SettingsPage.svelte';
+  import NotFoundPage from './lib/pages/NotFoundPage.svelte';
 
-  let showCreate = false;
-  let consoleUuid: string | null = null;
+  // 全域「新增伺服器」主鈕(Topbar)沿用舊 CreateWizard,T12 換新精靈時汰換。
+  let showCreate = $state(false);
 
-  // 遞增序號:輪詢與操作後 refresh 可能並發,舊回應晚到會覆寫新狀態
-  // (例如停止後短暫回跳 Running)。回應套用前檢查自己仍是最新一次呼叫。
-  let refreshSeq = 0;
+  function onCreated(uuid: string): void {
+    showCreate = false;
+    refresh(false);
+    navigate(`/servers/${uuid}`);
+  }
 
-  async function refresh(silent = true): Promise<void> {
-    const seq = ++refreshSeq;
-    try {
-      const [insts, nodes] = await Promise.all([
-        call(() => ListInstances(), { silent }),
-        call(() => NodeStatus(), { silent }),
-      ]);
-      if (seq !== refreshSeq) return; // 已有更新的 refresh 在途,丟棄此次舊回應
-      instances.set(insts);
-      nodeStatuses.set(nodes);
-    } catch {
-      /* 輪詢失敗靜默(避免 banner 洗版);首次載入由節點 banner 反映 */
-    }
+  function onToastDismiss(id: string | number): void {
+    dismissToast(id as number);
   }
 
   onMount(() => {
-    refresh(false);
-    timer = setInterval(() => refresh(true), POLL_MS);
+    startPolling();
   });
 
   onDestroy(() => {
-    if (timer) clearInterval(timer);
+    stopPolling();
   });
-
-  function onCreated(): void {
-    showCreate = false;
-    refresh(false);
-  }
 </script>
 
-<div class="app">
+<div class="shell">
   <Sidebar />
-  <main class="content">
-    <NodeBanner />
-    {#if $currentView === 'instances'}
-      <InstanceList
-        on:create={() => (showCreate = true)}
-        on:console={(e) => (consoleUuid = e.detail)}
-        on:changed={() => refresh(false)}
-      />
-    {:else if $currentView === 'events'}
-      <EventsView />
-    {:else if $currentView === 'settings'}
-      <SettingsView />
-    {/if}
-  </main>
+  <div class="main">
+    <Topbar onCreate={() => (showCreate = true)} />
+    <div class="content">
+      <NodeBanner />
+      {#if $route.page === 'dashboard'}
+        <DashboardPage />
+      {:else if $route.page === 'servers'}
+        <ServersPage />
+      {:else if $route.page === 'server-detail'}
+        <ServerDetailPage />
+      {:else if $route.page === 'templates'}
+        <TemplatesPage />
+      {:else if $route.page === 'nodes'}
+        <NodesPage />
+      {:else if $route.page === 'backups'}
+        <BackupsPage />
+      {:else if $route.page === 'schedules'}
+        <SchedulesPage />
+      {:else if $route.page === 'alerts'}
+        <AlertsPage />
+      {:else if $route.page === 'events'}
+        <EventsPage />
+      {:else if $route.page === 'settings'}
+        <SettingsPage />
+      {:else}
+        <NotFoundPage />
+      {/if}
+    </div>
+  </div>
 </div>
 
 {#if showCreate}
-  <CreateWizard on:close={() => (showCreate = false)} on:created={onCreated} />
+  <CreateWizard on:close={() => (showCreate = false)} on:created={(e) => onCreated(e.detail)} />
 {/if}
 
-{#if consoleUuid}
-  <Console uuid={consoleUuid} on:close={() => (consoleUuid = null)} />
-{/if}
-
-<ToastHost />
+<ToastHost toasts={$toasts} onDismiss={onToastDismiss} />
 
 <style>
-  .app {
+  .shell {
     display: flex;
     height: 100vh;
     text-align: left;
   }
-  .content {
+  .main {
     flex: 1;
     min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .content {
+    flex: 1;
+    min-height: 0;
     overflow-y: auto;
-    padding: 22px 26px;
+    padding: var(--space-5);
   }
 </style>

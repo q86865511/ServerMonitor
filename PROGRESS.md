@@ -26,7 +26,7 @@
 
 ## 進行中
 
-(無——native-backend 收官;等使用者 GUI 真機走查與 CurseForge 真 key E2E)
+- gui-redesign 實作(/pipeline,分支 claude/gui-redesign):**T1–T9 完成(9/15)**,波次 commit 依序為波1(T1/T2/T6)、波2(T3/T4/T7)、T5、T8、T9。每波經主迴圈非快取抽驗(go test/svelte-check/build 全綠)。**下一步:派波 6 三路並行(T10 總覽 ∥ T11 詳細頁+主控台 ∥ T12 建立精靈)**——T9 已鋪好頁面 stub,三者只填各自 pages/ 檔不互踩;之後 T13→T14→T15、雙審(Codex 額度 7/23 重置,屆時不可用則依 pipeline 規則註明第二審未執行)。tasks.md 勾選待 pipeline 收尾回寫。
 
 ## 待辦
 

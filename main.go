@@ -17,9 +17,11 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "servermonitor",
-		Width:  1024,
-		Height: 768,
+		Title:     "servermonitor",
+		Width:     1440,
+		Height:    900,
+		MinWidth:  1280,
+		MinHeight: 720,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 			// Handler 為 fallback:嵌入前端資產查無該路徑時才進入,用於服務範本 icon(R14)。
