@@ -6,6 +6,7 @@
 
 ## 已完成
 
+- [2026-07-17] 📄 gui-redesign 規格三件套核可落檔(`specs/gui-redesign/`):依 4 張 Codex 參考圖重構完整前端 GUI 的 spec(R1–R16:設計系統/Shell/hash 路由/總覽儀表板/詳細頁/主控台/四步精靈/全域頁+五項後端擴充);15 任務(5 HARD)。已對齊 c0092e(native-backend)落地後的 bindings 基準,c0092e 前端新功能(精靈 runtime/資源/CF/供應進度、CurseForge 設定卡)納入功能等價吸收要求。
 - [2026-07-17] 功能: GUI 設定 CurseForge API key——設定頁新增 CurseForge 卡(password 輸入/儲存/清除/三態徽章),金鑰直寫 OS 金鑰庫不落檔,經 dispatch→native→adapter→Provisioner 四層委派**熱生效免重啟**(RWMutex 收斂併發,-race 綠);綁定加法 SetCurseForgeAPIKey/CurseForgeKeyConfigured;README 同步。
 - [2026-07-17] 🔧 native-backend 雙審修正輪(17+1 項全修)＋聚焦複審關閉:雙審(reviewer/Opus 7 條＋Codex 13 條,3 重疊)裁決 17 條成立、使用者核可全修,分三批並行修正——批A core/GUI(Create 改 30min 逾時修 GUI 首建必逾時、CF key 驗證依 runtime 分流、覆蓋 key 自動遷入金鑰庫、GOOS 過濾 native 選項、CF 文案 runtime-aware)、批B agent(模組包 TargetDir 修雙層巢狀、native.json 兩段式寫入修回滾 404、Job 超限即 TerminateJobObject、BlockedMods cf-imports 接線、Remove ctx 解永久阻塞、259 判活/proc.json 吞錯/並發 Start 三低項)、批C provision/範本(Palworld 改 PalServer.exe＋ini 改 Pal/Saved/Config/WindowsServer 路徑、MC native 佈局對齊 data/ 修備份互轉、sha1 旁檔 404 硬失敗＋CF 直鏈強制 https)。聚焦複審確認 17+1 修到位,另抓到交互問題 A(#2×#7:模組落位須跟隨 working_dir)→主迴圈修正＋迴歸鎖。E2E 重跑 50s PASS、全套件非快取綠、tasks.md 14/14 回寫。
 - [2026-07-17] 🚀 native-backend T1–T14 實作完成(/pipeline 波1–5＋收官),native MC 全流程 E2E 實跑通過(108s,就緒 11s:建立→啟動→RCON→統計→備份→還原→移除):T1 protocol/範本層、T2 provision 基礎+Adoptium JRE、T3/T4 五 loader 安裝器(PaperMC 實測改接 v3 Fill API,v2 已 sunset;Forge/NeoForge 走官方 installer 產出腳本不自解析)、T5 SteamCMD、T6 NativeBackend 13 方法+契約測試+備份 tar 抽共用、T7 Job Objects(oom 事件/CPU cap 實測/agent 退出行程續活三真機驗收)、T8 dispatchBackend 前綴路由+bootstrap 泛化+RetryDocker 熱替換、T9 runtime 選擇鏈+itzg gate、T10 Modrinth/mrpack+ModProvider 擴充點、T11 行程收養(PID+start-time+Job 重掛)+對帳整合、T12 GUI(bindings 零破壞加法+建立精靈 runtime 選擇+供應進度)、T14 CurseForge(key ldflags 注入+設定覆蓋+BlockedMods 降級流程)、T13 範本校正(forge run.bat 改寫/config Set 欄位/per-instance temp 修 netty AF_UNIX 崩潰)+文件。待雙審裁決。
@@ -30,6 +31,7 @@
 
 > 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
+- [ ] GUI 重構:先併 claude/session-c0092e 入 master(經使用者確認),再以 `/pipeline gui-redesign` 依 `specs/gui-redesign/tasks.md` 執行;codex/graphite-ops-gui 分支棄用不併(僅視覺參考)
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
@@ -50,4 +52,5 @@
 - [2026-07-13] rev.2(依 Codex 二審修訂):Palworld 改「REST 具名動作為主、RCON 標 legacy(需查證)」;CurseForge 改「itzg 原生 AUTO_CURSEFORGE + 手動」,自建下載器延後;新增 R13 啟動對帳/單一實例、R14 結構化事件記錄;代理 API 加 bearer token 認證;備份改經 RuntimeBackend Archive/Restore;鎖定依賴版本(Wails v2 stable 等)。
 - [2026-07-13] rev.3(依 Codex 兩輪二審深修):restart 由 core 單一編排(agent 不開 /restart);Docker 事件納入 `RuntimeBackend.Events`;敏感值改 `SecretRef` 型別(輸入即入金鑰庫+redaction);備份首版=停機快照+bind mount、agent 擁有備份根+opaque `BackupID`;首版不支援線上 update(改參數=重建);Palworld/備份/模組三個 spike 設為對應功能前置 gate;依賴版本鎖定給具體下限。
 - [2026-07-16] native-backend 規格裁決:新開 specs/native-backend(不改寫已交付規格,僅加註);逐實例選 runtime、Windows 預設 native、Linux 強制 Docker;資源上限首版即用 Windows Job Objects;涵蓋 MC 全 loader+Palworld+Modrinth;CurseForge 納入為 R14 可獨立延後(採 Prism 模式:專案專屬 key 嵌入+opted-out 手動下載 fallback;CDN 直連/社群代理不合規不採用);唯一依賴變動=x/sys 提為直接相依(版本不變)。
+- [2026-07-17] gui-redesign 規格裁決:五項後端擴充全納入(實例顯示名稱/uptime/連接埠/指標時序 15s×36h/範本 icon 欄位);趨勢圖走後端時序持久化;前端零新增 runtime 依賴(hash 路由自製、圖表手刻 SVG、LogViewer 固定上限+content-visibility 不做虛擬列表);新元件一律 Svelte 5 runes;基底=c0092e 併入 master 後;codex/graphite-ops-gui 棄用僅作視覺參考。
 - [2026-07-13] 開發環境:本機經 winget 裝 Go 1.26.5、`go install` 裝 Wails v2.13.0(WebView2 / Node 24 已備、`wails doctor` 通過);Docker Desktop 29.4.1。**注意:winget 裝的 Go/Wails 不在本 session 既有 shell 的 PATH**,執行 go/wails 前需 `export PATH="/c/Program Files/Go/bin:$HOME/go/bin:$PATH"`。鎖版:docker v27.5.1(go-connections **必須** v0.5.0,v0.7.0 會壞 Windows 編譯)、gorilla/websocket v1.5.3、modernc/sqlite v1.34.5、go-keyring v0.2.8、go-toml/v2。
