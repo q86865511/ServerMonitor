@@ -1,10 +1,8 @@
-// 全域 Svelte stores:實例清單、節點狀態、導航、toast。
+// 全域 Svelte stores:實例清單、節點狀態、toast。
+// 舊「主導航頁」store(currentView/View)已隨 lib/Sidebar.svelte(舊)於 T13 一併移除
+// (hash 路由 router.ts 的 Page 型別取代其角色,見 lib/shell/Sidebar.svelte)。
 import { writable } from 'svelte/store';
 import { main } from '../../wailsjs/go/models';
-
-/** 主導航頁。主控台/建立精靈為疊加 modal,不佔導航。 */
-export type View = 'instances' | 'events' | 'settings';
-export const currentView = writable<View>('instances');
 
 /** 由首頁輪詢維護的實例清單(權威來源:ListInstances)。 */
 export const instances = writable<main.InstanceDTO[]>([]);
