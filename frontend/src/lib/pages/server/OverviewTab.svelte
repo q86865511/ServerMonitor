@@ -19,6 +19,9 @@
   import Button from '../../ui/Button.svelte';
   import TrendChart from '../../ui/TrendChart.svelte';
   import EmptyState from '../../ui/EmptyState.svelte';
+  import Skeleton from '../../ui/Skeleton.svelte';
+
+  const METRICS_LOAD_TIMEOUT_MS = 5000;
 
   let {
     uuid,
@@ -32,12 +35,25 @@
 
   // ---- 指標訂閱(引用計數;uuid 變動時自動接手,unmount 釋放)----
   let samples = $state<MetricSample[]>([]);
+  // 區分載入中/確定無資料(R15/R16),作法同 ui/ServerCard:store 第二次落值才視為 settled,
+  // 保底逾時防離線/查詢失敗時卡在 Skeleton;uuid 變動時重置(切換伺服器不沿用舊 settled 狀態)。
+  let metricsLoaded = $state(false);
   $effect(() => {
+    metricsLoaded = false;
     acquireMetrics(uuid);
-    const unsub = metricSamples(uuid).subscribe((v) => (samples = v));
+    let firstEmit = true;
+    const unsub = metricSamples(uuid).subscribe((v) => {
+      samples = v;
+      if (!firstEmit) metricsLoaded = true;
+      firstEmit = false;
+    });
+    const loadTimer = setTimeout(() => {
+      metricsLoaded = true;
+    }, METRICS_LOAD_TIMEOUT_MS);
     return () => {
       unsub();
       releaseMetrics(uuid);
+      clearTimeout(loadTimer);
     };
   });
 
@@ -75,11 +91,19 @@
   <div class="charts">
     <Card>
       <div class="chart-head">CPU 使用率</div>
-      <TrendChart series={cpuSeries} yMax={100} yUnit="%" height={180} />
+      {#if !metricsLoaded}
+        <Skeleton variant="block" height="180px" />
+      {:else}
+        <TrendChart series={cpuSeries} yMax={100} yUnit="%" height={180} />
+      {/if}
     </Card>
     <Card>
       <div class="chart-head">記憶體使用率</div>
-      <TrendChart series={ramSeries} yMax={100} yUnit="%" height={180} />
+      {#if !metricsLoaded}
+        <Skeleton variant="block" height="180px" />
+      {:else}
+        <TrendChart series={ramSeries} yMax={100} yUnit="%" height={180} />
+      {/if}
     </Card>
   </div>
 
@@ -116,7 +140,7 @@
     </Card>
   </div>
 
-  {#if samples.length === 0}
+  {#if metricsLoaded && samples.length === 0}
     <Card>
       <EmptyState
         title="尚無指標歷史"

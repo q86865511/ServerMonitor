@@ -9,6 +9,7 @@
   const offline = $derived($nodeStatuses.filter((n) => !n.online));
 
   async function retry(): Promise<void> {
+    if (retrying) return;
     retrying = true;
     try {
       await call(() => RetryDocker());

@@ -35,6 +35,9 @@
   let deleteTarget = $state<main.ScheduleDTO | null>(null);
   let deleting = $state(false);
 
+  // 啟用/停用切換:單一旗標記錄目前操作中的排程 id,防同一列連點兩次重複送出。
+  let togglingId = $state('');
+
   const KIND_LABEL: Record<string, string> = { restart: '重啟', backup: '備份' };
 
   async function load(): Promise<void> {
@@ -109,6 +112,8 @@
   }
 
   async function toggleEnabled(s: main.ScheduleDTO): Promise<void> {
+    if (togglingId) return;
+    togglingId = s.id;
     try {
       await call(() =>
         UpsertSchedule(
@@ -125,6 +130,8 @@
       await load();
     } catch {
       /* toast 已呈現 */
+    } finally {
+      togglingId = '';
     }
   }
 
@@ -164,7 +171,13 @@
   <span>{fmtWeekdays(s.weekdays)}</span>
 {/snippet}
 {#snippet enabledCell(s: main.ScheduleDTO)}
-  <Button size="sm" variant="ghost" onclick={() => toggleEnabled(s)}>
+  <Button
+    size="sm"
+    variant="ghost"
+    loading={togglingId === s.id}
+    disabled={togglingId !== '' && togglingId !== s.id}
+    onclick={() => toggleEnabled(s)}
+  >
     {s.enabled ? '✅ 啟用' : '⛔ 停用'}
   </Button>
 {/snippet}

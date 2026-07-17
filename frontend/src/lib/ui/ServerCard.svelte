@@ -36,6 +36,7 @@
 
   const SNAPSHOT_POLL_MS = 10_000;
   const CLOCK_TICK_MS = 1000;
+  const METRICS_LOAD_TIMEOUT_MS = 5000;
 
   let {
     inst,
@@ -96,6 +97,11 @@
   // uuid 取自 props 初值即可:卡片由呼叫端以 uuid 作為 each key,同一卡片實例存續期間 inst.uuid 不變。
   let samples = $state<MetricSample[]>([]);
   let unsubscribeSamples: (() => void) | null = null;
+  // 區分「載入中」與「確定無資料」(R15/R16):停機或從未監控的實例,回填會以空陣列落地,
+  // 不能永遠停在 Skeleton。store 首次 subscribe 回呼是訂閱當下的既有值,第二次落值才代表
+  // 本次 acquireMetrics 觸發的回填/即時樣本已到位,視為 settled;保底逾時防離線/查詢失敗卡死。
+  let metricsLoaded = $state(false);
+  let metricsLoadTimer: ReturnType<typeof setTimeout> | null = null;
 
   const latestSample = $derived<MetricSample | null>(samples.length > 0 ? samples[samples.length - 1] : null);
   const ramPercent = $derived(
@@ -111,12 +117,21 @@
       now = Date.now();
     }, CLOCK_TICK_MS);
     acquireMetrics(inst.uuid);
-    unsubscribeSamples = metricSamples(inst.uuid).subscribe((v) => (samples = v));
+    let firstEmit = true;
+    unsubscribeSamples = metricSamples(inst.uuid).subscribe((v) => {
+      samples = v;
+      if (!firstEmit) metricsLoaded = true;
+      firstEmit = false;
+    });
+    metricsLoadTimer = setTimeout(() => {
+      metricsLoaded = true;
+    }, METRICS_LOAD_TIMEOUT_MS);
   });
 
   onDestroy(() => {
     if (snapshotTimer) clearInterval(snapshotTimer);
     if (clockTimer) clearInterval(clockTimer);
+    if (metricsLoadTimer) clearTimeout(metricsLoadTimer);
     if (unsubscribeSamples) unsubscribeSamples();
     releaseMetrics(inst.uuid);
   });
@@ -217,7 +232,7 @@
     </div>
 
     <div class="metrics">
-      {#if samples.length === 0}
+      {#if !metricsLoaded}
         <Skeleton variant="line" width="100%" count={2} />
       {:else}
         {#if latestSample?.cpu != null}

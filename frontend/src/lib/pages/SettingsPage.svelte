@@ -14,9 +14,11 @@
   import Badge from '../ui/Badge.svelte';
   import Button from '../ui/Button.svelte';
   import Card from '../ui/Card.svelte';
+  import ErrorState from '../ui/ErrorState.svelte';
   import TextField from '../ui/TextField.svelte';
 
   let loading = $state(true);
+  let loadError = $state('');
   let saving = $state(false);
   let enabled = $state(false); // CurseForgeEnabled:內嵌或使用者覆蓋任一啟用即 true
   let configured = $state(false); // CurseForgeKeyConfigured:使用者已設定覆蓋金鑰
@@ -34,14 +36,16 @@
 
   async function load(): Promise<void> {
     loading = true;
+    loadError = '';
     try {
       [enabled, configured] = await Promise.all([
         call(() => CurseForgeEnabled(), { silent: true }),
         call(() => CurseForgeKeyConfigured(), { silent: true }),
       ]);
-    } catch {
+    } catch (e) {
       enabled = false;
       configured = false;
+      loadError = e instanceof Error ? e.message : String(e);
     } finally {
       loading = false;
     }
@@ -81,31 +85,37 @@
   }
 </script>
 
-<Card>
-  <div class="cf-head">
-    <h3>CurseForge 模組包金鑰</h3>
-    <Badge tone={statusTone}>{loading ? '查詢中…' : statusLabel}</Badge>
-  </div>
-  <p class="hint">
-    native 後端的 CurseForge 模組包需 API 金鑰。可於此填入自己的金鑰(比照 Prism
-    Launcher)覆蓋建置內嵌值;金鑰存入 OS 金鑰庫,不明文落檔。儲存或清除後即時生效,無需重啟。
-  </p>
+{#if loadError}
+  <Card>
+    <ErrorState message={`載入 CurseForge 設定失敗:${loadError}`} onRetry={load} />
+  </Card>
+{:else}
+  <Card>
+    <div class="cf-head">
+      <h3>CurseForge 模組包金鑰</h3>
+      <Badge tone={statusTone}>{loading ? '查詢中…' : statusLabel}</Badge>
+    </div>
+    <p class="hint">
+      native 後端的 CurseForge 模組包需 API 金鑰。可於此填入自己的金鑰(比照 Prism
+      Launcher)覆蓋建置內嵌值;金鑰存入 OS 金鑰庫,不明文落檔。儲存或清除後即時生效,無需重啟。
+    </p>
 
-  <TextField
-    label="API 金鑰"
-    type="password"
-    bind:value={keyInput}
-    placeholder={configured ? '已設定(輸入新值以覆寫)' : '貼上 CurseForge API 金鑰'}
-    disabled={saving || loading}
-  />
+    <TextField
+      label="API 金鑰"
+      type="password"
+      bind:value={keyInput}
+      placeholder={configured ? '已設定(輸入新值以覆寫)' : '貼上 CurseForge API 金鑰'}
+      disabled={saving || loading}
+    />
 
-  <div class="actions">
-    <Button variant="ghost" onclick={clear} disabled={saving || loading || !configured}>清除</Button>
-    <Button variant="primary" loading={saving} disabled={loading || keyInput.trim() === ''} onclick={save}>
-      儲存
-    </Button>
-  </div>
-</Card>
+    <div class="actions">
+      <Button variant="ghost" onclick={clear} disabled={saving || loading || !configured}>清除</Button>
+      <Button variant="primary" loading={saving} disabled={loading || keyInput.trim() === ''} onclick={save}>
+        儲存
+      </Button>
+    </div>
+  </Card>
+{/if}
 
 <style>
   .cf-head {
