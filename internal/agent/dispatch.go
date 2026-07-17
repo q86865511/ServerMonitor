@@ -75,12 +75,34 @@ type CurseForgeCapable interface {
 
 var _ CurseForgeCapable = (*dispatchBackend)(nil)
 
+// CurseForgeConfigurable 由 dispatchBackend 實作,暴露「熱設定使用者覆蓋的 CurseForge API 金鑰」
+// (native-backend R14:GUI 設定即時生效)。供 app 層(Runtime.SetCurseForgeOverrideKey)於使用者於
+// GUI 儲存/清除金鑰後,把新值推入執行中的 native 供應器,免重啟。非 dispatch 的頂層後端(docker-only/
+// 測試 MockBackend)自然不符合本介面,swap 遂為 no-op(那些情境本就無 native CurseForge 能力)。
+type CurseForgeConfigurable interface {
+	SetCurseForgeKey(key string)
+}
+
+var _ CurseForgeConfigurable = (*dispatchBackend)(nil)
+
 // CurseForgeEnabled 委派 native 子後端回報 CurseForge 模組包能力;native 不存在(Linux)或未實作時回 false。
 func (d *dispatchBackend) CurseForgeEnabled() bool {
 	if cc, ok := d.native.(CurseForgeCapable); ok {
 		return cc.CurseForgeEnabled()
 	}
 	return false
+}
+
+// SetCurseForgeKey 委派 native 子後端熱替換 CurseForge 覆蓋金鑰(native-backend R14);native 不存在
+// (Linux)或未實作時為 no-op。native 於 Windows 恆存在且生命週期與 dispatchBackend 相同(不熱替換),
+// 故無需 dockerMu 之類的鎖保護——併發安全由 native 供應器內部(Provisioner.mu)承擔。
+func (d *dispatchBackend) SetCurseForgeKey(key string) {
+	if d.native == nil {
+		return
+	}
+	if cc, ok := d.native.(CurseForgeConfigurable); ok {
+		cc.SetCurseForgeKey(key)
+	}
 }
 
 // NewDispatchBackend 建立組合後端。native 與 docker 皆可為 nil,但至少一個非 nil。建構後立即為

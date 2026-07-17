@@ -98,6 +98,34 @@ func ResolveCurseForgeOverrideKey(secrets *SecretStore, cfgPath string, cfg *App
 	return v, false, nil
 }
 
+// SetCurseForgeOverrideKey 設定(或清除)使用者覆蓋的 CurseForge API 金鑰於 OS 金鑰庫(#11:實值
+// 只落金鑰庫,永不明文寫 config.json、log 或事件)。key 為空字串(去空白後)=清除該項(冪等,查無
+// 亦視為成功);非空=寫入/覆寫。secrets 為 nil(無金鑰庫)時回錯,由呼叫端決定如何回報。
+// 供 GUI 綁定(app.Runtime.SetCurseForgeOverrideKey)於使用者於設定填入/清除金鑰時呼叫。
+func SetCurseForgeOverrideKey(secrets *SecretStore, key string) error {
+	if secrets == nil {
+		return errors.New("core: 金鑰庫不可用,無法設定 CurseForge 覆蓋金鑰")
+	}
+	if strings.TrimSpace(key) == "" {
+		return secrets.Delete(curseForgeOverrideRef)
+	}
+	return secrets.Set(curseForgeOverrideRef, key)
+}
+
+// CurseForgeOverrideKeySet 回報 OS 金鑰庫是否已存有使用者覆蓋的 CurseForge API 金鑰(#11)。只回
+// 「有無」布林,不回明文——供 GUI 顯示「已設定/未設定」狀態。secrets 為 nil 或查無/讀取失敗一律回
+// false(保守視為未設定)。有別於 CurseForgeEnabled(後者含建置內嵌 key),本函式只反映「使用者覆蓋」。
+func CurseForgeOverrideKeySet(secrets *SecretStore) bool {
+	if secrets == nil {
+		return false
+	}
+	v, err := secrets.Get(curseForgeOverrideRef)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(v) != ""
+}
+
 // SaveAppConfig 以 UTF-8 JSON(縮排、易讀)寫出設定檔。
 func SaveAppConfig(path string, cfg AppConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")

@@ -122,6 +122,58 @@ func TestResolveCurseForgeOverrideKey_Absent(t *testing.T) {
 	}
 }
 
+// TestSetCurseForgeOverrideKey 驗證 GUI 設定路徑:寫入/覆寫/清除金鑰庫覆蓋值,並以
+// CurseForgeOverrideKeySet 回報有無(不回明文)。清除為冪等,查無仍成功。
+func TestSetCurseForgeOverrideKey(t *testing.T) {
+	secrets := NewSecretStoreWithKeyring("test", newMemoryKeyring())
+
+	// 初始:未設定。
+	if CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("初始應未設定覆蓋金鑰")
+	}
+
+	// 設定。
+	if err := SetCurseForgeOverrideKey(secrets, "cf-user-key-1"); err != nil {
+		t.Fatalf("設定: %v", err)
+	}
+	if !CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("設定後應回報已設定")
+	}
+	if v, err := secrets.Get(curseForgeOverrideRef); err != nil || v != "cf-user-key-1" {
+		t.Fatalf("金鑰庫值 = %q err=%v, 期望 cf-user-key-1", v, err)
+	}
+
+	// 覆寫。
+	if err := SetCurseForgeOverrideKey(secrets, "cf-user-key-2"); err != nil {
+		t.Fatalf("覆寫: %v", err)
+	}
+	if v, _ := secrets.Get(curseForgeOverrideRef); v != "cf-user-key-2" {
+		t.Fatalf("覆寫後金鑰庫值 = %q, 期望 cf-user-key-2", v)
+	}
+
+	// 清除(空字串)。
+	if err := SetCurseForgeOverrideKey(secrets, ""); err != nil {
+		t.Fatalf("清除: %v", err)
+	}
+	if CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("清除後應回報未設定")
+	}
+	// 冪等:再次清除仍成功。
+	if err := SetCurseForgeOverrideKey(secrets, "   "); err != nil {
+		t.Fatalf("重複清除(空白視為清除)應冪等: %v", err)
+	}
+}
+
+// TestSetCurseForgeOverrideKey_NilSecrets 驗證無金鑰庫時設定回錯、查詢回 false(保守降級)。
+func TestSetCurseForgeOverrideKey_NilSecrets(t *testing.T) {
+	if err := SetCurseForgeOverrideKey(nil, "k"); err == nil {
+		t.Fatal("secrets 為 nil 時設定應回錯")
+	}
+	if CurseForgeOverrideKeySet(nil) {
+		t.Fatal("secrets 為 nil 時應回報未設定")
+	}
+}
+
 // TestSaveLoadAppConfig_RoundTrip 驗證存/讀往返一致。
 func TestSaveLoadAppConfig_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.json")

@@ -347,6 +347,61 @@ func TestProvisioner_CurseForgeConfigOverridesEmbedded(t *testing.T) {
 	}
 }
 
+// TestProvisioner_SetCurseForgeKeyHotSwap 驗證執行期熱設定金鑰(GUI 設定;R14):
+// 無內嵌 key → 停用;SetCurseForgeKey(非空)→ 啟用並註冊 provider;SetCurseForgeKey("") → 清除覆蓋、
+// 回退內嵌值(此處為空)→ 停用並移除 provider。
+func TestProvisioner_SetCurseForgeKeyHotSwap(t *testing.T) {
+	orig := curseforgeAPIKey
+	t.Cleanup(func() { curseforgeAPIKey = orig })
+	curseforgeAPIKey = "" // 無內嵌 key
+
+	p := New(t.TempDir())
+	if p.CurseForgeEnabled() {
+		t.Fatal("初始無 key 應停用")
+	}
+	if _, ok := p.ModProvider("curseforge"); ok {
+		t.Fatal("初始不應註冊 curseforge provider")
+	}
+
+	// 熱設定使用者金鑰:啟用並註冊 provider。
+	p.SetCurseForgeKey("user-fake-key")
+	if !p.CurseForgeEnabled() {
+		t.Fatal("設定金鑰後應啟用")
+	}
+	if _, ok := p.ModProvider("curseforge"); !ok {
+		t.Fatal("設定金鑰後應註冊 curseforge provider")
+	}
+
+	// 清除(空字串):回退內嵌值(空)→ 停用並移除 provider。
+	p.SetCurseForgeKey("")
+	if p.CurseForgeEnabled() {
+		t.Fatal("清除後(內嵌為空)應停用")
+	}
+	if _, ok := p.ModProvider("curseforge"); ok {
+		t.Fatal("清除後應移除 curseforge provider")
+	}
+}
+
+// TestProvisioner_SetCurseForgeKeyClearRevertsToEmbedded 驗證清除使用者覆蓋時回退內嵌金鑰(非停用)。
+func TestProvisioner_SetCurseForgeKeyClearRevertsToEmbedded(t *testing.T) {
+	orig := curseforgeAPIKey
+	t.Cleanup(func() { curseforgeAPIKey = orig })
+	curseforgeAPIKey = "embedded-fake-key"
+
+	p := New(t.TempDir(), WithCurseForgeAPIKey("user-fake-key"))
+	if p.curseforgeKey != "user-fake-key" {
+		t.Fatalf("初始覆蓋應勝出,實得 %q", p.curseforgeKey)
+	}
+	// 清除覆蓋:應回退內嵌值,仍啟用。
+	p.SetCurseForgeKey("")
+	if !p.CurseForgeEnabled() || p.curseforgeKey != "embedded-fake-key" {
+		t.Fatalf("清除覆蓋應回退內嵌值,實得 enabled=%v key=%q", p.CurseForgeEnabled(), p.curseforgeKey)
+	}
+	if _, ok := p.ModProvider("curseforge"); !ok {
+		t.Fatal("回退內嵌值後應仍註冊 curseforge provider")
+	}
+}
+
 func assertFileContent(t *testing.T, path, want string) {
 	t.Helper()
 	got, err := os.ReadFile(path)

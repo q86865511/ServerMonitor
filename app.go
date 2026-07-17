@@ -563,6 +563,21 @@ func (a *App) DockerAvailable() bool { return a.rt.DockerAvailable() }
 // API key)。供建立表單決定是否顯示 native CurseForge 模組包來源選項(未啟用時隱藏/置灰並提示)。
 func (a *App) CurseForgeEnabled() bool { return a.rt.CurseForgeEnabled() }
 
+// SetCurseForgeAPIKey 設定(空字串=清除)使用者覆蓋的 CurseForge API 金鑰(native-backend R14:GUI
+// 設定)。實值只落 OS 金鑰庫,永不明文落 config.json;設定後熱生效(免重啟),CurseForgeEnabled 與
+// 建立精靈的 CurseForge 選項置灰即時反映。失敗回可讀錯誤。
+func (a *App) SetCurseForgeAPIKey(key string) error {
+	if err := a.rt.SetCurseForgeOverrideKey(key); err != nil {
+		return fmt.Errorf("設定 CurseForge 金鑰失敗: %w", err)
+	}
+	return nil
+}
+
+// CurseForgeKeyConfigured 回報使用者是否已於金鑰庫設定「覆蓋」的 CurseForge API 金鑰(native-backend
+// R14)。只回有無、不回明文。有別於 CurseForgeEnabled(後者尚含建置內嵌 key):供 GUI 區分三態——
+// 使用者已設定(可清除)、僅內建金鑰啟用、皆無(停用)。
+func (a *App) CurseForgeKeyConfigured() bool { return a.rt.CurseForgeOverrideKeySet() }
+
 // RetryDocker 重試連線 Docker(節點離線時)(R5)。
 func (a *App) RetryDocker() error { return a.rt.RetryDocker() }
 

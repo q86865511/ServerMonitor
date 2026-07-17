@@ -83,6 +83,9 @@ type Options struct {
 	DockerFactory DockerFactory
 	// AlertChannel 覆寫告警送出通道(nil 用 Discord webhook 通道)。供測試注入 fake 觀測告警。
 	AlertChannel core.AlertChannel
+	// Secrets 覆寫 SecretStore(nil 用 OS 金鑰庫)。供測試注入以記憶體 Keyring 為後端的 SecretStore,
+	// 免污染真實 OS 金鑰庫即可驗證 CurseForge 覆蓋金鑰的設定/清除與熱生效鏈路。
+	Secrets *core.SecretStore
 	// Now 供測試注入固定時鐘;nil 用 time.Now。
 	Now func() time.Time
 	// ReadyTimeout 覆寫生命週期啟動就緒逾時(Orchestrator.awaitReady);<=0 用預設 60s(R3)。
@@ -270,7 +273,11 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	}
 
 	// 5) SecretStore、TemplateEngine(內建 + 使用者目錄)。
-	r.secrets = core.NewSecretStore(core.DefaultKeyringService)
+	if opts.Secrets != nil {
+		r.secrets = opts.Secrets
+	} else {
+		r.secrets = core.NewSecretStore(core.DefaultKeyringService)
+	}
 	r.engine = core.NewTemplateEngine(core.DefaultAdapterRegistry(), events)
 	loadTemplates(r.engine, opts.BuiltinTemplateDir, userTemplatesDir)
 
@@ -516,6 +523,31 @@ func (r *Runtime) CurseForgeEnabled() bool {
 		return cc.CurseForgeEnabled()
 	}
 	return false
+}
+
+// SetCurseForgeOverrideKey 設定(空字串=清除)使用者覆蓋的 CurseForge API 金鑰(native-backend R14:
+// GUI 設定)。兩步:(1) 持久化——實值只落 OS 金鑰庫,永不明文寫 config.json/log/事件;(2) 熱生效——
+// 把新值推入執行中的 native 供應器(dispatchBackend.SetCurseForgeKey),使 CurseForgeEnabled 立即反映、
+// 免重啟。頂層後端非 dispatch(docker-only/測試)時第二步為 no-op(那些情境本就無 native CF 能力)。
+// 持久化失敗即回錯不做熱替換(維持金鑰庫與執行態一致);熱替換本身無錯可回。
+func (r *Runtime) SetCurseForgeOverrideKey(key string) error {
+	if err := core.SetCurseForgeOverrideKey(r.secrets, key); err != nil {
+		return fmt.Errorf("設定 CurseForge 金鑰失敗: %w", err)
+	}
+	r.agentMu.Lock()
+	backend := r.backend
+	r.agentMu.Unlock()
+	if cc, ok := backend.(agent.CurseForgeConfigurable); ok {
+		cc.SetCurseForgeKey(key)
+	}
+	return nil
+}
+
+// CurseForgeOverrideKeySet 回報使用者是否已於金鑰庫設定覆蓋的 CurseForge API 金鑰(native-backend
+// R14)。只回有無、不回明文。有別於 CurseForgeEnabled(含建置內嵌 key):本方法只反映「使用者覆蓋」,
+// 供 GUI 區分「已設定使用者金鑰(可清除)」與「使用內建金鑰」兩態。
+func (r *Runtime) CurseForgeOverrideKeySet() bool {
+	return core.CurseForgeOverrideKeySet(r.secrets)
 }
 
 // closeBackend 關閉實作了 Close 的後端(Mock/Docker 皆有;介面未含 Close,故型別斷言)。

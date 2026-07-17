@@ -10,12 +10,16 @@ export function CreateInstance(arg1) {
   return window['go']['main']['App']['CreateInstance'](arg1);
 }
 
-export function DeleteSchedule(arg1) {
-  return window['go']['main']['App']['DeleteSchedule'](arg1);
-}
-
 export function CurseForgeEnabled() {
   return window['go']['main']['App']['CurseForgeEnabled']();
+}
+
+export function CurseForgeKeyConfigured() {
+  return window['go']['main']['App']['CurseForgeKeyConfigured']();
+}
+
+export function DeleteSchedule(arg1) {
+  return window['go']['main']['App']['DeleteSchedule'](arg1);
 }
 
 export function DockerAvailable() {
@@ -80,6 +84,10 @@ export function SendCommand(arg1, arg2) {
 
 export function SetAlertSettings(arg1, arg2) {
   return window['go']['main']['App']['SetAlertSettings'](arg1, arg2);
+}
+
+export function SetCurseForgeAPIKey(arg1) {
+  return window['go']['main']['App']['SetCurseForgeAPIKey'](arg1);
 }
 
 export function StartInstance(arg1) {

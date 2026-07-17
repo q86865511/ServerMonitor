@@ -1,9 +1,17 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 
+	"github.com/zalando/go-keyring"
+
+	"servermonitor/internal/agent"
+	"servermonitor/internal/app"
+	"servermonitor/internal/core"
 	"servermonitor/internal/protocol"
 )
 
@@ -85,6 +93,106 @@ func TestRuntimeFromID(t *testing.T) {
 		if got := runtimeFromID(c.id); got != c.want {
 			t.Fatalf("runtimeFromID(%q) = %q, want %q", c.id, got, c.want)
 		}
+	}
+}
+
+// memKeyring 是 Keyring 的記憶體替身(免污染真實 OS 金鑰庫),Get 查無回 keyring.ErrNotFound。
+type memKeyring struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+func newMemKeyring() *memKeyring { return &memKeyring{m: make(map[string]string)} }
+
+func (k *memKeyring) key(s, u string) string { return s + "\x00" + u }
+func (k *memKeyring) Set(s, u, p string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.m[k.key(s, u)] = p
+	return nil
+}
+func (k *memKeyring) Get(s, u string) (string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if v, ok := k.m[k.key(s, u)]; ok {
+		return v, nil
+	}
+	return "", keyring.ErrNotFound
+}
+func (k *memKeyring) Delete(s, u string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	kk := k.key(s, u)
+	if _, ok := k.m[kk]; !ok {
+		return keyring.ErrNotFound
+	}
+	delete(k.m, kk)
+	return nil
+}
+
+// TestCurseForgeKeyBindings 驗證 GUI 綁定 SetCurseForgeAPIKey/CurseForgeKeyConfigured/CurseForgeEnabled
+// 的端到端行為(native-backend R14):經真 Runtime(注入記憶體金鑰庫 + dispatch(native 真 adapter))。
+// 設定金鑰 → 持久化(Configured 反映)且熱生效(Enabled 翻真,免重啟);清除 → 兩者翻回。
+func TestCurseForgeKeyBindings(t *testing.T) {
+	dataRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataRoot, "templates"), 0o755); err != nil {
+		t.Fatalf("建立範本目錄: %v", err)
+	}
+	// dispatch 頂層:native 用真 provisionAdapter(無內嵌 key → 初始停用),docker=nil。
+	factory := func(opts agent.BackendOptions) (agent.RuntimeBackend, error) {
+		native, err := agent.NewNativeBackend(agent.NativeOptions{
+			DataRoot:   filepath.Join(dataRoot, "instances"),
+			BackupRoot: filepath.Join(dataRoot, "backups"),
+			CacheRoot:  filepath.Join(dataRoot, "cache"),
+			Node:       opts.Node,
+			Prov:       agent.NewProvisionAdapter(opts.CacheRoot),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return agent.NewDispatchBackend(native, nil)
+	}
+	rt, err := app.Bootstrap(app.Options{
+		DataRoot:           dataRoot,
+		BuiltinTemplateDir: t.TempDir(),
+		BackendFactory:     factory,
+		Secrets:            core.NewSecretStoreWithKeyring("test", newMemKeyring()),
+	})
+	if err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	defer rt.Shutdown()
+
+	a := &App{rt: rt}
+
+	// 初始:未設定覆蓋、未啟用。
+	if a.CurseForgeKeyConfigured() {
+		t.Fatal("初始不應有使用者覆蓋金鑰")
+	}
+	if a.CurseForgeEnabled() {
+		t.Fatal("初始無內嵌/覆蓋金鑰應停用")
+	}
+
+	// 設定:持久化 + 熱生效。
+	if err := a.SetCurseForgeAPIKey("user-fake-key"); err != nil {
+		t.Fatalf("SetCurseForgeAPIKey: %v", err)
+	}
+	if !a.CurseForgeKeyConfigured() {
+		t.Fatal("設定後 CurseForgeKeyConfigured 應為 true")
+	}
+	if !a.CurseForgeEnabled() {
+		t.Fatal("設定後 CurseForgeEnabled 應熱生效為 true")
+	}
+
+	// 清除:兩者翻回。
+	if err := a.SetCurseForgeAPIKey(""); err != nil {
+		t.Fatalf("清除 SetCurseForgeAPIKey: %v", err)
+	}
+	if a.CurseForgeKeyConfigured() {
+		t.Fatal("清除後 CurseForgeKeyConfigured 應為 false")
+	}
+	if a.CurseForgeEnabled() {
+		t.Fatal("清除後 CurseForgeEnabled 應翻回 false")
 	}
 }
 

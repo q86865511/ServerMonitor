@@ -101,7 +101,7 @@ func (a *provisionAdapter) WriteEula(ctx context.Context, instanceDir string, ac
 // "curseforge" 僅在建置內嵌或設定覆蓋了 API key 時才註冊 ModProvider(R14);未啟用時回明確的
 // 「未啟用」錯誤——刻意不落入下方 map 查無的通用訊息,使呼叫端(GUI/使用者)能立即理解原因。
 func (a *provisionAdapter) InstallModpack(ctx context.Context, req ModpackInstallRequest, progress func(protocol.ProvisionProgress)) error {
-	provider, ok := a.p.ModProviders[req.Type]
+	provider, ok := a.p.ModProvider(req.Type)
 	if !ok {
 		if req.Type == "curseforge" {
 			return fmt.Errorf("agent: CurseForge 模組包未啟用(建置未內嵌 API key 且設定未覆蓋;native-backend R14)")
@@ -144,6 +144,12 @@ func (a *provisionAdapter) curseForgeImportDir(modpackType string) string {
 // 了 API key)。NativeBackend 以 curseForgeCapable 可選介面查詢之,一路透出至 GUI 綁定。
 func (a *provisionAdapter) CurseForgeEnabled() bool {
 	return a.p.CurseForgeEnabled()
+}
+
+// SetCurseForgeKey 委派供應器熱替換使用者覆蓋的 CurseForge API 金鑰(GUI 設定;native-backend R14)。
+// 空字串=清除覆蓋、回退內嵌金鑰。NativeBackend 以 curseForgeConfigurable 可選介面查詢之。
+func (a *provisionAdapter) SetCurseForgeKey(key string) {
+	a.p.SetCurseForgeKey(key)
 }
 
 // deriveMCVersion 由 native 側的 Variant 導出 provision 需要的 Minecraft 版本號。native 的 Variant

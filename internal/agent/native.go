@@ -86,6 +86,12 @@ type curseForgeCapable interface {
 	CurseForgeEnabled() bool
 }
 
+// curseForgeConfigurable 由供應器實作以支援 GUI 於執行期熱設定 CurseForge 覆蓋金鑰(native-backend
+// R14)。以可選介面表達,使測試假件無須實作;NativeBackend.SetCurseForgeKey 於未實作時為 no-op。
+type curseForgeConfigurable interface {
+	SetCurseForgeKey(key string)
+}
+
 // CurseForgeEnabled 回報本後端的供應器是否啟用 CurseForge 模組包(native-backend R14)。供上層
 // (dispatchBackend→Runtime→Wails 綁定)決定 GUI 是否顯示 native CurseForge 模組包選項。
 func (b *NativeBackend) CurseForgeEnabled() bool {
@@ -93,6 +99,14 @@ func (b *NativeBackend) CurseForgeEnabled() bool {
 		return cc.CurseForgeEnabled()
 	}
 	return false
+}
+
+// SetCurseForgeKey 熱替換供應器的 CurseForge 覆蓋金鑰(GUI 設定;native-backend R14)。空字串=清除
+// 覆蓋、回退內嵌金鑰。供應器未實作 curseForgeConfigurable 時為 no-op。
+func (b *NativeBackend) SetCurseForgeKey(key string) {
+	if cc, ok := b.prov.(curseForgeConfigurable); ok {
+		cc.SetCurseForgeKey(key)
+	}
 }
 
 // ServerInstallRequest 是 provisionRunner.InstallServer 的輸入(native-backend R5)。

@@ -284,6 +284,40 @@ func TestNewDispatchBackendRequiresOne(t *testing.T) {
 	}
 }
 
+// TestDispatchSetCurseForgeKey 驗證熱設定金鑰經 dispatch→native→adapter→provisioner 全鏈路生效
+// (native-backend R14):以真 NativeBackend+provisionAdapter(無內嵌 key)組 dispatch,初始停用;
+// SetCurseForgeKey 後 CurseForgeEnabled 翻真;清除(空字串,內嵌為空)後翻回停用。
+func TestDispatchSetCurseForgeKey(t *testing.T) {
+	adapter := NewProvisionAdapter(t.TempDir()) // 無內嵌/覆蓋 key
+	native, err := NewNativeBackend(NativeOptions{
+		DataRoot:   t.TempDir(),
+		BackupRoot: t.TempDir(),
+		CacheRoot:  t.TempDir(),
+		Node:       "local",
+		Prov:       adapter,
+	})
+	if err != nil {
+		t.Fatalf("NewNativeBackend: %v", err)
+	}
+	d, err := NewDispatchBackend(native, nil)
+	if err != nil {
+		t.Fatalf("NewDispatchBackend: %v", err)
+	}
+	defer d.Close()
+
+	if d.CurseForgeEnabled() {
+		t.Fatal("初始無 key 應停用")
+	}
+	d.SetCurseForgeKey("user-fake-key")
+	if !d.CurseForgeEnabled() {
+		t.Fatal("熱設定金鑰後 CurseForgeEnabled 應為 true(全鏈路生效)")
+	}
+	d.SetCurseForgeKey("")
+	if d.CurseForgeEnabled() {
+		t.Fatal("清除金鑰後(內嵌為空)應翻回停用")
+	}
+}
+
 // collectUntil 反覆在指定 fake 上 emit(規避 pump 訂閱競態),收集聚合串流上出現的 ID 直到集齊
 // wanted 或逾時。emitOn 指定要 emit evA/evB 的兩個 fake(可為同一個)。
 func collectUntil(t *testing.T, stream EventStream, fa, fb *fakeBackend, evA, evB RuntimeEvent, wanted map[protocol.RuntimeID]bool) map[protocol.RuntimeID]bool {

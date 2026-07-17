@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // ProvisionProgress 是一次供應步驟的進度快照。刻意與 agent 的事件型別解耦,由呼叫端
@@ -66,7 +67,18 @@ type Provisioner struct {
 	// ModProviders 依模組包來源型別("modrinth"｜"curseforge")分派模組包解析與安裝(R11/R14)。
 	// "modrinth" 於 New 註冊首發實作;"curseforge" 留空位(T14,需 CF API key 才啟用,見
 	// requirements.md R14),呼叫端(provisionAdapter)對此型別回明確的「尚未支援」錯誤。
+	//
+	// GUI 熱設定 CF 金鑰(見 SetCurseForgeKey)會於執行期增/刪 "curseforge" 項:故建構後對本 map 的
+	// 讀寫一律經 mu 保護(讀取請用 ModProvider 存取器)。"modrinth" 項不可變,不受影響。
 	ModProviders map[string]ModProvider
+
+	// mu 保護 curseforgeKey 與 ModProviders["curseforge"] 的執行期熱替換(SetCurseForgeKey 寫、
+	// CurseForgeEnabled/ModProvider 讀)。建構期(New)為單執行緒,不需持鎖。
+	mu sync.RWMutex
+
+	// embeddedCFKey 是編譯期內嵌的 CurseForge 金鑰(curseforge.go 的 curseforgeAPIKey),獨立保存
+	// 供 SetCurseForgeKey("") 清除使用者覆蓋時回退——清除覆蓋應回到內嵌值,而非一律停用。
+	embeddedCFKey string
 
 	// modrinthAPIBase 是 Modrinth API v2 base URL,經 WithModrinthAPIBase 選項決定後傳入
 	// ModrinthProvider(測試以 httptest server URL 注入)。
@@ -136,6 +148,7 @@ func New(cacheRoot string, opts ...Option) *Provisioner {
 		client:        &http.Client{}, // 無整體逾時:大型下載(JRE/SteamCMD)由 context 控制生命週期。
 		javaAPIBase:   defaultAdoptiumBase,
 		curseforgeKey: curseforgeAPIKey, // 內嵌值(ldflags);WithCurseForgeAPIKey 選項可覆蓋。
+		embeddedCFKey: curseforgeAPIKey, // 內嵌值另存,供清除覆蓋時回退(不受 WithCurseForgeAPIKey 影響)。
 	}
 	for _, o := range opts {
 		o(p)
@@ -167,8 +180,40 @@ func New(cacheRoot string, opts ...Option) *Provisioner {
 
 // CurseForgeEnabled 回報 CurseForge 模組包功能是否啟用:有內嵌或設定覆蓋的 API key 即啟用
 // (native-backend R14)。供 agent/app 一路透出至 GUI,決定是否顯示 native CurseForge 選項。
+// 與 SetCurseForgeKey 併發安全(RLock)。
 func (p *Provisioner) CurseForgeEnabled() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return strings.TrimSpace(p.curseforgeKey) != ""
+}
+
+// ModProvider 回傳指定來源型別的模組包提供者(併發安全的 ModProviders 讀取);查無回 ok=false。
+// 生產路徑(provisionAdapter.InstallModpack)一律經此存取器讀取,以與 SetCurseForgeKey 的熱替換
+// (增/刪 "curseforge" 項)互斥。
+func (p *Provisioner) ModProvider(typ string) (ModProvider, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	mp, ok := p.ModProviders[typ]
+	return mp, ok
+}
+
+// SetCurseForgeKey 於執行期熱替換使用者覆蓋的 CurseForge API 金鑰(GUI 設定;native-backend R14)。
+// override 非空=以之為有效金鑰;空字串=清除覆蓋、回退內嵌金鑰(內嵌亦空則停用)。據有效金鑰同步
+// 增設或移除 "curseforge" ModProvider,使後續 InstallModpack 與 CurseForgeEnabled 立即反映新狀態
+// (無需重啟)。與 CurseForgeEnabled/ModProvider 的讀取互斥(Lock)。
+func (p *Provisioner) SetCurseForgeKey(override string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	effective := strings.TrimSpace(override)
+	if effective == "" {
+		effective = p.embeddedCFKey
+	}
+	p.curseforgeKey = effective
+	if strings.TrimSpace(effective) != "" {
+		p.ModProviders["curseforge"] = NewCurseForgeProvider(p.client, p.curseforgeAPIBase, effective)
+	} else {
+		delete(p.ModProviders, "curseforge")
+	}
 }
 
 // InstallServerByLoader 依 loader 名(vanilla|paper|fabric|forge|neoforge,大小寫不敏感)分派至
