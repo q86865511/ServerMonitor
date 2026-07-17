@@ -67,6 +67,77 @@ type InstanceSpec struct {
 	Mounts     []MountSpec       `json:"mounts,omitempty"` // 非備份範圍的具名掛載(R11 手動模組包檔傳輸)
 	Labels     map[string]string `json:"labels"`           // gsm.uuid / gsm.managed-by / gsm.node / gsm.schema
 	Node       string            `json:"node"`
+	// Runtime 選定此實例的執行後端(native-backend R2)。空字串=docker,相容既有呼叫端;
+	// agent 依此分派至 docker/native 後端。
+	Runtime string `json:"runtime,omitempty"` // "docker" | "native"
+	// Modpack 為遠端模組包來源(native-backend R11/R14)。手動上傳的模組包檔仍走 Mounts。
+	Modpack *ModpackRef `json:"modpack,omitempty"`
+	// Native 為 native 執行後端所需的供應/啟動/設定透傳資訊(native-backend R1/R3)。
+	// InstanceSpec 本身不帶範本;如同 docker 路徑由 core 把鎖定映像放入 Image,native 路徑由 core
+	// 從範本 [native] 區段擷取此子集填入(buildSpec,T9 接線),使 agent.NativeBackend 於 Create
+	// 時無需查詢範本即可供應與啟動。Runtime!="native" 時為 nil。
+	Native *NativeSpecPayload `json:"native,omitempty"`
+	// Resources 為此實例的資源上限(native Job Objects / docker cgroup 同來源;native-backend R9)。
+	// 由範本/GUI 於 T9/T12 填入;nil 或零值欄位表示該維度不限額。native 後端據此建 Job Object 強制
+	// 記憶體/CPU 上限並取 {memory_mb} token 值(缺值退回既有 Env 路徑)。
+	Resources *ResourceLimits `json:"resources,omitempty"`
+}
+
+// ResourceLimits 是一個實例的資源上限(native-backend R9),與 Docker 後端同一設定來源。
+// native 後端以 Windows Job Objects 強制:MemoryMB→JOB_OBJECT_LIMIT_JOB_MEMORY;
+// CPUPercent→Job CPU rate control(hard cap)。零值欄位=該維度不限額。
+type ResourceLimits struct {
+	MemoryMB   int `json:"memory_mb,omitempty"`   // 記憶體上限(MB);0=不限
+	CPUPercent int `json:"cpu_percent,omitempty"` // CPU 上限:占所有核心的百分比(1-100,語意同 ResourceStats.CPUPercent);0=不限
+}
+
+// NativeSpecPayload 是 core 透傳給 NativeBackend 的 native 執行資訊子集(native-backend R1/R3)。
+// 刻意以獨立 JSON 契約型別表達(而非直接引用範本層 TOML 型別),使 wire DTO 與範本內部欄位解耦;
+// T9 buildSpec 負責由 protocol.NativeSpec(範本)翻譯為本型別。
+type NativeSpecPayload struct {
+	Provision NativeProvision   `json:"provision"`
+	Launch    NativeLaunch      `json:"launch"`
+	Config    []NativeConfigMap `json:"config,omitempty"`   // params→遊戲設定檔映射(具名編碼器)
+	ModsDir   string            `json:"mods_dir,omitempty"` // native 模組落位目錄(相對實例根;T10 用)
+}
+
+// NativeProvision 是 native 建立期的供應宣告(native-backend R4/R5/R6)。
+type NativeProvision struct {
+	Kind          string `json:"kind"`                      // "java" | "steamcmd" | ""(免供應)
+	JavaMajor     int    `json:"java_major,omitempty"`      // kind=java:所需 Java major 版
+	Loader        string `json:"loader,omitempty"`          // kind=java:變體 loader(vanilla/paper/fabric/forge/neoforge),供 MC 安裝器選取
+	MCVersion     string `json:"mc_version,omitempty"`      // kind=java:目標 Minecraft 版本,由 T9 buildSpec 自參數/範本填入;adapter 優先取此值(缺值才退回 Variant 慣例導出)
+	EULA          bool   `json:"eula,omitempty"`            // kind=java:接受 EULA → 寫 eula.txt(R5)
+	SteamAppID    string `json:"steam_app_id,omitempty"`    // kind=steamcmd:Steam App ID(如 "2394010")
+	UpdateOnStart bool   `json:"update_on_start,omitempty"` // R6:啟動前重跑 app_update(T7 起用)
+}
+
+// NativeLaunch 是 native 啟動命令模板(native-backend R7)。Command 為 argv 模板,支援 token:
+// {java} {server_jar} {memory_mb} {instance_dir} {port:<name>},由 NativeBackend 於 Start 展開。
+type NativeLaunch struct {
+	Command    []string `json:"command"`
+	WorkingDir string   `json:"working_dir,omitempty"` // 相對實例資料根;空=資料根
+}
+
+// NativeConfigMap 是一個 params→遊戲設定檔的映射(native-backend R3)。Format 決定編碼器:
+// "properties"(k=v 逐行)與 "palworld-ini"(單行 OptionSettings=(K=V,...) 打包)。
+// Map 的鍵索引進 InstanceSpec.Env(paramKey → env 值),值為設定檔內的鍵名(configKey)。
+type NativeConfigMap struct {
+	File    string            `json:"file"`              // 設定檔名(相對實例根)
+	Format  string            `json:"format"`            // "properties" | "palworld-ini"
+	Section string            `json:"section,omitempty"` // palworld-ini 用(ini section 名)
+	Map     map[string]string `json:"map"`               // paramKey(索引 Env) -> configKey
+	// Set 是不經 param 的固定/衍生設定值(configKey -> 字面值或 {port:<name>} token);NativeBackend
+	// 寫檔時展開埠 token。用於 native 執行需要、但非使用者參數的設定(如 MC 的 enable-rcon/rcon.port/
+	// server-port,docker 由 itzg 注入、native 於此宣告)。與 Map 產出同鍵時 Set 優先。
+	Set map[string]string `json:"set,omitempty"`
+}
+
+// ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,
+// Ref 為 slug / project id / URL,由對應安裝器解讀。
+type ModpackRef struct {
+	Type string `json:"type"` // "modrinth" | "curseforge"(R14)
+	Ref  string `json:"ref"`  // slug / project id / URL
 }
 
 // MountSpec 描述一個「備份範圍之外」的具名掛載點(R11 手動模組包檔傳輸)。agent 為每個
@@ -130,7 +201,18 @@ const (
 	RuntimeEventOOM    RuntimeEventKind = "oom"    // 記憶體不足
 	// RuntimeEventResync 表示串流偵測到緩衝已逐出、發生漏事件:消費端應改走完整對帳(R4/R13)。
 	RuntimeEventResync RuntimeEventKind = "resync"
+	// RuntimeEventProvision 是 native 後端建立時的供應進度(JRE/伺服器檔案/SteamCMD 下載;
+	// native-backend R4/R5/R6/R12)。攜帶 Progress 明細;既有 docker 路徑不產生此事件。
+	RuntimeEventProvision RuntimeEventKind = "provision"
 )
+
+// ProvisionProgress 是 native 供應階段的進度明細(native-backend R12),隨
+// RuntimeEventProvision 事件回報供 GUI 顯示進度條。
+type ProvisionProgress struct {
+	Stage   string  `json:"stage"`            // 供應階段(如 "jre" / "server-jar" / "steamcmd")
+	Percent float64 `json:"percent"`          // 完成百分比(0-100);總量不可知時為 0
+	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名)
+}
 
 // RuntimeEvent 是 RuntimeBackend.Events 串流上的一則執行事件,亦為節點代理 WS /events 的
 // wire 契約——故與同為 RuntimeBackend 輸出的 RuntimeStatus/ResourceStats 並置於此,供核心
@@ -146,6 +228,8 @@ type RuntimeEvent struct {
 	TsUTC    time.Time        `json:"ts_utc"`
 	ExitCode *int             `json:"exit_code,omitempty"` // die 時的退出碼
 	Health   string           `json:"health,omitempty"`    // health 時的健康狀態
+	// Progress 於 Kind=provision 時有值(native 供應進度);其餘事件種類為 nil(native-backend R12)。
+	Progress *ProvisionProgress `json:"progress,omitempty"`
 }
 
 // GameCommand 是一則遊戲指令(R7):rcon 用 Raw 自由字串;rest 用 ActionID + Args 具名動作。

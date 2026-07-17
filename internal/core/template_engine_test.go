@@ -31,6 +31,24 @@ kind = "tcp"
 port_ref = "game"
 `
 
+// validNativeTemplate 是最小合法 native 範本(native-backend R3):runtime=native + [native] 區段。
+const validNativeTemplate = `
+schema_version = 1
+id = "nativegame"
+name = "Native Game"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "java"
+java_major = 21
+[native.launch]
+command = ["{java}", "-jar", "{server_jar}", "nogui"]
+[[native.config]]
+file = "server.properties"
+format = "properties"
+map = {}
+`
+
 // TestTemplateEngine_LoadValid 驗證合法範本載入成功並可查詢(R1)。
 func TestTemplateEngine_LoadValid(t *testing.T) {
 	log, _ := newTestEventLog(t)
@@ -208,6 +226,178 @@ func TestTemplateEngine_BuiltinTemplates(t *testing.T) {
 	}
 	if !strings.Contains(pw.Docker.Image, "2.5.1") {
 		t.Errorf("palworld 映像應鎖 spike 指定 tag 2.5.1,得 %q", pw.Docker.Image)
+	}
+}
+
+// TestTemplateEngine_NativeValidation 驗證 [native] 區段的載入與各必填缺漏的欄位路徑
+// (native-backend R3)。合法 native 範本載入成功;各無效態被拒載並記精確 field。
+func TestTemplateEngine_NativeValidation(t *testing.T) {
+	const nativeMissingSection = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[docker]
+image = "x:1.0"
+`
+	const noRuntimeSection = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "docker"
+data_dirs = ["/data"]
+`
+	const nativeMissingKind = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+java_major = 21
+[native.launch]
+command = ["a"]
+`
+	const nativeJavaNoMajor = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "java"
+[native.launch]
+command = ["a"]
+`
+	const nativeSteamNoAppID = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "steamcmd"
+[native.launch]
+command = ["a"]
+`
+	const nativeNoCommand = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "java"
+java_major = 21
+[native.launch]
+working_dir = "."
+`
+	const nativeBadConfigFormat = `
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "java"
+java_major = 21
+[native.launch]
+command = ["a"]
+[[native.config]]
+file = "f"
+format = "yaml"
+map = {}
+`
+
+	// 合法 native 範本:應載入成功、不記事件。
+	t.Run("valid_native", func(t *testing.T) {
+		log, _ := newTestEventLog(t)
+		eng := NewTemplateEngine(nil, log)
+		dir := t.TempDir()
+		writeTemplateFile(t, dir, "native.toml", validNativeTemplate)
+		n, err := eng.LoadDir(dir)
+		if err != nil || n != 1 {
+			t.Fatalf("LoadDir: n=%d err=%v", n, err)
+		}
+		tmpl, ok := eng.Get("nativegame")
+		if !ok {
+			t.Fatal("合法 native 範本應載入")
+		}
+		if !tmpl.SupportsNative() || tmpl.SupportsDocker() {
+			t.Errorf("能力推導錯誤:SupportsNative=%v SupportsDocker=%v", tmpl.SupportsNative(), tmpl.SupportsDocker())
+		}
+		if len(queryEvents(t, log, protocol.EventTemplateLoadFailed)) != 0 {
+			t.Fatal("合法 native 範本不應記 TEMPLATE_LOAD_FAILED")
+		}
+	})
+
+	// 各無效態:斷言拒載且事件 field 精確。
+	cases := []struct {
+		name      string
+		content   string
+		wantField string
+	}{
+		{"runtime_native_missing_section", nativeMissingSection, "native"},
+		{"no_runtime_section", noRuntimeSection, "docker/native"},
+		{"native_missing_kind", nativeMissingKind, "native.provision.kind"},
+		{"native_java_no_major", nativeJavaNoMajor, "native.provision.java_major"},
+		{"native_steam_no_app_id", nativeSteamNoAppID, "native.provision.steam_app_id"},
+		{"native_no_command", nativeNoCommand, "native.launch.command"},
+		{"native_bad_config_format", nativeBadConfigFormat, "native.config[0].format"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			log, _ := newTestEventLog(t)
+			eng := NewTemplateEngine(nil, log)
+			dir := t.TempDir()
+			writeTemplateFile(t, dir, "bad.toml", tc.content)
+			n, err := eng.LoadDir(dir)
+			if err != nil {
+				t.Fatalf("LoadDir: %v", err)
+			}
+			if n != 0 {
+				t.Fatalf("無效 native 範本應被拒載,得載入份數 %d", n)
+			}
+			evs := queryEvents(t, log, protocol.EventTemplateLoadFailed)
+			if len(evs) != 1 {
+				t.Fatalf("TEMPLATE_LOAD_FAILED 事件數 = %d, 期望 1", len(evs))
+			}
+			if !strings.Contains(string(evs[0].DetailsJSON), `"field":"`+tc.wantField+`"`) {
+				t.Fatalf("事件 field 不符,期望含 %q,得 %s", tc.wantField, evs[0].DetailsJSON)
+			}
+		})
+	}
+}
+
+// TestTemplateEngine_BuiltinNativeCapability 驗證內建 minecraft/palworld 增補 [native] 後,
+// 兩後端能力皆宣告(SupportsDocker && SupportsNative),且 docker 預設 runtime 不變(回歸)。
+func TestTemplateEngine_BuiltinNativeCapability(t *testing.T) {
+	log, _ := newTestEventLog(t)
+	eng := NewTemplateEngine(nil, log)
+	if _, err := eng.LoadDir(builtinTemplatesDir); err != nil {
+		t.Fatalf("LoadDir(%s): %v", builtinTemplatesDir, err)
+	}
+	for _, id := range []string{"minecraft", "palworld"} {
+		tmpl, ok := eng.Get(id)
+		if !ok {
+			t.Fatalf("%s 範本未載入", id)
+		}
+		if !tmpl.SupportsDocker() || !tmpl.SupportsNative() {
+			t.Errorf("%s 應同時支援 docker/native,得 docker=%v native=%v", id, tmpl.SupportsDocker(), tmpl.SupportsNative())
+		}
+		if tmpl.Runtime != "docker" {
+			t.Errorf("%s 預設 runtime 應維持 docker(回歸),得 %q", id, tmpl.Runtime)
+		}
+	}
+	// provision 種類:minecraft=java、palworld=steamcmd。
+	mc, _ := eng.Get("minecraft")
+	if mc.Native.Provision.Kind != "java" || mc.Native.Provision.JavaMajor != 21 {
+		t.Errorf("minecraft native provision = %+v, 期望 java/21", mc.Native.Provision)
+	}
+	pw, _ := eng.Get("palworld")
+	if pw.Native.Provision.Kind != "steamcmd" || pw.Native.Provision.SteamAppID != "2394010" {
+		t.Errorf("palworld native provision = %+v, 期望 steamcmd/2394010", pw.Native.Provision)
 	}
 }
 

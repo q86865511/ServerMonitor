@@ -7,7 +7,13 @@ export function BackupNow(arg1:string):Promise<protocol.BackupMeta>;
 
 export function CreateInstance(arg1:main.CreateInstanceRequest):Promise<string>;
 
+export function CurseForgeEnabled():Promise<boolean>;
+
+export function CurseForgeKeyConfigured():Promise<boolean>;
+
 export function DeleteSchedule(arg1:string):Promise<void>;
+
+export function DockerAvailable():Promise<boolean>;
 
 export function GetAlertSettings(arg1:string):Promise<main.AlertSettingsDTO>;
 
@@ -38,6 +44,8 @@ export function RetryDocker():Promise<void>;
 export function SendCommand(arg1:string,arg2:protocol.GameCommand):Promise<protocol.CommandResult>;
 
 export function SetAlertSettings(arg1:string,arg2:main.AlertSettingsRequest):Promise<void>;
+
+export function SetCurseForgeAPIKey(arg1:string):Promise<void>;
 
 export function StartInstance(arg1:string):Promise<void>;
 

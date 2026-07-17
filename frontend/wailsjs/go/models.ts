@@ -105,6 +105,9 @@ export namespace main {
 	    secrets: Record<string, string>;
 	    node: string;
 	    modpack?: ModpackRequest;
+	    runtime: string;
+	    memory_mb: number;
+	    cpu_percent: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new CreateInstanceRequest(source);
@@ -118,6 +121,9 @@ export namespace main {
 	        this.secrets = source["secrets"];
 	        this.node = source["node"];
 	        this.modpack = this.convertValues(source["modpack"], ModpackRequest);
+	        this.runtime = source["runtime"];
+	        this.memory_mb = source["memory_mb"];
+	        this.cpu_percent = source["cpu_percent"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -169,6 +175,7 @@ export namespace main {
 	    node: string;
 	    desired_state: string;
 	    observed_state: string;
+	    runtime: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new InstanceDTO(source);
@@ -182,12 +189,14 @@ export namespace main {
 	        this.node = source["node"];
 	        this.desired_state = source["desired_state"];
 	        this.observed_state = source["observed_state"];
+	        this.runtime = source["runtime"];
 	    }
 	}
 	
 	export class NodeStatusDTO {
 	    node: string;
 	    online: boolean;
+	    docker_available: boolean;
 	    last_err: string;
 	
 	    static createFrom(source: any = {}) {
@@ -198,6 +207,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.node = source["node"];
 	        this.online = source["online"];
+	        this.docker_available = source["docker_available"];
 	        this.last_err = source["last_err"];
 	    }
 	}
@@ -359,6 +369,7 @@ export namespace main {
 	    id: string;
 	    name: string;
 	    runtime: string;
+	    runtimes: string[];
 	    variants: VariantDTO[];
 	    params: ParamDTO[];
 	    secrets: SecretDTO[];
@@ -374,6 +385,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.runtime = source["runtime"];
+	        this.runtimes = source["runtimes"];
 	        this.variants = this.convertValues(source["variants"], VariantDTO);
 	        this.params = this.convertValues(source["params"], ParamDTO);
 	        this.secrets = this.convertValues(source["secrets"], SecretDTO);

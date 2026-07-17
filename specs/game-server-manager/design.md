@@ -9,6 +9,8 @@
 
 **生命週期(僅 GUI 開啟時運作):** 自動化僅在應用開啟時運作;關閉暫停自動化但容器由 Docker 維持,重開經 **R13 對帳** 恢復。遠端節點為未來 `cmd/agent`,首版只做版本化 loopback 契約。
 
+**後續擴充(2026-07-16):** 免 Docker 的本機行程後端(NativeBackend + dispatchBackend 分派、供應子系統、Job Objects)已由 `specs/native-backend/design.md` 規格化;本檔描述的 Docker 路徑行為不變,agent 端由該設計以組合方式擴充。
+
 **建置形態(Go module + Wails v2,單一 repo):** `internal/protocol`(版本化 schema、DTO、事件型別、SecretRef)、`internal/agent`(RuntimeBackend、GameCommandAdapter、備份、事件監看、HTTP/WS server+認證)、`internal/core`(登錄、狀態機、對帳、範本引擎、排程、監控、告警、EventLog、NodeClient)、`app`(Wails 根)+`frontend/`、(未來)`cmd/agent`。
 
 ## 相依版本鎖定(NFR;T1 於 go.mod 鎖定實際 patch)
@@ -209,7 +211,7 @@ envelope:`{code, ts_utc, severity, instance_uuid?, node?, template_id?, details_
 - **技術選型(已裁決)**:Go 全棧 + Wails v2 + 官方 Docker SDK。
 - **核心↔代理走 loopback HTTP+token**:Pterodactyl 模式讓多節點接縫為真 + 修補「同機任何程序可控制」;首版只做版本化 loopback,不做跨機。
 - **restart 單一所有者**:由 core 編排,agent 不開 /restart,避免繞過 lock/planned-stop(依二審 H3)。
-- **事件納入 RuntimeBackend**:die/health 經介面而非直碰 SDK,使 Mock/未來 Native 可等價替換(依二審 H2)。
+- **事件納入 RuntimeBackend**:die/health 經介面而非直碰 SDK,使 Mock/未來 Native 可等價替換(依二審 H2)。(2026-07-16:Native 等價替換已由 specs/native-backend/design.md 落實)
 - **備份首版=停機快照 + bind mount**:一致性最穩;named volume 原子交換列 spike;agent 擁有備份根、對外 opaque BackupID(依二審 H6)。
 - **SecretRef 型別**:輸入即入金鑰庫、統一 redaction;runtime 明文為明確例外(依二審 H7)。
 - **模組 itzg 唯一擁有者**:不與 itzg 爭 /data(依二審 H10/rev.2)。

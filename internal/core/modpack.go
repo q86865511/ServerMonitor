@@ -97,10 +97,11 @@ func (e *ModpackError) Is(target error) bool { return target == e.kind }
 // validateModpack 於建立前做模組包的靜態相容/格式檢查(R11)。純函式、無副作用
 // (不觸碰金鑰庫/DB/journal/agent),呼叫時機在 Create 任一寫入動作之前。
 //
-// 檢查:範本須宣告 [mods];變體 loader 須在 modpack_loaders;CurseForge 來源須提供
+// 檢查:範本須宣告 [mods];變體 loader 須在 modpack_loaders;CurseForge 來源(docker 路徑)須提供
 // CF_API_KEY;手動檔須通過格式驗證(archive/zip 含必要索引檔)。版本層級相容交 itzg
-// 於容器內解析(見 spike §2),此處只擋型別層級(plugin vs mod)。
-func validateModpack(tmpl *protocol.GameTemplate, variant string, opts CreateOptions) error {
+// 於容器內解析(見 spike §2),此處只擋型別層級(plugin vs mod)。rt 為已解析的執行後端
+// (docker/native),供 CF_API_KEY 必填判定(#4:native 不逐實例要求 key)。
+func validateModpack(tmpl *protocol.GameTemplate, variant, rt string, opts CreateOptions) error {
 	src := opts.Modpack
 	if src == nil {
 		return nil
@@ -131,8 +132,9 @@ func validateModpack(tmpl *protocol.GameTemplate, variant string, opts CreateOpt
 		}
 	}
 
-	// CurseForge 來源需 CF_API_KEY(使用者自填 SecretRef;spike §4 條款依據)。
-	if modpackNeedsAPIKey(src.Type) {
+	// CurseForge 來源需 CF_API_KEY——但僅 docker 路徑(itzg AUTO_CURSEFORGE 需逐實例 key)。
+	// native 路徑由 agent 端內嵌/設定覆蓋 key 供應(未啟用時 agent 回明確錯誤),不在此強制(#4)。
+	if rt == runtimeDocker && modpackNeedsAPIKey(src.Type) {
 		if strings.TrimSpace(opts.Secrets[cfAPIKeySecret]) == "" {
 			return &ModpackError{kind: ErrModpackAPIKeyRequired}
 		}

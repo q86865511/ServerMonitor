@@ -126,3 +126,36 @@ action_id = "info"
 [players_query]
 kind = "rest"
 action_id = "players"
+
+# ── 本機行程模式(native-backend R3/R6) ──
+# 宣告 [native] 使本範本亦可以 native runtime 建立(免 Docker)。頂層 runtime 仍為 docker
+# (預設 runtime);能力由區段存在推導。SteamCMD 供應(app_update 2394010)由 T6 NativeBackend 落地。
+[native.provision]
+kind = "steamcmd"
+steam_app_id = "2394010"               # Palworld Dedicated Server 的 Steam App ID
+update_on_start = true                 # R6:啟動前重跑 app_update 檢查更新
+
+[native.launch]
+# argv 模板;{instance_dir}=SteamCMD force_install_dir(即實例根,見 native.go InstallApp
+# 以 +force_install_dir 指向 workDir)、{port:game}=遊戲埠。
+# Windows 版 app 2394010 的啟動檔為 force_install_dir 根的 PalServer.exe(啟動器 wrapper,轉呼
+# Pal/Binaries/Win64/PalServer-Win64-Shipping.exe);native 後端僅 Windows 執行(非 Windows 自動
+# skip),故用 .exe 而非 .sh。埠參數格式為 -port=NNNN(官方 arguments 文件)。
+# 查證來源:docs.palworldgame.com deploy 指南(啟動檔 PalServer.exe)+ SteamCMD 社群安裝指南
+# (-port=NNNN 參數;信心:高)。RCON/REST 埠與 ADMIN_PASSWORD 由 NativeBackend 執行時注入,
+# 非啟動參數;公開列表(-publiclobby)刻意不預設開啟(對齊 REST 不暴露公網的隱私取向)。
+command = ["{instance_dir}/PalServer.exe", "-port={port:game}"]
+
+[[native.config]]
+# palworld-ini 編碼器:把 map 後的鍵值打包成單行 OptionSettings=(K=V,...) 寫入指定 section。
+# REST/RCON 埠與 ADMIN_PASSWORD(機密)屬 NativeBackend 執行時注入,非 param 直映;其餘 Palworld
+# 設定(難度、掉落率等)本範本未宣告為 param,待 T13 E2E 依實跑補齊。
+# file 為 Windows 伺服器實際讀取路徑(相對工作目錄=實例根;雙審後追加修正 #18):Palworld 不讀
+# 安裝根的 ini,只讀 Pal/Saved/Config/WindowsServer/ 下的設定;writeConfigFile 會自建父目錄。
+file = "Pal/Saved/Config/WindowsServer/PalWorldSettings.ini"
+format = "palworld-ini"
+section = "/Script/Pal.PalGameWorldSettings"
+[native.config.map]
+SERVER_NAME = "ServerName"
+REST_API_ENABLED = "RESTAPIEnabled"
+RCON_ENABLED = "RCONEnabled"

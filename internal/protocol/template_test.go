@@ -177,3 +177,61 @@ announce = { protocol_id = "rest-main", action_id = "announce", message_key = "m
 		t.Fatalf("Hooks.Announce.MessageKey = %+v, 期望 message", tmpl.Hooks.Announce)
 	}
 }
+
+// TestParseTemplate_NativeSchema 驗證 native-backend R3 新增的 [native] schema 落位:
+// provision(kind/java_major/steam_app_id/update_on_start)、launch(command/working_dir)、
+// config(file/format/section/map),以及能力推導 helper。
+func TestParseTemplate_NativeSchema(t *testing.T) {
+	data := []byte(`
+schema_version = 1
+id = "x"
+name = "X"
+runtime = "native"
+data_dirs = ["/data"]
+[native.provision]
+kind = "steamcmd"
+steam_app_id = "2394010"
+update_on_start = true
+[native.launch]
+command = ["{instance_dir}/PalServer.sh", "-port={port:game}"]
+working_dir = "sub"
+[native.mods]
+mods_dir = "mods"
+[[native.config]]
+file = "PalWorldSettings.ini"
+format = "palworld-ini"
+section = "/Script/Pal.PalGameWorldSettings"
+[native.config.map]
+SERVER_NAME = "ServerName"
+`)
+	tmpl, err := ParseTemplate(data)
+	if err != nil {
+		t.Fatalf("ParseTemplate: %v", err)
+	}
+	if tmpl.Native == nil {
+		t.Fatal("Native 為 nil,期望有 [native] 區段")
+	}
+	if !tmpl.SupportsNative() || tmpl.SupportsDocker() {
+		t.Errorf("能力推導錯誤:SupportsNative=%v SupportsDocker=%v", tmpl.SupportsNative(), tmpl.SupportsDocker())
+	}
+	p := tmpl.Native.Provision
+	if p.Kind != "steamcmd" || p.SteamAppID != "2394010" || !p.UpdateOnStart {
+		t.Errorf("Provision = %+v, 期望 steamcmd/2394010/update_on_start", p)
+	}
+	if len(tmpl.Native.Launch.Command) != 2 || tmpl.Native.Launch.WorkingDir != "sub" {
+		t.Errorf("Launch = %+v", tmpl.Native.Launch)
+	}
+	if tmpl.Native.Mods == nil || tmpl.Native.Mods.ModsDir != "mods" {
+		t.Errorf("Mods = %+v, 期望 mods_dir=mods", tmpl.Native.Mods)
+	}
+	if len(tmpl.Native.Config) != 1 {
+		t.Fatalf("len(Config) = %d, 期望 1", len(tmpl.Native.Config))
+	}
+	cm := tmpl.Native.Config[0]
+	if cm.File != "PalWorldSettings.ini" || cm.Format != "palworld-ini" || cm.Section != "/Script/Pal.PalGameWorldSettings" {
+		t.Errorf("Config[0] = %+v", cm)
+	}
+	if cm.Map["SERVER_NAME"] != "ServerName" {
+		t.Errorf("Config[0].Map = %v, 期望 SERVER_NAME=ServerName", cm.Map)
+	}
+}

@@ -56,6 +56,124 @@ func TestLoadAppConfig_Corrupt(t *testing.T) {
 	}
 }
 
+// TestResolveCurseForgeOverrideKey_Migrates 驗證舊版 config.json 明文金鑰於載入時遷入金鑰庫、
+// 自設定檔清除,並回報 migrated(#11)。
+func TestResolveCurseForgeOverrideKey_Migrates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cfg.json")
+	if err := SaveAppConfig(path, AppConfig{Node: "local", CurseForgeAPIKey: "cf-plain-123"}); err != nil {
+		t.Fatalf("SaveAppConfig: %v", err)
+	}
+	secrets := NewSecretStoreWithKeyring("test", newMemoryKeyring())
+
+	cfg, _, err := LoadAppConfig(path)
+	if err != nil {
+		t.Fatalf("LoadAppConfig: %v", err)
+	}
+	key, migrated, err := ResolveCurseForgeOverrideKey(secrets, path, &cfg)
+	if err != nil {
+		t.Fatalf("ResolveCurseForgeOverrideKey: %v", err)
+	}
+	if key != "cf-plain-123" || !migrated {
+		t.Fatalf("key=%q migrated=%v, 期望 cf-plain-123/true", key, migrated)
+	}
+	// 就地清空且金鑰庫已存入。
+	if cfg.CurseForgeAPIKey != "" {
+		t.Errorf("遷移後 cfg 欄位應清空, 得 %q", cfg.CurseForgeAPIKey)
+	}
+	if v, gerr := secrets.Get(curseForgeOverrideRef); gerr != nil || v != "cf-plain-123" {
+		t.Errorf("金鑰庫值 = %q, err=%v, 期望 cf-plain-123", v, gerr)
+	}
+	// 回寫的 config.json 不再含明文(omitempty)。
+	reloaded, _, _ := LoadAppConfig(path)
+	if reloaded.CurseForgeAPIKey != "" {
+		t.Errorf("回寫的 config.json 仍含明文金鑰: %q", reloaded.CurseForgeAPIKey)
+	}
+	data, _ := os.ReadFile(path)
+	if indexOf(string(data), "curseforge_api_key") >= 0 {
+		t.Errorf("config.json 不應再有 curseforge_api_key 欄位: %s", data)
+	}
+}
+
+// TestResolveCurseForgeOverrideKey_FromKeyring 驗證無明文時自金鑰庫取回既存覆蓋值(不遷移)。
+func TestResolveCurseForgeOverrideKey_FromKeyring(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cfg.json")
+	secrets := NewSecretStoreWithKeyring("test", newMemoryKeyring())
+	if err := secrets.Set(curseForgeOverrideRef, "cf-stored-key"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	cfg := AppConfig{Node: "local"} // 無明文
+	key, migrated, err := ResolveCurseForgeOverrideKey(secrets, path, &cfg)
+	if err != nil {
+		t.Fatalf("ResolveCurseForgeOverrideKey: %v", err)
+	}
+	if key != "cf-stored-key" || migrated {
+		t.Fatalf("key=%q migrated=%v, 期望 cf-stored-key/false", key, migrated)
+	}
+}
+
+// TestResolveCurseForgeOverrideKey_Absent 驗證明文與金鑰庫皆無時回空字串、不遷移、不報錯。
+func TestResolveCurseForgeOverrideKey_Absent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cfg.json")
+	secrets := NewSecretStoreWithKeyring("test", newMemoryKeyring())
+	cfg := AppConfig{Node: "local"}
+	key, migrated, err := ResolveCurseForgeOverrideKey(secrets, path, &cfg)
+	if err != nil || key != "" || migrated {
+		t.Fatalf("key=%q migrated=%v err=%v, 期望 \"\"/false/nil", key, migrated, err)
+	}
+}
+
+// TestSetCurseForgeOverrideKey 驗證 GUI 設定路徑:寫入/覆寫/清除金鑰庫覆蓋值,並以
+// CurseForgeOverrideKeySet 回報有無(不回明文)。清除為冪等,查無仍成功。
+func TestSetCurseForgeOverrideKey(t *testing.T) {
+	secrets := NewSecretStoreWithKeyring("test", newMemoryKeyring())
+
+	// 初始:未設定。
+	if CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("初始應未設定覆蓋金鑰")
+	}
+
+	// 設定。
+	if err := SetCurseForgeOverrideKey(secrets, "cf-user-key-1"); err != nil {
+		t.Fatalf("設定: %v", err)
+	}
+	if !CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("設定後應回報已設定")
+	}
+	if v, err := secrets.Get(curseForgeOverrideRef); err != nil || v != "cf-user-key-1" {
+		t.Fatalf("金鑰庫值 = %q err=%v, 期望 cf-user-key-1", v, err)
+	}
+
+	// 覆寫。
+	if err := SetCurseForgeOverrideKey(secrets, "cf-user-key-2"); err != nil {
+		t.Fatalf("覆寫: %v", err)
+	}
+	if v, _ := secrets.Get(curseForgeOverrideRef); v != "cf-user-key-2" {
+		t.Fatalf("覆寫後金鑰庫值 = %q, 期望 cf-user-key-2", v)
+	}
+
+	// 清除(空字串)。
+	if err := SetCurseForgeOverrideKey(secrets, ""); err != nil {
+		t.Fatalf("清除: %v", err)
+	}
+	if CurseForgeOverrideKeySet(secrets) {
+		t.Fatal("清除後應回報未設定")
+	}
+	// 冪等:再次清除仍成功。
+	if err := SetCurseForgeOverrideKey(secrets, "   "); err != nil {
+		t.Fatalf("重複清除(空白視為清除)應冪等: %v", err)
+	}
+}
+
+// TestSetCurseForgeOverrideKey_NilSecrets 驗證無金鑰庫時設定回錯、查詢回 false(保守降級)。
+func TestSetCurseForgeOverrideKey_NilSecrets(t *testing.T) {
+	if err := SetCurseForgeOverrideKey(nil, "k"); err == nil {
+		t.Fatal("secrets 為 nil 時設定應回錯")
+	}
+	if CurseForgeOverrideKeySet(nil) {
+		t.Fatal("secrets 為 nil 時應回報未設定")
+	}
+}
+
 // TestSaveLoadAppConfig_RoundTrip 驗證存/讀往返一致。
 func TestSaveLoadAppConfig_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.json")

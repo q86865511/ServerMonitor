@@ -66,6 +66,58 @@ func loadModpackTemplate(t *testing.T, h *svcHarness) {
 	}
 }
 
+// modpackDualTemplate 同時宣告 [docker]/[native] 與 [mods],用以驗證 CF_API_KEY 必填判定的 runtime
+// 分歧(#4):docker 路徑要求逐實例 key、native 路徑不要求(agent 端內嵌/設定 key)。game 埠用動態
+// (host_port=0,不預留)以便同一 harness 內多次 Create 不撞埠。
+const modpackDualTemplate = `
+schema_version = 1
+id = "mcmoddual"
+name = "MC Mod Dual"
+runtime = "docker"
+data_dirs = ["/data"]
+[docker]
+image = "itzg/minecraft-server:java21"
+[[variants]]
+id = "fabric"
+loader = "fabric"
+[variants.env]
+TYPE = "FABRIC"
+[[ports]]
+name = "game"
+container = 25565
+host_port = 0
+bind_ip = "0.0.0.0"
+protocol = "tcp"
+required = true
+[[params]]
+key = "EULA"
+type = "bool"
+required = true
+[[secrets]]
+key = "CF_API_KEY"
+[mods]
+owner = "image-native"
+manual_mount = "/modpacks"
+manual_formats = ["mrpack", "curseforge-zip"]
+modpack_loaders = ["vanilla", "forge", "fabric", "quilt", "neoforge"]
+[native.provision]
+kind = "java"
+java_major = 21
+[native.launch]
+command = ["{java}", "-jar", "{server_jar}", "nogui"]
+[native.mods]
+mods_dir = "mods"
+`
+
+// loadModpackDualTemplate 把 modpackDualTemplate 載入 harness 的範本引擎。
+func loadModpackDualTemplate(t *testing.T, h *svcHarness) {
+	t.Helper()
+	writeTemplateFile(t, h.dir, "mcmoddual.toml", modpackDualTemplate)
+	if _, err := h.eng.LoadDir(h.dir); err != nil {
+		t.Fatalf("載入 mcmoddual 範本: %v", err)
+	}
+}
+
 // writeZip 在 t.TempDir 造一個含指定 entries 的 zip 檔,回傳路徑。
 func writeZip(t *testing.T, name string, entries ...string) string {
 	t.Helper()
@@ -206,6 +258,50 @@ func TestModpack_CurseForgeMissingKey(t *testing.T) {
 	})
 	if !errors.Is(err, ErrModpackAPIKeyRequired) {
 		t.Fatalf("期望 ErrModpackAPIKeyRequired,得 %v", err)
+	}
+	h.assertNoSideEffects(t)
+}
+
+// TestModpack_NativeCurseForgeNoSecret:native 路徑 + CurseForge 模組包未提供 CF_API_KEY →
+// 不因缺 secret 被擋(#4:native 由 agent 端內嵌/設定 key 供應);成功建立且走 native runtime。
+func TestModpack_NativeCurseForgeNoSecret(t *testing.T) {
+	h := newSvcHarness(t)
+	loadModpackDualTemplate(t, h)
+	h.svc.goos = "windows" // Windows + 範本支援 native → 預設 native runtime
+
+	rec, err := h.svc.Create(context.Background(), CreateOptions{
+		TemplateID: "mcmoddual",
+		Variant:    "fabric",
+		Params:     map[string]string{"EULA": "true"},
+		Modpack:    &ModpackSource{Type: ModpackCurseForge, Ref: "12345:67890"},
+	})
+	if err != nil {
+		t.Fatalf("native + CF 模組包(無 secret)不應被擋: %v", err)
+	}
+	if got := h.backend.spec().Runtime; got != runtimeNative {
+		t.Errorf("Runtime = %q, 期望 native", got)
+	}
+	if rec.UUID == "" {
+		t.Errorf("成功建立應回 UUID")
+	}
+}
+
+// TestModpack_DockerCurseForgeStillRequiresSecret:同一雙能力範本走 docker 路徑時,CurseForge 仍
+// 要求 CF_API_KEY(#4:docker/itzg 逐實例 key 未變);缺 key 建立前擋、無副作用。
+func TestModpack_DockerCurseForgeStillRequiresSecret(t *testing.T) {
+	h := newSvcHarness(t)
+	loadModpackDualTemplate(t, h)
+	h.svc.goos = "windows"
+
+	_, err := h.svc.Create(context.Background(), CreateOptions{
+		TemplateID: "mcmoddual",
+		Variant:    "fabric",
+		Params:     map[string]string{"EULA": "true"},
+		Runtime:    runtimeDocker, // 顯式 docker → 仍要求 key
+		Modpack:    &ModpackSource{Type: ModpackCurseForge, Ref: "all-the-mods-8"},
+	})
+	if !errors.Is(err, ErrModpackAPIKeyRequired) {
+		t.Fatalf("docker 路徑缺 CF_API_KEY 應擋(ErrModpackAPIKeyRequired),得 %v", err)
 	}
 	h.assertNoSideEffects(t)
 }

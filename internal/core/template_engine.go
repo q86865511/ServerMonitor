@@ -29,7 +29,7 @@ type AdapterRegistry struct {
 // DefaultAdapterRegistry 回傳首版預設註冊表。
 func DefaultAdapterRegistry() *AdapterRegistry {
 	return &AdapterRegistry{
-		runtimes:         map[string]bool{"docker": true},
+		runtimes:         map[string]bool{"docker": true, "native": true}, // native-backend R2/R3
 		commandProtocols: map[string]bool{"rcon": true, "rest": true},
 		healthKinds:      map[string]bool{"tcp": true, "rcon": true, "rest": true, "docker": true},
 	}
@@ -156,10 +156,25 @@ func (e *TemplateEngine) validate(t *protocol.GameTemplate) (templateError, bool
 			reason: fmt.Sprintf("runtime adapter %q 不存在", t.Runtime),
 		}, false
 	}
+	// [docker]/[native] 至少存在一個;runtime 欄位指定的預設 runtime 必須有對應區段
+	// (native-backend R3)。缺對應區段時報明確欄位路徑(風格同 docker.image)。
+	if t.Docker == nil && t.Native == nil {
+		return templateError{field: "docker/native", reason: "至少需宣告 [docker] 或 [native] 其一"}, false
+	}
 	// runtime=docker 需鎖定映像(tag 或 digest)。
 	if t.Runtime == "docker" {
 		if t.Docker == nil || (t.Docker.Image == "" && t.Docker.ImageDigest == "") {
 			return templateError{field: "docker.image", reason: "docker runtime 缺少映像鎖定(image 或 image_digest)"}, false
+		}
+	}
+	// runtime=native 需宣告 [native] 區段。
+	if t.Runtime == "native" && t.Native == nil {
+		return templateError{field: "native", reason: "native runtime 缺少 [native] 區段"}, false
+	}
+	// [native] 區段自身驗證(不論是否為預設 runtime,只要宣告就驗)。
+	if t.Native != nil {
+		if terr, ok := validateNative(t.Native); !ok {
+			return terr, false
 		}
 	}
 	for i, cp := range t.CommandProtocols {
@@ -181,6 +196,42 @@ func (e *TemplateEngine) validate(t *protocol.GameTemplate) (templateError, bool
 			field:  "health.kind",
 			reason: fmt.Sprintf("health adapter %q 不存在", t.Health.Kind),
 		}, false
+	}
+	return templateError{}, true
+}
+
+// validateNative 驗證 [native] 區段(native-backend R3):供應類型與其必填參數、啟動命令、
+// 設定映射格式。欄位路徑風格對齊上方 docker.image。
+func validateNative(n *protocol.NativeSpec) (templateError, bool) {
+	switch n.Provision.Kind {
+	case "java":
+		if n.Provision.JavaMajor <= 0 {
+			return templateError{field: "native.provision.java_major", reason: "kind=java 需正整數 java_major"}, false
+		}
+	case "steamcmd":
+		if n.Provision.SteamAppID == "" {
+			return templateError{field: "native.provision.steam_app_id", reason: "kind=steamcmd 需 steam_app_id"}, false
+		}
+	case "":
+		return templateError{field: "native.provision.kind", reason: "缺少 provision kind"}, false
+	default:
+		return templateError{
+			field:  "native.provision.kind",
+			reason: fmt.Sprintf("不支援的 provision kind %q(支援 java|steamcmd)", n.Provision.Kind),
+		}, false
+	}
+	if len(n.Launch.Command) == 0 {
+		return templateError{field: "native.launch.command", reason: "缺少啟動命令模板"}, false
+	}
+	for i, cm := range n.Config {
+		switch cm.Format {
+		case "properties", "palworld-ini":
+		default:
+			return templateError{
+				field:  fmt.Sprintf("native.config[%d].format", i),
+				reason: fmt.Sprintf("不支援的設定格式 %q(支援 properties|palworld-ini)", cm.Format),
+			}, false
+		}
 	}
 	return templateError{}, true
 }
