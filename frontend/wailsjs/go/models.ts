@@ -101,6 +101,7 @@ export namespace main {
 	export class CreateInstanceRequest {
 	    template_id: string;
 	    variant: string;
+	    name: string;
 	    params: Record<string, string>;
 	    secrets: Record<string, string>;
 	    node: string;
@@ -117,6 +118,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.template_id = source["template_id"];
 	        this.variant = source["variant"];
+	        this.name = source["name"];
 	        this.params = source["params"];
 	        this.secrets = source["secrets"];
 	        this.node = source["node"];
@@ -168,14 +170,34 @@ export namespace main {
 	        this.details = source["details"];
 	    }
 	}
+	export class InstancePortDTO {
+	    name: string;
+	    bind_ip: string;
+	    protocol: string;
+	    host_port: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new InstancePortDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.bind_ip = source["bind_ip"];
+	        this.protocol = source["protocol"];
+	        this.host_port = source["host_port"];
+	    }
+	}
 	export class InstanceDTO {
 	    uuid: string;
 	    template_id: string;
 	    variant: string;
+	    name: string;
 	    node: string;
 	    desired_state: string;
 	    observed_state: string;
 	    runtime: string;
+	    ports: InstancePortDTO[];
 	
 	    static createFrom(source: any = {}) {
 	        return new InstanceDTO(source);
@@ -186,10 +208,51 @@ export namespace main {
 	        this.uuid = source["uuid"];
 	        this.template_id = source["template_id"];
 	        this.variant = source["variant"];
+	        this.name = source["name"];
 	        this.node = source["node"];
 	        this.desired_state = source["desired_state"];
 	        this.observed_state = source["observed_state"];
 	        this.runtime = source["runtime"];
+	        this.ports = this.convertValues(source["ports"], InstancePortDTO);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
+	
+	export class MetricPointDTO {
+	    ts_utc: string;
+	    cpu_percent: number;
+	    memory_bytes?: number;
+	    memory_limit?: number;
+	    player_count?: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new MetricPointDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ts_utc = source["ts_utc"];
+	        this.cpu_percent = source["cpu_percent"];
+	        this.memory_bytes = source["memory_bytes"];
+	        this.memory_limit = source["memory_limit"];
+	        this.player_count = source["player_count"];
 	    }
 	}
 	
@@ -316,6 +379,7 @@ export namespace main {
 	    stats: protocol.ResourceStats;
 	    player_count?: number;
 	    online?: boolean;
+	    started_at: string;
 	    observed_state: string;
 	
 	    static createFrom(source: any = {}) {
@@ -330,6 +394,7 @@ export namespace main {
 	        this.stats = this.convertValues(source["stats"], protocol.ResourceStats);
 	        this.player_count = source["player_count"];
 	        this.online = source["online"];
+	        this.started_at = source["started_at"];
 	        this.observed_state = source["observed_state"];
 	    }
 	
@@ -375,6 +440,7 @@ export namespace main {
 	    secrets: SecretDTO[];
 	    ports: PortDTO[];
 	    modpack: boolean;
+	    has_icon: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new TemplateDTO(source);
@@ -391,6 +457,7 @@ export namespace main {
 	        this.secrets = this.convertValues(source["secrets"], SecretDTO);
 	        this.ports = this.convertValues(source["ports"], PortDTO);
 	        this.modpack = source["modpack"];
+	        this.has_icon = source["has_icon"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

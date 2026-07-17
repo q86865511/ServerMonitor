@@ -33,6 +33,10 @@ export function NodeStatus():Promise<Array<main.NodeStatusDTO>>;
 
 export function QueryEvents(arg1:main.QueryEventsRequest):Promise<Array<main.EventDTO>>;
 
+export function QueryMetrics(arg1:string,arg2:number):Promise<Array<main.MetricPointDTO>>;
+
+export function QueryMetricsSummary(arg1:number):Promise<Array<main.MetricPointDTO>>;
+
 export function RemoveInstance(arg1:string,arg2:boolean):Promise<void>;
 
 export function RestartInstance(arg1:string):Promise<void>;
