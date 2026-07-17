@@ -32,7 +32,7 @@
 
 > 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
-- [ ] GUI 重構:先併 claude/session-c0092e 入 master(經使用者確認),再以 `/pipeline gui-redesign` 依 `specs/gui-redesign/tasks.md` 執行;codex/graphite-ops-gui 分支棄用不併(僅視覺參考)
+- [ ] GUI 重構:以 `/pipeline gui-redesign` 依 `specs/gui-redesign/tasks.md` 執行(c0092e 已於 2026-07-17 經 PR #1 併入 master,規格分支已 rebase 至其上);codex/graphite-ops-gui 分支棄用不併(僅視覺參考)
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
