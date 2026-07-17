@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"servermonitor/internal/core"
 	"servermonitor/internal/protocol"
@@ -24,6 +25,20 @@ func (r *Runtime) Create(_ context.Context, opts core.CreateOptions) (core.Insta
 // Instances 回傳所有實例記錄(含 desired/observed)。
 func (r *Runtime) Instances() ([]core.InstanceRecord, error) { return r.store.ListInstances() }
 
+// PortsByInstance 一次查詢所有埠預留並依 instance_uuid 分組(R12:免對每個實例各查一次的 N+1)。
+// 供綁定層組 InstanceDTO.Ports 時共用同一份查詢結果。
+func (r *Runtime) PortsByInstance() (map[string][]core.PortReservation, error) {
+	ports, err := r.store.ListPortReservations()
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]core.PortReservation, len(ports))
+	for _, p := range ports {
+		out[p.InstanceUUID] = append(out[p.InstanceUUID], p)
+	}
+	return out, nil
+}
+
 // Instance 依 uuid 取單一實例記錄。
 func (r *Runtime) Instance(uuid string) (core.InstanceRecord, error) {
 	return r.store.GetInstance(uuid)
@@ -31,6 +46,16 @@ func (r *Runtime) Instance(uuid string) (core.InstanceRecord, error) {
 
 // Snapshot 回傳一個實例的聚合監控快照;第二回傳值表示是否在監控中。
 func (r *Runtime) Snapshot(uuid string) (core.MonitorSnapshot, bool) { return r.monitor.Snapshot(uuid) }
+
+// QueryMetrics 回傳某實例自 since(含)起的聚合指標時序,按時間升冪(R13;NULL 欄位透傳)。
+func (r *Runtime) QueryMetrics(uuid string, since time.Time) ([]core.MetricPoint, error) {
+	return r.store.QueryMetrics(uuid, since)
+}
+
+// QueryMetricsSummary 回傳自 since(含)起、各 15s bucket 的全體平均(R13;供總覽全體趨勢)。
+func (r *Runtime) QueryMetricsSummary(since time.Time) ([]core.MetricPoint, error) {
+	return r.store.QueryMetricsSummary(since)
+}
 
 // SendCommand 送出一則遊戲指令並回顯(R7)。
 func (r *Runtime) SendCommand(ctx context.Context, uuid string, cmd protocol.GameCommand) (protocol.CommandResult, error) {

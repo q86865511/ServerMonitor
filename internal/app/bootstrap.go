@@ -148,6 +148,7 @@ type Runtime struct {
 	discord   *core.DiscordWebhookChannel
 	threshold *core.ThresholdMonitor
 	monitor   *core.MonitorHub
+	metrics   *core.MetricsRecorder
 
 	backendOpts    agent.BackendOptions // 供 RetryDocker 重建後端用的固定參數
 	backendFactory BackendFactory       // 建立頂層後端的工廠(RetryDocker 於非 dispatch 頂層沿用;測試可注入)
@@ -400,6 +401,13 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	)
 	r.threshold = core.NewThresholdMonitor(core.ThresholdMonitorConfig{
 		Store: store, Events: events, Alerts: r.alerts, Stats: r.monitor, Now: now,
+	})
+
+	// 指標時序記錄器(R13):CPU/記憶體訂閱 MonitorHub stats 流、玩家數自 MonitorHub 快照取,
+	// 15s 聚合寫 metrics 表。啟動即跑獨立於實例 watcher 的 Prune ticker(零實例時仍運作),
+	// Watch/Stop 由 lifecycle start/stopMonitoring 掛接、Close 由 Shutdown 收束。
+	r.metrics = core.NewMetricsRecorder(core.MetricsRecorderConfig{
+		Store: store, Stats: r.monitor, Snaps: r.monitor, Now: now,
 	})
 
 	return r, nil
