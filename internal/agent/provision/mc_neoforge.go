@@ -66,7 +66,7 @@ func (n *NeoForgeInstaller) Install(ctx context.Context, req InstallRequest, pro
 	installerURL := fmt.Sprintf("%s/releases/net/neoforged/neoforge/%s/neoforge-%s-installer.jar",
 		strings.TrimRight(n.mavenBase, "/"), neoVer, neoVer)
 
-	checksum, err := installerChecksum(ctx, n.client, installerURL, progress)
+	checksum, err := installerChecksum(ctx, n.client, installerURL)
 	if err != nil {
 		return InstalledServer{}, err
 	}

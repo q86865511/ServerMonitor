@@ -122,6 +122,14 @@ kind = "java"                          # 需 JVM;實際 server.jar 依變體 loa
 java_major = 21                        # 對齊既有 docker.image 的 java21 tag;升 VERSION 前需確認相容
 
 [native.launch]
+# working_dir=data:與 docker(itzg)資料佈局對齊——itzg 把 /data 掛在 <實例根>/data/,備份 tar 以
+# 整個實例根為根,故 docker 備份含 data/world、data/server.properties 等 data/ 前綴。native 若把
+# 伺服器檔寫在實例根頂層,備份少了 data/ 前綴 → docker↔native 備份互轉時世界路徑對不上(雙審 #7)。
+# 宣告 working_dir=data 使 NativeBackend 的 workDir=<實例根>/data,連帶讓安裝器 InstanceDir、
+# WriteEula 落點、writeConfigFile 目錄(下方 [native.config] 相對 workDir)、以及伺服器行程 cwd
+# (world/、logs/ 落點)全部歸入 data/,與 docker 佈局一致。模組落點見 [native.mods](相對實例根,
+# 故另寫 data/mods)。
+working_dir = "data"
 # argv 模板;token 由 NativeBackend 展開:{java}=供應的 JRE、{memory_mb}=由 MEMORY 換算、{server_jar}=安裝器產出。
 # 此為 jar 型(vanilla/paper/fabric)的啟動來源。forge/neoforge 變體無單一 server jar(installer
 # 產出 run.bat + user_jvm_args.txt),LaunchSpec 為範本級無法逐變體覆寫,故由 NativeBackend 於啟動期
@@ -130,7 +138,9 @@ java_major = 21                        # 對齊既有 docker.image 的 java21 ta
 command = ["{java}", "-Xmx{memory_mb}M", "-jar", "{server_jar}", "nogui"]
 
 [[native.config]]
-# native 無 itzg 代勞,server.properties 由本區段產出。分兩來源:
+# native 無 itzg 代勞,server.properties 由本區段產出。file 相對 working_dir(=data/,見上),故
+# 此處只寫 "server.properties" 即落 data/server.properties——**勿再前綴 data/**(writeConfigFile
+# 已相對 workDir join,前綴會變成 data/data/server.properties)。分兩來源:
 #   [native.config.map] paramKey→configKey:使用者參數落檔(僅 Env 存在者;itzg 亦讀同名 env)。
 #   [native.config.set] configKey→字面值/{port:<name>}:native 執行必需但非使用者參數的值。
 # T13 E2E 校正:server-port/rcon.port 綁定必須與就緒探針(RCON,綁 rcon 埠)一致,否則就緒永不成立。
@@ -153,4 +163,6 @@ MAX_PLAYERS = "max-players"
 [native.mods]
 # native 模組/模組包落位目錄(相對實例根),對齊 vanilla/forge/fabric 慣例 mods/(R11)。
 # docker 路徑由 itzg 依 loader 自管,故 [mods] 另述;此欄僅 native 安裝器(Modrinth/CurseForge)用。
-mods_dir = "mods"
+# 注意:modsInstallDir 相對「實例根」而非 working_dir(見 native.go),故此處須顯式含 data/ 前綴,
+# 才能與 working_dir=data 下的伺服器檔同落 data/mods(itzg 亦以 /data/mods 為模組目錄,#7 對齊)。
+mods_dir = "data/mods"

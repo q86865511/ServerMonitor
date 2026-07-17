@@ -39,8 +39,9 @@ type NativeBackend struct {
 
 	hub *eventHub
 
-	mu    sync.Mutex
-	procs map[string]*procHandle // 鍵為 uuid
+	mu       sync.Mutex
+	procs    map[string]*procHandle // 鍵為 uuid
+	starting map[string]struct{}    // 正在 Start 中(尚未登記 procHandle)的 uuid 占位;防並發雙 Start 各自起行程(#17)
 
 	closeOnce sync.Once
 }
@@ -122,7 +123,7 @@ type ModpackInstallRequest struct {
 	Type        string // "modrinth" | "curseforge"(R14)
 	Ref         string // 遠端來源 ref(slug/版本 id);ArchivePath 非空時不用
 	ArchivePath string // 本機既有封存檔絕對路徑;非空時優先於 Ref
-	TargetDir   string // 模組落位目錄絕對路徑(ModsDir 展開後)
+	TargetDir   string // 實例根絕對路徑(#2):provider 的 files[].path 自帶 mods/ 前綴、overrides 相對此根落地,勿先展開到 <root>/mods
 	MCVersion   string
 	Loader      string
 }
@@ -164,22 +165,29 @@ func NewNativeBackend(opts NativeOptions) (*NativeBackend, error) {
 		prov:       opts.Prov,
 		hub:        newEventHub(0),
 		procs:      make(map[string]*procHandle),
+		starting:   make(map[string]struct{}),
 	}
 	b.adoptExisting()
 	return b, nil
 }
 
 // nativeMeta 是 native 實例的建立期中繼(實例根下 native.json),供 Start 展開啟動命令。
+//
+// Provisioning 為建立中標記:Create 一開始(建目錄後、供應前)即寫入僅含 UUID＋此旗標的最小中繼,
+// 使實例自建立起即被本後端視為所管(instanceExists→List→resolve 皆可見),供應完成後才覆寫為完整
+// (Provisioning=false)中繼。動機:供應中途失敗時,若無此最小中繼,核心回滾 Remove 會因 resolve
+// 找不到而拿 404、殘留半下載目錄;有了它,失敗實例可被 List 看見並由 Remove 認領清理(native-backend #6)。
 type nativeMeta struct {
-	UUID        string                 `json:"uuid"`
-	JavaPath    string                 `json:"java_path,omitempty"`
-	ServerJar   string                 `json:"server_jar,omitempty"`
-	StartScript string                 `json:"start_script,omitempty"` // Forge/NeoForge 啟動腳本(run.bat);{start_script} token 展開來源
-	ArgsFile    string                 `json:"args_file,omitempty"`    // Forge/NeoForge user_jvm_args.txt(供 supervisor 注入 JVM 參數;T13 範本校正落點)
-	Command     []string               `json:"command"`
-	WorkingDir  string                 `json:"working_dir,omitempty"`
-	MemoryMB    int                    `json:"memory_mb,omitempty"`
-	Ports       []protocol.PortBinding `json:"ports,omitempty"`
+	UUID         string                 `json:"uuid"`
+	Provisioning bool                   `json:"provisioning,omitempty"` // true=供應未完成的最小中繼(見型別註)
+	JavaPath     string                 `json:"java_path,omitempty"`
+	ServerJar    string                 `json:"server_jar,omitempty"`
+	StartScript  string                 `json:"start_script,omitempty"` // Forge/NeoForge 啟動腳本(run.bat);{start_script} token 展開來源
+	ArgsFile     string                 `json:"args_file,omitempty"`    // Forge/NeoForge user_jvm_args.txt(供 supervisor 注入 JVM 參數;T13 範本校正落點)
+	Command      []string               `json:"command"`
+	WorkingDir   string                 `json:"working_dir,omitempty"`
+	MemoryMB     int                    `json:"memory_mb,omitempty"`
+	Ports        []protocol.PortBinding `json:"ports,omitempty"`
 }
 
 // procMeta 是執行中繼(實例根下 proc.json):PID + 啟動時刻(防 PID 重用的 start-time 比對)。
@@ -253,6 +261,11 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("建立實例資料根失敗: %w", err)
 	}
+	// #6:先寫最小中繼(僅 UUID＋建立中標記),使實例自建立起即為本後端所管——供應中途失敗時
+	// List/resolve 仍可見、核心回滾 Remove 可認領清理(否則殘留孤兒目錄)。供應完成後於本函式末覆寫完整版。
+	if err := b.writeNativeMeta(uuid, nativeMeta{UUID: uuid, Provisioning: true}); err != nil {
+		return "", fmt.Errorf("寫入建立中中繼失敗: %w", err)
+	}
 	// data_dirs:於實例根下各建一子目錄(對齊 docker bind 慣例,備份範圍)。
 	for _, d := range spec.DataDirs {
 		if err := os.MkdirAll(b.hostDirForContainerPath(uuid, d), 0o755); err != nil {
@@ -300,14 +313,18 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	// instance_service.go:295 上傳時序,建容器後才上傳),故手動路徑改由 WriteMountFile 於檔案
 	// 抵達時觸發安裝(見該方法)。
 	if spec.Modpack != nil {
-		modsDir, derr := b.modsInstallDir(root, spec)
-		if derr != nil {
+		// #2×#7(複審 A):TargetDir 傳 workDir(伺服器工作目錄=遊戲根),而非實例根。provider
+		// (modprovider.go/curseforge.go)語意為「TargetDir=遊戲根,mrpack files[].path 自帶 mods/ 前綴、
+		// overrides 相對遊戲根」;伺服器以 cwd=workDir 讀 mods/ 與設定,故落位必須跟隨 workDir
+		// (minecraft 範本 working_dir="data" → 模組落 <root>/data/mods,與 docker itzg 佈局一致)。
+		// modsInstallDir 於此僅作「範本有宣告 mods_dir」的前置檢查(未宣告即拒安裝,不臆測落位)。
+		if _, derr := b.modsInstallDir(root, spec); derr != nil {
 			return "", derr
 		}
 		if err := b.prov.InstallModpack(ctx, ModpackInstallRequest{
 			Type:      spec.Modpack.Type,
 			Ref:       spec.Modpack.Ref,
-			TargetDir: modsDir,
+			TargetDir: workDir,
 			MCVersion: spec.Native.Provision.MCVersion,
 			Loader:    spec.Native.Provision.Loader,
 		}, progress); err != nil {
@@ -399,16 +416,34 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	if !b.instanceExists(uuid) {
 		return ErrNotFound
 	}
+	// #17:檢查「未在執行」與登記占位須原子完成,否則並發雙 Start 會各自通過檢查、各起一個行程,
+	// 後登記者覆寫 procHandle 致前者洩漏。以 b.mu 下的 starting 占位預留 slot:其一先占,另一即回錯。
 	b.mu.Lock()
 	if h, ok := b.procs[uuid]; ok && !h.isFinished() {
 		b.mu.Unlock()
 		return fmt.Errorf("agent: 實例 %s 已在執行", uuid)
 	}
+	if _, ok := b.starting[uuid]; ok {
+		b.mu.Unlock()
+		return fmt.Errorf("agent: 實例 %s 正在啟動中", uuid)
+	}
+	b.starting[uuid] = struct{}{}
 	b.mu.Unlock()
+	// 占位於本次 Start 返回前釋放:成功時 procHandle 已先登記進 b.procs(後續 Start 見其 running),
+	// 失敗時清占位使可重試。
+	defer func() {
+		b.mu.Lock()
+		delete(b.starting, uuid)
+		b.mu.Unlock()
+	}()
 
 	meta, err := b.readNativeMeta(uuid)
 	if err != nil {
 		return fmt.Errorf("讀取 native 中繼失敗: %w", err)
+	}
+	// #6:供應未完成的最小中繼不可啟動(建立中或供應途中崩潰的殘留);待 Create 覆寫完整中繼後才可。
+	if meta.Provisioning {
+		return fmt.Errorf("agent: 實例 %s 供應未完成,尚不可啟動", uuid)
 	}
 	spec, err := b.readSpec(uuid)
 	if err != nil {
@@ -482,7 +517,13 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	// Job Object:恆建立以取得行程樹 accounting(R8),有上限時一併強制記憶體/CPU(R9)。
 	// 建立或掛入失敗即降級為「僅監督不強制」——記可辨識事件、不阻斷啟動(design 風險節:收養/納管
 	// 失敗降級)。Job 刻意不設 KILL_ON_JOB_CLOSE,故 agent 退出不連坐殺伺服器(R9/R7 共存)。
+	//
+	// #5 競態窗:cmd.Start() 與 AssignProcessToJobObject 之間存在極短空窗,期間頂層行程(如 cmd.exe
+	// wrapper)若已派生子行程,該子行程不會被納入 Job(統計/上限漏計)。本任務採小刀方案:不做
+	// CREATE_SUSPENDED(列後續);逃逸子行程仍是行程樹後裔,forceKill 的 taskkill /T /F 兜底仍會終止之
+	// (僅資源計量受影響,非行程遺留),下方 detectJobEscape 於掛入後查一次以記觀測性警示。
 	h.job = b.attachJob(h, limits)
+	b.detectJobEscape(h)
 	go captureStream(rl, "stdout", stdout)
 	go captureStream(rl, "stderr", stderr)
 
@@ -490,13 +531,16 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 	b.procs[uuid] = h
 	b.mu.Unlock()
 
-	_ = b.writeProcMeta(uuid, procMeta{
+	// #16:proc.json 寫失敗過去被吞——起行程已成功不回滾,但須可觀測(否則收養/存活比對將無中繼可用)。
+	if err := b.writeProcMeta(uuid, procMeta{
 		UUID:      uuid,
 		PID:       h.pid,
 		StartTime: now,
 		Command:   argv,
 		WorkDir:   workDir,
-	})
+	}); err != nil {
+		rl.write("gsm", "寫入 proc.json 失敗(收養/存活比對將缺中繼,行程仍在執行): "+err.Error())
+	}
 
 	go b.reap(h)
 
@@ -699,8 +743,16 @@ func (b *NativeBackend) Remove(ctx context.Context, id protocol.RuntimeID, opts 
 	h := b.procs[uuid]
 	b.mu.Unlock()
 	if h != nil && !h.isFinished() {
-		_ = b.forceKill(h)
-		<-h.done
+		// #10:forceKill 失敗仍無條件 <-h.done 會無限阻塞(行程未死→reap 永不 close done)。改為:
+		// forceKill 錯誤記可觀測日誌,等待改 select ctx.Done() 逃生閥,ctx 取消即回錯,不永久卡住 Remove。
+		if err := b.forceKill(h); err != nil && h.log != nil {
+			h.log.write("gsm", "Remove 強殺行程樹失敗(將等待行程自然結束或 ctx 取消): "+err.Error())
+		}
+		select {
+		case <-h.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	b.mu.Lock()
 	delete(b.procs, uuid)
@@ -1261,6 +1313,22 @@ func (b *NativeBackend) attachJob(h *procHandle, limits jobLimits) *jobObject {
 		return nil
 	}
 	return job
+}
+
+// detectJobEscape 於 Job 掛入後查一次:頂層行程在掛入前的競態窗內若已派生子行程,該子行程未被納入
+// Job(見 Start 的 #5 競態窗註)。偵測到即向實例日誌記可辨識警示(觀測性,不阻斷——逃逸子行程仍受
+// forceKill 的 taskkill /T 兜底終止,僅資源計量漏計)。h.job 為 nil(降級/非 Windows)或查詢失敗時 no-op。
+func (b *NativeBackend) detectJobEscape(h *procHandle) {
+	if h.job == nil {
+		return
+	}
+	escaped, err := h.job.escapedChildren(h.pid)
+	if err != nil || len(escaped) == 0 {
+		return
+	}
+	if h.log != nil {
+		h.log.write("gsm", fmt.Sprintf("偵測到 %d 個子行程於 Job 掛入前已派生、未納入資源管理(統計/上限可能漏計此空窗期行程): %v", len(escaped), escaped))
+	}
 }
 
 // forceKill 強殺實例行程樹:有 Job 時以 TerminateJobObject 一次收束整個 Job;否則 fallback 至

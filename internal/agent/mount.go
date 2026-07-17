@@ -107,10 +107,15 @@ func (b *NativeBackend) maybeInstallManualModpack(ctx context.Context, uuid stri
 	if !ok {
 		return nil
 	}
-	modsDir, derr := b.modsInstallDir(b.instanceDataRoot(uuid), spec)
-	if derr != nil {
+	// #2×#7(複審 A):TargetDir 傳 workDir(伺服器工作目錄=遊戲根),而非實例根——provider 的
+	// files[].path 自帶 mods/ 前綴、overrides 相對遊戲根,伺服器以 cwd=workDir 讀取,落位必須跟隨
+	// workDir(見 native.go Create 與 modprovider.go)。modsInstallDir 於此僅作「範本有宣告 mods_dir」
+	// 的前置檢查,未宣告即拒安裝、不臆測落位。
+	root := b.instanceDataRoot(uuid)
+	if _, derr := b.modsInstallDir(root, spec); derr != nil {
 		return derr
 	}
+	workDir := b.workingDir(root, spec.Native.Launch.WorkingDir)
 	var mcVersion, loader string
 	if spec.Native != nil {
 		mcVersion = spec.Native.Provision.MCVersion
@@ -119,7 +124,7 @@ func (b *NativeBackend) maybeInstallManualModpack(ctx context.Context, uuid stri
 	return b.prov.InstallModpack(ctx, ModpackInstallRequest{
 		Type:        kind,
 		ArchivePath: archivePath,
-		TargetDir:   modsDir,
+		TargetDir:   workDir,
 		MCVersion:   mcVersion,
 		Loader:      loader,
 	}, b.progressEmitter(uuid))

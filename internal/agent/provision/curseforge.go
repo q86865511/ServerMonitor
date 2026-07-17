@@ -172,6 +172,13 @@ func (c *CurseForgeProvider) obtainArchive(ctx context.Context, ref string, prog
 	var dlURL string
 	var sum checksumSpec
 	if isHTTPURL(ref) {
+		// 直接下載 URL 為使用者提供,強制 https:明文 http 可被中間人竄改且此路徑無 sha 校驗
+		// (下方 sum 為零值 = 跳過校驗),故拒絕非 https(雙審 #12)。API 查得的 downloadUrl
+		// 走 else 分支,由 CF 官方 API(https)回傳,不經此檢查。
+		if !isHTTPSURL(ref) {
+			cleanup()
+			return "", func() {}, fmt.Errorf("provision: CurseForge 直接下載 URL 必須為 https(拒絕不安全的 %q)", ref)
+		}
 		dlURL = ref
 	} else {
 		projID, fileID, perr := parseCurseForgeRef(ref)
@@ -463,7 +470,12 @@ func parseCurseForgeRef(ref string) (projectID, fileID int, err error) {
 	return projectID, fileID, nil
 }
 
-// isHTTPURL 回報 s 是否為 http(s) URL。
+// isHTTPURL 回報 s 是否為 http(s) URL(供辨識「直接 URL vs projectID:fileID」)。
 func isHTTPURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
+}
+
+// isHTTPSURL 回報 s 是否為 https URL(直接下載 URL 強制 https,拒絕明文 http)。
+func isHTTPSURL(s string) bool {
+	return strings.HasPrefix(s, "https://")
 }

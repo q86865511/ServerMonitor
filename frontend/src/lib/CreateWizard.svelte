@@ -68,11 +68,16 @@
   $: cfDisabled = runtime === 'native' && !cfEnabled;
   // 範本自身已宣告 CF_API_KEY 機密時,不再另立欄位(避免重複)。
   $: templateHasCFSecret = (tmpl?.secrets ?? []).some((s) => s.key === CF_KEY);
+  // CurseForge 遠端來源的 ref 格式依後端而異:native 供應器只接受 projectID:fileID 或 cfzip 直接
+  // 下載連結(不解析 slug/頁面 URL);docker/itzg 則接受 slug 或整合頁 URL。placeholder 隨 runtime 切換
+  // 以免誤導(R14/#14)。
   $: modpackRefPlaceholder =
     modpackType === 'modrinth'
       ? 'Modrinth slug 或專案 URL'
       : modpackType === 'curseforge'
-        ? 'CurseForge slug 或整合頁 URL'
+        ? runtime === 'native'
+          ? 'projectID:fileID 或 cfzip 直接下載連結(https)'
+          : 'CurseForge slug 或整合頁 URL'
         : modpackType.startsWith('manual')
           ? '本機檔案完整路徑'
           : '';

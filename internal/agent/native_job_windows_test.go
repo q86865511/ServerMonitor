@@ -42,6 +42,29 @@ func TestNativeMemHogProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// TestNativeMemHogSwallowProcess 以 VirtualAlloc 直接提交記憶體並「吞掉」配置失敗——撞上 Job 記憶體
+// 上限後不退出、進入零 Go 配置的純睡眠迴圈(模擬未妥善處理 OOM、不自行結束的伺服器)。故此助手只能被
+// TerminateJobObject 終止:若測試收到 die,即證明 watchCompletionPort 的主動終止(#4)生效,而非行程自退。
+func TestNativeMemHogSwallowProcess(t *testing.T) {
+	if os.Getenv("GSM_NATIVE_MEMHOG_SWALLOW") != "1" {
+		return
+	}
+	const chunk = 16 * 1024 * 1024
+	safety := time.Now().Add(60 * time.Second) // 保護:終止未生效時不無限運轉
+	// MEM_COMMIT 的提交量即計入 Job 委付記憶體上限(JobMemoryLimit),無須觸碰頁面;累計提交撞上限後
+	// VirtualAlloc 失敗,即 Job 記憶體配額命中(completion port 投遞 JOB_MEMORY_LIMIT)。
+	for time.Now().Before(safety) {
+		addr, err := windows.VirtualAlloc(0, chunk, windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_READWRITE)
+		if err != nil || addr == 0 {
+			break // 配置失敗(Job 上限命中):吞掉錯誤,轉入純睡眠、不退出
+		}
+	}
+	for time.Now().Before(safety) { // 純睡眠:零 Go 配置,不主動退出,只能被 Job 終止
+		time.Sleep(50 * time.Millisecond)
+	}
+	os.Exit(0)
+}
+
 var cpuSink uint64
 
 // TestNativeCPUHogProcess 以 NumCPU 條 goroutine 全力燒 CPU(無上限時可吃滿全部核心)。
@@ -142,6 +165,42 @@ func TestNativeJob_OOMTerminatesAndEmitsEvent(t *testing.T) {
 	}
 	if st, _ := b.Status(ctx, id); st.Running {
 		t.Fatal("OOM 後不應仍 running")
+	}
+}
+
+// TestNativeJob_OOMTerminatesNonExitingProcess:記憶體超限但「吞掉配置失敗而不自退」的行程,仍被
+// watchCompletionPort 主動 TerminateJobObject 終止,並合成 die+oom(#4:不再只記旗標坐等行程自退)。
+func TestNativeJob_OOMTerminatesNonExitingProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("真機記憶體超限主動終止測:-short 跳過")
+	}
+	b := newTestNativeBackend(t)
+	ctx := context.Background()
+	spec := nativeLoadSpec("uuid-oom-swallow", "TestNativeMemHogSwallowProcess",
+		map[string]string{"GSM_NATIVE_MEMHOG_SWALLOW": "1"},
+		&protocol.ResourceLimits{MemoryMB: 256})
+	id, err := b.Create(ctx, spec)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	es, err := b.Events(ctx, "")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	defer es.Close()
+
+	if err := b.Start(ctx, id); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	kinds := collectUntilDie(t, es, id, 25*time.Second)
+	if !kinds[RuntimeEventDie] {
+		t.Fatal("吞掉配置失敗、不自退的超限行程未被主動終止(未收到 die,#4 未生效)")
+	}
+	if !kinds[RuntimeEventOOM] {
+		t.Fatal("主動終止後未合成 oom 事件")
+	}
+	if st, _ := b.Status(ctx, id); st.Running {
+		t.Fatal("OOM 主動終止後不應仍 running")
 	}
 }
 

@@ -87,7 +87,7 @@ func (f *FabricInstaller) Install(ctx context.Context, req InstallRequest, progr
 		return InstalledServer{}, err
 	}
 
-	checksum, err := installerChecksum(ctx, f.client, installerURL, progress)
+	checksum, err := installerChecksum(ctx, f.client, installerURL)
 	if err != nil {
 		return InstalledServer{}, err
 	}

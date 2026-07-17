@@ -91,16 +91,23 @@ func TestFabricInstaller_InstallsAndReturnsLaunchJar(t *testing.T) {
 	}
 }
 
-func TestFabricInstaller_SkipsChecksumWhenNoSidecar(t *testing.T) {
+func TestFabricInstaller_MissingSidecarHardFails(t *testing.T) {
+	// 雙審 #12:官方 maven 對每個制品必附 .sha1 旁檔;旁檔缺失(404)不再靜默跳過校驗,改硬失敗。
 	installerJar := []byte("fake-fabric-installer-nosha")
 	srv := fakeFabricMeta(t, "1.21.1", "0.16.5", "1.0.1", installerJar, false) // 無 .sha1 旁檔。
 
 	inst := NewFabricInstaller(srv.Client(), srv.URL, fabricStyleFakeExec(t, "x", true))
 	targetDir := t.TempDir()
-	if _, err := inst.Install(context.Background(),
-		InstallRequest{MCVersion: "1.21.1", TargetDir: targetDir, JavaExe: "java.exe"}, nil); err != nil {
-		t.Fatalf("無旁檔應跳過校驗並成功,實得錯誤: %v", err)
+	_, err := inst.Install(context.Background(),
+		InstallRequest{MCVersion: "1.21.1", TargetDir: targetDir, JavaExe: "java.exe"}, nil)
+	if err == nil {
+		t.Fatal("無 .sha1 旁檔應硬失敗,實得 nil")
 	}
+	if !strings.Contains(err.Error(), ".sha1") {
+		t.Fatalf("錯誤訊息應點名缺 .sha1 旁檔,實得: %v", err)
+	}
+	// 校驗失敗即不應留下半成品。
+	assertTargetClean(t, targetDir)
 }
 
 func TestFabricInstaller_MissingJavaExeErrors(t *testing.T) {

@@ -274,6 +274,17 @@ func Bootstrap(opts Options) (*Runtime, error) {
 	r.engine = core.NewTemplateEngine(core.DefaultAdapterRegistry(), events)
 	loadTemplates(r.engine, opts.BuiltinTemplateDir, userTemplatesDir)
 
+	// 5b) CurseForge 覆蓋金鑰:實值存 OS 金鑰庫(#11:不明文落 config.json);讀到舊版明文則遷入
+	//     金鑰庫、清空 config.json 並記事件。解析失敗為非致命(CF 為選用能力,失敗僅停用)。
+	cfgPath := filepath.Join(baseRoot, appConfigFileName)
+	cfKey, cfMigrated, cfErr := core.ResolveCurseForgeOverrideKey(r.secrets, cfgPath, &cfg)
+	if cfErr != nil {
+		cfKey = ""
+	} else if cfMigrated {
+		details, _ := json.Marshal(map[string]string{"path": cfgPath})
+		_ = events.Append(protocol.Event{Code: core.EventConfigCurseForgeKeyMigrated, Severity: protocol.SeverityInfo, DetailsJSON: details})
+	}
+
 	// 6) Journal / OpJournal。
 	journal, err := core.NewJournal(createDir)
 	if err != nil {
@@ -291,7 +302,7 @@ func Bootstrap(opts Options) (*Runtime, error) {
 
 	// 8) 節點代理(loopback);Docker 不可用時標離線但不致命(Windows dispatch 頂層恆在線,詳見
 	//    startAgentLocked/RetryDocker)。
-	r.backendOpts = agent.BackendOptions{InstancesRoot: instancesDir, BackupRoot: backupsDir, CacheRoot: cacheDir, Node: node, CurseForgeAPIKey: cfg.CurseForgeAPIKey}
+	r.backendOpts = agent.BackendOptions{InstancesRoot: instancesDir, BackupRoot: backupsDir, CacheRoot: cacheDir, Node: node, CurseForgeAPIKey: cfKey}
 	r.backendFactory = factory
 	r.dockerFactory = dockerFactory
 	if err := r.startAgentLocked(factory); err != nil {

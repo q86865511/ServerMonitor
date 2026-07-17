@@ -21,15 +21,20 @@ import (
 // 操作,就地實作。唯一殘留 seam 見 InstallServer:native 側 ServerInstallRequest 帶 Variant 而非
 // bare MCVersion,由本 adapter 依 "<loader>-<version>" 慣例橋接(最終由 T9 buildSpec 定案)。
 type provisionAdapter struct {
-	p *provision.Provisioner
+	p         *provision.Provisioner
+	cacheRoot string // 共用快取根;CurseForge 被擋模組的手動匯入目錄由此衍生(<cacheRoot>/cf-imports,#3)
 }
 
 var _ provisionRunner = (*provisionAdapter)(nil)
 
+// cfImportSubdir 是 CurseForge 被擋模組(downloadUrl=null)的固定手動匯入子目錄(相對共用快取根)。
+// 使用者把手動下載的被擋模組放此,重試安裝時 CurseForgeProvider 依檔名(＋長度)自動補齊(#3/R14)。
+const cfImportSubdir = "cf-imports"
+
 // NewProvisionAdapter 以共用快取根建立 provision adapter;opts 透傳給 provision.New(供測試注入
 // httptest client/API base)。
 func NewProvisionAdapter(cacheRoot string, opts ...provision.Option) *provisionAdapter {
-	return &provisionAdapter{p: provision.New(cacheRoot, opts...)}
+	return &provisionAdapter{p: provision.New(cacheRoot, opts...), cacheRoot: cacheRoot}
 }
 
 // EnsureJava 委派 JavaProvisioner 供應指定 major 版 JRE,回傳 java 執行檔絕對路徑(R4)。
@@ -107,13 +112,32 @@ func (a *provisionAdapter) InstallModpack(ctx context.Context, req ModpackInstal
 	if req.ArchivePath == "" {
 		ref = &provision.ModpackRef{Type: req.Type, Ref: req.Ref}
 	}
+	// #3:CurseForge 被擋模組的手動匯入目錄接線——過去 ImportDir 恆空,CurseForgeProvider 永遠無從自動
+	// 補齊,使用者手動下載後重試仍拿到同一批 BlockedModsError。此處填固定目錄 <cacheRoot>/cf-imports
+	// (預先建好,不存在則自動建),使重試能匹配該目錄內手動下載的檔案。僅 curseforge 路徑需要。
+	importDir := a.curseForgeImportDir(req.Type)
 	return provider.InstallModpack(ctx, provision.ModpackInstallRequest{
 		Ref:         ref,
 		ArchivePath: req.ArchivePath,
 		TargetDir:   req.TargetDir,
 		MCVersion:   req.MCVersion,
 		Loader:      req.Loader,
+		ImportDir:   importDir,
 	}, wrapProgress(progress))
+}
+
+// curseForgeImportDir 回傳 CurseForge 被擋模組的固定手動匯入目錄(<cacheRoot>/cf-imports),並確保其存在。
+// 非 curseforge 型別或 cacheRoot 為空時回空字串(不匯入)。建立失敗僅記為回空字串降級(不阻斷安裝——
+// 匯入本為選用的降級補齊路徑,失敗最多退回 BlockedModsError 引導手動下載)。
+func (a *provisionAdapter) curseForgeImportDir(modpackType string) string {
+	if modpackType != "curseforge" || a.cacheRoot == "" {
+		return ""
+	}
+	dir := filepath.Join(a.cacheRoot, cfImportSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
 }
 
 // CurseForgeEnabled 回報供應器是否啟用 CurseForge 模組包(native-backend R14:建置內嵌或設定覆蓋

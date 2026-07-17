@@ -103,8 +103,9 @@ native 執行後端(免 Docker)可直接安裝 CurseForge 模組包,無須使用
 
 - **金鑰為本專案專屬**:CurseForge 第三方 API 金鑰以編譯期 `-ldflags "-X servermonitor/internal/agent/provision.curseforgeAPIKey=<key>"` 注入,**不進 repo**。未內嵌金鑰的建置:GUI 的 native CurseForge 選項自動隱藏/置灰,其餘功能(含 Modrinth)不受影響。
 - **衍生作品須自行申請金鑰**:依 CurseForge 第三方 API 條款,fork/衍生作品**不得沿用**本專案金鑰,須至 [console.curseforge.com](https://console.curseforge.com/) 申請自己的金鑰並替換注入值。
-- **使用者可覆蓋金鑰**:於設定檔(`%LOCALAPPDATA%\ServerMonitor\config.json`)填 `"curseforge_api_key": "<你的金鑰>"` 即覆蓋內嵌金鑰(比照 Prism)。有覆蓋金鑰時即使建置未內嵌金鑰,native CurseForge 亦啟用。
-- **作者停用第三方散布的模組(opted-out)**:部分模組作者停用第三方 API 下載(CurseForge API 回 `downloadUrl` 為 `null`)。系統會先安裝其餘可下載的模組與 overrides,再於建立精靈彈出「需手動下載的模組」對話框,列出各模組並附「開啟下載頁」按鈕。請以瀏覽器手動下載對應檔案,放入實例的匯入資料夾後**重新建立**——系統以檔名(及檔案長度)比對自動匯入續裝。此為誠實的降級流程:因建立為同步阻塞,不採「暫停等待」以免與建立逾時衝突。
+- **使用者可覆蓋金鑰**:於設定檔(`%LOCALAPPDATA%\ServerMonitor\config.json`)填 `"curseforge_api_key": "<你的金鑰>"` 即覆蓋內嵌金鑰(比照 Prism)。有覆蓋金鑰時即使建置未內嵌金鑰,native CurseForge 亦啟用。**下次啟動時該明文金鑰會自動遷入 OS 金鑰庫並自 `config.json` 移除**(金鑰不明文常駐設定檔);之後覆蓋值改由金鑰庫讀取。
+- **來源填法(native)**:native CurseForge 遠端來源的 ref 需填 `projectID:fileID`(模組包檔的兩個數字 ID)或 cfzip 的**直接下載連結**(https);不支援 slug 或專案頁 URL。
+- **作者停用第三方散布的模組(opted-out)**:部分模組作者停用第三方 API 下載(CurseForge API 回 `downloadUrl` 為 `null`)。系統會先安裝其餘可下載的模組與 overrides,再於建立精靈彈出「需手動下載的模組」對話框,列出各模組並附「開啟下載頁」按鈕。請以瀏覽器手動下載對應檔案,放入匯入資料夾 `<資料根>\cache\cf-imports\` 後**重新建立**——系統以檔名(及檔案長度)比對自動匯入續裝(匯入資料夾為共用快取,不隨個別實例刪除)。此為誠實的降級流程:因建立為同步阻塞,不採「暫停等待」以免與建立逾時衝突。
 - **手動 CurseForge zip**:亦可選「手動 CurseForge zip 檔」來源,提供本機 cfzip 完整路徑直接安裝(同樣需啟用金鑰以查詢各模組下載連結)。
 
 > 註:Docker 執行後端的 CurseForge 走 itzg 映像的 `AUTO_CURSEFORGE`,由**使用者自填** `CF_API_KEY`(存 OS 金鑰庫),與 native 的專案內嵌金鑰是兩條獨立路徑。

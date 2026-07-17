@@ -259,8 +259,8 @@ func (d *dispatchBackend) Restore(ctx context.Context, id protocol.RuntimeID, bi
 // 子後端皆錯誤時回傳錯誤——避免回空清單被 Reconciler 誤判為「全部實例已消失」而做破壞性對帳。
 func (d *dispatchBackend) List(ctx context.Context) ([]protocol.RuntimeRef, error) {
 	var refs []protocol.RuntimeRef
-	present := 0  // 存在的子後端數
-	failed := 0   // 錯誤的子後端數
+	present := 0 // 存在的子後端數
+	failed := 0  // 錯誤的子後端數
 	var lastErr error
 
 	if d.native != nil {

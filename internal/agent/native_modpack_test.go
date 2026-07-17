@@ -49,6 +49,8 @@ func TestNativeBackend_Create_InstallsRemoteModpack(t *testing.T) {
 	defer b.Close()
 
 	spec := nativeModpackSpec("uuid-modpack")
+	// 比照 minecraft 範本 working_dir="data":TargetDir 必須跟隨 workDir(複審 A 的迴歸鎖)。
+	spec.Native.Launch.WorkingDir = "data"
 	spec.Modpack = &protocol.ModpackRef{Type: "modrinth", Ref: "cobblemon-fabric"}
 
 	if _, err := b.Create(context.Background(), spec); err != nil {
@@ -59,12 +61,14 @@ func TestNativeBackend_Create_InstallsRemoteModpack(t *testing.T) {
 		t.Fatalf("InstallModpack 呼叫次數=%d,期望 1", len(prov.modpackCalls))
 	}
 	got := prov.modpackCalls[0]
-	wantDir := filepath.Join(b.instanceDataRoot("uuid-modpack"), "mods")
+	// #2×#7(複審 A):TargetDir 為伺服器工作目錄(<root>/data,provider 的 files[].path 自帶
+	// mods/ 前綴),非實例根也非 <root>/mods。
+	wantDir := filepath.Join(b.instanceDataRoot("uuid-modpack"), "data")
 	if got.Type != "modrinth" || got.Ref != "cobblemon-fabric" {
 		t.Errorf("Type/Ref = %q/%q,期望 modrinth/cobblemon-fabric", got.Type, got.Ref)
 	}
 	if got.TargetDir != wantDir {
-		t.Errorf("TargetDir = %q,期望 %q", got.TargetDir, wantDir)
+		t.Errorf("TargetDir = %q,期望實例根 %q", got.TargetDir, wantDir)
 	}
 	if got.MCVersion != "1.20.1" || got.Loader != "fabric" {
 		t.Errorf("MCVersion/Loader = %q/%q,期望 1.20.1/fabric", got.MCVersion, got.Loader)
@@ -195,6 +199,8 @@ func createNativeInstanceWithModpackMount(t *testing.T, prov provisionRunner) (*
 
 	uuid := "uuid-mount"
 	spec := nativeModpackSpec(uuid)
+	// 比照 minecraft 範本 working_dir="data":模組包落位必須跟隨 workDir(複審 A 的迴歸鎖)。
+	spec.Native.Launch.WorkingDir = "data"
 	spec.Mounts = []protocol.MountSpec{{Name: "modpack", ContainerPath: "/modpacks"}}
 	if _, err := b.Create(context.Background(), spec); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -228,9 +234,10 @@ func TestNativeBackend_WriteMountFile_InstallsManualMrpack(t *testing.T) {
 	if got.Ref != "" {
 		t.Errorf("手動上傳不應帶 Ref: %q", got.Ref)
 	}
-	wantDir := filepath.Join(b.instanceDataRoot(uuid), "mods")
+	// #2×#7(複審 A):TargetDir 為伺服器工作目錄(<root>/data),非實例根也非 <root>/mods。
+	wantDir := filepath.Join(b.instanceDataRoot(uuid), "data")
 	if got.TargetDir != wantDir {
-		t.Errorf("TargetDir = %q,期望 %q", got.TargetDir, wantDir)
+		t.Errorf("TargetDir = %q,期望工作目錄 %q", got.TargetDir, wantDir)
 	}
 }
 

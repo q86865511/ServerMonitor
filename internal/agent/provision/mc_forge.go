@@ -72,7 +72,7 @@ func (f *ForgeInstaller) Install(ctx context.Context, req InstallRequest, progre
 	installerURL := fmt.Sprintf("%s/net/minecraftforge/forge/%s/forge-%s-installer.jar",
 		strings.TrimRight(f.mavenBase, "/"), coord, coord)
 
-	checksum, err := installerChecksum(ctx, f.client, installerURL, progress)
+	checksum, err := installerChecksum(ctx, f.client, installerURL)
 	if err != nil {
 		return InstalledServer{}, err
 	}

@@ -298,6 +298,18 @@ func TestParseCurseForgeRef(t *testing.T) {
 	}
 }
 
+func TestCurseForgeProvider_ObtainArchive_RejectsPlainHTTP(t *testing.T) {
+	// 雙審 #12:直接下載 URL 為使用者提供且此路徑無 sha 校驗,明文 http 一律拒絕(不觸網)。
+	p := NewCurseForgeProvider(http.DefaultClient, "https://api.example", fakeCFKey)
+	_, _, err := p.obtainArchive(context.Background(), "http://insecure.example/pack.zip", nil)
+	if err == nil {
+		t.Fatal("http:// 直接下載 URL 應被拒,實得 nil")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Fatalf("錯誤訊息應說明需 https,實得: %v", err)
+	}
+}
+
 // ---- Provisioner 層:key 啟用/覆蓋語意(以假 key 字串,不觸網)----
 
 func TestProvisioner_CurseForgeDisabledWhenNoKey(t *testing.T) {

@@ -20,22 +20,28 @@ func tmplCaps(docker, native bool, runtime string) *protocol.GameTemplate {
 	return t
 }
 
-// TestToTemplateDTO_Runtimes 驗證能力清單由 [docker]/[native] 區段存在推導,順序固定 docker、native。
-func TestToTemplateDTO_Runtimes(t *testing.T) {
+// TestTemplateRuntimes 驗證能力清單由 [docker]/[native] 區段存在推導,順序固定 docker、native,
+// 且 native 僅在 Windows 列出(#13:非 Windows 過濾掉無法建立的 native 選項)。以 goos 參數注入,
+// 使測試不隨執行平台(Windows 開發 vs Linux CI)漂移。
+func TestTemplateRuntimes(t *testing.T) {
 	cases := []struct {
 		name           string
 		docker, native bool
+		goos           string
 		want           []string
 	}{
-		{"docker-only", true, false, []string{"docker"}},
-		{"native-only", false, true, []string{"native"}},
-		{"both", true, true, []string{"docker", "native"}},
+		{"windows-docker-only", true, false, "windows", []string{"docker"}},
+		{"windows-native-only", false, true, "windows", []string{"native"}},
+		{"windows-both", true, true, "windows", []string{"docker", "native"}},
+		{"linux-both-hides-native", true, true, "linux", []string{"docker"}},
+		{"linux-native-only-empty", false, true, "linux", nil},
+		{"linux-docker-only", true, false, "linux", []string{"docker"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dto := toTemplateDTO(tmplCaps(c.docker, c.native, "docker"))
-			if !reflect.DeepEqual(dto.Runtimes, c.want) {
-				t.Fatalf("Runtimes = %v, want %v", dto.Runtimes, c.want)
+			got := templateRuntimes(tmplCaps(c.docker, c.native, "docker"), c.goos)
+			if !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("templateRuntimes = %v, want %v", got, c.want)
 			}
 		})
 	}

@@ -317,6 +317,37 @@ func TestNodeClient_PerOperationTimeout(t *testing.T) {
 	}
 }
 
+// TestNodeClient_CreateLongTimeout 驗證 Create 走長逾時分級(雙審 #1):native 首次供應可遠超短操作
+// 30s(實測 108s+),呼叫端 ctx 無 deadline 時不受短逾時截斷;呼叫端顯式較嚴 deadline 仍以其為準。
+// 以縮小的預設值(ms 級)驗機制,不必等真實 30min;測後還原全域預設。
+func TestNodeClient_CreateLongTimeout(t *testing.T) {
+	origShort, origCreate := defaultNodeHTTPTimeout, defaultNodeCreateTimeout
+	defaultNodeHTTPTimeout, defaultNodeCreateTimeout = 60*time.Millisecond, 400*time.Millisecond
+	t.Cleanup(func() { defaultNodeHTTPTimeout, defaultNodeCreateTimeout = origShort, origCreate })
+
+	const delay = 180 * time.Millisecond // 介於短(60ms)與 create 長(400ms)預設之間
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(delay)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer srv.Close()
+
+	c := NewNodeClient(srv.URL, agentTestToken, nil)
+	spec := protocol.InstanceSpec{UUID: "create-timeout-uuid"}
+
+	// ctx 無 deadline:400ms create 預設 > 180ms 延遲 → 不被短逾時截斷,正常完成。
+	if _, err := c.Create(context.Background(), spec); err != nil {
+		t.Fatalf("Create 不應被短逾時截斷(應走 create 長逾時),得 %v", err)
+	}
+	// 呼叫端顯式帶較嚴 deadline(50ms < 180ms)時以其為準,即使 Create 亦被截斷。
+	cctx, ccancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer ccancel()
+	if _, err := c.Create(cctx, spec); !errors.Is(err, ErrNodeUnreachable) {
+		t.Fatalf("呼叫端較嚴 deadline 應以其為準截斷 Create,得 %v", err)
+	}
+}
+
 // portConflictBackend 讓 Create 一律回 agent.ErrPortConflict(其餘委派 MockBackend)。
 type portConflictBackend struct {
 	*agent.MockBackend

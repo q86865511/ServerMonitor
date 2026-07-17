@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-**game-server-manager 16/16 完成;native-backend(免 Docker 本機行程後端)規格已核可(2026-07-16),進入 /pipeline 實作**(specs/native-backend,T1–T14)。前功能留給使用者:GUI 視窗真機一輪(功能等價流程已由 E2E 程式化驗證)。
+**🏁 native-backend T1–T14 全數完成(含雙審 17+1 項修正與聚焦複審關閉)**;native MC 全流程 E2E 兩輪實跑通過(首輪 108s/修正後 50s)。留給使用者:GUI 視窗真機一輪(含 native 建立精靈)、CurseForge 真 key E2E、Palworld native E2E(GSM_NATIVE_PALWORLD_E2E=1 opt-in)。
 
 ## 已完成
 
+- [2026-07-17] 🔧 native-backend 雙審修正輪(17+1 項全修)＋聚焦複審關閉:雙審(reviewer/Opus 7 條＋Codex 13 條,3 重疊)裁決 17 條成立、使用者核可全修,分三批並行修正——批A core/GUI(Create 改 30min 逾時修 GUI 首建必逾時、CF key 驗證依 runtime 分流、覆蓋 key 自動遷入金鑰庫、GOOS 過濾 native 選項、CF 文案 runtime-aware)、批B agent(模組包 TargetDir 修雙層巢狀、native.json 兩段式寫入修回滾 404、Job 超限即 TerminateJobObject、BlockedMods cf-imports 接線、Remove ctx 解永久阻塞、259 判活/proc.json 吞錯/並發 Start 三低項)、批C provision/範本(Palworld 改 PalServer.exe＋ini 改 Pal/Saved/Config/WindowsServer 路徑、MC native 佈局對齊 data/ 修備份互轉、sha1 旁檔 404 硬失敗＋CF 直鏈強制 https)。聚焦複審確認 17+1 修到位,另抓到交互問題 A(#2×#7:模組落位須跟隨 working_dir)→主迴圈修正＋迴歸鎖。E2E 重跑 50s PASS、全套件非快取綠、tasks.md 14/14 回寫。
 - [2026-07-17] 🚀 native-backend T1–T14 實作完成(/pipeline 波1–5＋收官),native MC 全流程 E2E 實跑通過(108s,就緒 11s:建立→啟動→RCON→統計→備份→還原→移除):T1 protocol/範本層、T2 provision 基礎+Adoptium JRE、T3/T4 五 loader 安裝器(PaperMC 實測改接 v3 Fill API,v2 已 sunset;Forge/NeoForge 走官方 installer 產出腳本不自解析)、T5 SteamCMD、T6 NativeBackend 13 方法+契約測試+備份 tar 抽共用、T7 Job Objects(oom 事件/CPU cap 實測/agent 退出行程續活三真機驗收)、T8 dispatchBackend 前綴路由+bootstrap 泛化+RetryDocker 熱替換、T9 runtime 選擇鏈+itzg gate、T10 Modrinth/mrpack+ModProvider 擴充點、T11 行程收養(PID+start-time+Job 重掛)+對帳整合、T12 GUI(bindings 零破壞加法+建立精靈 runtime 選擇+供應進度)、T14 CurseForge(key ldflags 注入+設定覆蓋+BlockedMods 降級流程)、T13 範本校正(forge run.bat 改寫/config Set 欄位/per-instance temp 修 netty AF_UNIX 崩潰)+文件。待雙審裁決。
 - [2026-07-16] 📄 native-backend 規格三件套核可落檔於 `specs/native-backend/`(R1–R14,T1–T14):免 Docker 本機行程後端——dispatchBackend 分派(native: 前綴、docker 裸穿零遷移)、供應子系統(Adoptium JRE/五 loader 安裝器/SteamCMD/Modrinth)、Job Objects 資源上限+行程樹統計、收養(proc.json+日誌落檔)、CurseForge R14 可獨立延後(比照 Prism 專案 key 嵌入,經研究查證合規)。既有 game-server-manager 三件套完成 Docker 語境加註修訂(不改原文語意)。
 - [2026-07-16] 🏁 R1 實作 T16+雙審修正+16/16 收官(/pipeline):E2E(Minecraft 全流程/重啟對帳/Palworld REST)、效能基準回填、文件完稿。雙審 8 成立全修:**Minecraft 就緒探針 tcp→rcon**(Docker proxy 假陽性,真產品 bug)、**Palworld rest 探針帶認證**(health 加 action_id 經 CommandService,原裸 GET 對全認證 API 永遠失敗——15 分逾時實測抓到)、**palworld 映像 tag 2.5.1→v2.5.1**(Hub 命名帶 v,pull 實測抓到)、NodeClient 逾時分級(Stop 90s/備份還原 30min)、perf 測試 atomic+緩衝、E2E 失敗路徑清理、README REST 欄位/wails 鎖版。全部修正由真機 E2E 或單元測試實證關閉。
@@ -22,7 +23,7 @@
 
 ## 進行中
 
-- native-backend 實作(/pipeline native-backend,依 specs/native-backend/tasks.md T1–T14)
+(無——native-backend 收官;等使用者 GUI 真機走查與 CurseForge 真 key E2E)
 
 ## 待辦
 

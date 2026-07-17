@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"strings"
+
+	"servermonitor/internal/protocol"
 )
 
 // AppConfig 是應用層的「一般設定檔」內容(UTF-8 JSON),有別於 DB 內的 settings 表。
@@ -17,9 +20,11 @@ type AppConfig struct {
 	Node string `json:"node"`
 	// EventRetentionMax 是事件保留上限(0 = 用內建預設)。
 	EventRetentionMax int `json:"event_retention_max"`
-	// CurseForgeAPIKey 是使用者自填的 CurseForge API 金鑰(native-backend R14):非空時覆蓋建置內嵌
-	// 的專案 key(比照 Prism Launcher,使用者可用自己的 key)。空=用內嵌 key(可能仍空=CF 功能停用)。
-	// 屬使用者本機設定,存於設定檔;不同於機密的金鑰庫存放(此為建置級能力開關,非逐實例機密)。
+	// CurseForgeAPIKey 是使用者自填的 CurseForge API 金鑰覆蓋值(native-backend R14)。
+	//
+	// #11:金鑰不再明文常駐 config.json——實值存 OS 金鑰庫(見 ResolveCurseForgeOverrideKey)。
+	// 本欄位僅作「遷移入口」:使用者(或舊版)以編輯設定檔填入明文時,啟動時遷入金鑰庫並清空回寫
+	// (欄位 omitempty,清空後不再序列化)。故正常運行的 config.json 不含此欄位;讀到值即代表待遷移。
 	CurseForgeAPIKey string `json:"curseforge_api_key,omitempty"`
 }
 
@@ -54,6 +59,43 @@ func LoadAppConfig(path string) (cfg AppConfig, recovered bool, err error) {
 		return DefaultAppConfig(), true, nil
 	}
 	return cfg, false, nil
+}
+
+// curseForgeOverrideRef 是「使用者設定覆蓋的 CurseForge API 金鑰」在 OS 金鑰庫的固定參照(#11)。
+// 有別於逐實例機密(以 UUID 命名空間,見 instanceSecretKey),此為節點層級的單一覆蓋值,故用固定鍵名。
+var curseForgeOverrideRef = protocol.SecretRef{Key: "curseforge-api-key"}
+
+// ResolveCurseForgeOverrideKey 取回使用者設定覆蓋的 CurseForge API 金鑰實值,並在必要時把舊版
+// 明文設定遷入 OS 金鑰庫(#11:金鑰不再明文落 config.json)。cfgPath 為設定檔路徑(遷移後回寫用);
+// secrets 為 nil 時退化為只讀 cfg 明文欄位(不遷移),供無金鑰庫的降級路徑。行為:
+//   - cfg.CurseForgeAPIKey 非空(舊版明文,或使用者以編輯設定檔新填)→ 寫入金鑰庫、清空該欄位並
+//     回寫 config.json(欄位 omitempty,清空後不再序列化),回傳 (值, migrated=true, nil)。
+//   - 否則自金鑰庫取回既存覆蓋值(查無回空字串),回傳 (值, false, nil)。
+//
+// 遷移成功後 cfg.CurseForgeAPIKey 就地清空(呼叫端後續使用同一 cfg 時不再見明文)。
+func ResolveCurseForgeOverrideKey(secrets *SecretStore, cfgPath string, cfg *AppConfig) (key string, migrated bool, err error) {
+	plain := strings.TrimSpace(cfg.CurseForgeAPIKey)
+	if secrets == nil {
+		return plain, false, nil
+	}
+	if plain != "" {
+		if serr := secrets.Set(curseForgeOverrideRef, plain); serr != nil {
+			return "", false, fmt.Errorf("遷移 CurseForge 金鑰入金鑰庫失敗: %w", serr)
+		}
+		cfg.CurseForgeAPIKey = ""
+		if werr := SaveAppConfig(cfgPath, *cfg); werr != nil {
+			return "", false, fmt.Errorf("清除 config.json 明文 CurseForge 金鑰失敗: %w", werr)
+		}
+		return plain, true, nil
+	}
+	v, gerr := secrets.Get(curseForgeOverrideRef)
+	if errors.Is(gerr, ErrSecretNotFound) {
+		return "", false, nil
+	}
+	if gerr != nil {
+		return "", false, fmt.Errorf("讀取 CurseForge 覆蓋金鑰失敗: %w", gerr)
+	}
+	return v, false, nil
 }
 
 // SaveAppConfig 以 UTF-8 JSON(縮排、易讀)寫出設定檔。

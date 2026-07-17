@@ -163,8 +163,13 @@ func (j *jobObject) setupCompletionPort() {
 	go j.watchCompletionPort()
 }
 
-// watchCompletionPort 迴圈取 Job 通知,記憶體配額命中時設旗標。port 關閉(close)時 GetQueued 回錯,
-// goroutine 退出。
+// watchCompletionPort 迴圈取 Job 通知,記憶體配額命中時設旗標並主動終止整個 Job。port 關閉(close)
+// 時 GetQueued 回錯,goroutine 退出。
+//
+// #4:JOB_OBJECT_LIMIT_JOB_MEMORY 命中時,Windows 僅令逾額 commit「失敗」,不保證終止行程——妥善處理
+// 配置失敗而不退出的伺服器會無限續活,既不觸發 reap 也就永無 oom 事件。故收到超限訊息即先設 memHit
+// 旗標、再 TerminateJobObject:行程樹被終止→cmd.Wait 返回→reap 走 finishReap,此時 memHit 已置位,
+// awaitMemoryLimit fast-path 立即回 true→先合成 oom 再合成 die(順序見 finishReap)。
 func (j *jobObject) watchCompletionPort() {
 	for {
 		var code uint32
@@ -176,6 +181,7 @@ func (j *jobObject) watchCompletionPort() {
 		switch code {
 		case jobObjectMsgJobMemoryLimit, jobObjectMsgProcessMemoryLimit:
 			atomic.StoreUint32(&j.memHit, 1)
+			_ = j.terminate() // 保證超限行程樹被終止,而非僅記旗標(#4);已終止/handle 已關時為 no-op error,忽略
 		}
 	}
 }
@@ -206,9 +212,8 @@ func (j *jobObject) stats() (jobStats, error) {
 	return jobStats{CPUTime: cpu, WorkingSetSum: ws}, nil
 }
 
-// workingSetSum 列舉 Job 內所有行程並加總 WorkingSetSize(bytes)。已退出的行程(OpenProcess 失敗)
-// 略過,不視為錯誤。
-func (j *jobObject) workingSetSum() (uint64, error) {
+// jobProcessIDs 列舉目前 Job 內所有行程 PID(供統計加總與逃逸偵測共用)。緩衝不足時擴充重查。
+func (j *jobObject) jobProcessIDs() ([]uint32, error) {
 	n := 128
 	for attempt := 0; attempt < 6; attempt++ {
 		size := int(unsafe.Sizeof(uint32(0)))*2 + n*int(unsafe.Sizeof(uintptr(0)))
@@ -216,21 +221,79 @@ func (j *jobObject) workingSetSum() (uint64, error) {
 		err := windows.QueryInformationJobObject(j.handle, windows.JobObjectBasicProcessIdList,
 			uintptr(unsafe.Pointer(&buf[0])), uint32(size), nil)
 		if err != nil && !errors.Is(err, windows.ERROR_MORE_DATA) {
-			return 0, err
+			return nil, err
 		}
 		hdr := (*jobBasicProcessIDList)(unsafe.Pointer(&buf[0]))
 		if int(hdr.NumberOfAssignedProcesses) > n {
 			n = int(hdr.NumberOfAssignedProcesses) + 16 // 緩衝不足:擴充重查
 			continue
 		}
-		var total uint64
-		pids := unsafe.Slice(&hdr.ProcessIdList[0], hdr.NumberOfProcessIdsInList)
-		for _, pid := range pids {
-			total += processWorkingSet(uint32(pid))
+		raw := unsafe.Slice(&hdr.ProcessIdList[0], hdr.NumberOfProcessIdsInList)
+		pids := make([]uint32, 0, len(raw))
+		for _, pid := range raw {
+			pids = append(pids, uint32(pid))
 		}
-		return total, nil
+		return pids, nil
 	}
-	return 0, errors.New("job: 行程清單反覆超過緩衝")
+	return nil, errors.New("job: 行程清單反覆超過緩衝")
+}
+
+// workingSetSum 列舉 Job 內所有行程並加總 WorkingSetSize(bytes)。已退出的行程(OpenProcess 失敗)
+// 略過,不視為錯誤。
+func (j *jobObject) workingSetSum() (uint64, error) {
+	pids, err := j.jobProcessIDs()
+	if err != nil {
+		return 0, err
+	}
+	var total uint64
+	for _, pid := range pids {
+		total += processWorkingSet(pid)
+	}
+	return total, nil
+}
+
+// escapedChildren 回傳 parentPID 的直接子行程中「不在本 Job 內」的 PID(Job 掛入前競態窗逃逸偵測,
+// native-backend #5 小刀)。逃逸子行程仍是 parentPID 的樹狀後裔,故 forceKill 的 taskkill /T /F 兜底
+// 仍會終止之;此偵測僅供標示資源統計/上限可能漏計的觀測性警示。查詢失敗回錯(呼叫端降級不阻斷)。
+func (j *jobObject) escapedChildren(parentPID int) ([]int, error) {
+	pids, err := j.jobProcessIDs()
+	if err != nil {
+		return nil, err
+	}
+	inJob := make(map[uint32]bool, len(pids))
+	for _, p := range pids {
+		inJob[p] = true
+	}
+	children, err := childProcessIDs(uint32(parentPID))
+	if err != nil {
+		return nil, err
+	}
+	var escaped []int
+	for _, c := range children {
+		if !inJob[c] {
+			escaped = append(escaped, int(c))
+		}
+	}
+	return escaped, nil
+}
+
+// childProcessIDs 以 Toolhelp 快照列舉 parentPID 的直接子行程 PID(ParentProcessID 相符者)。
+// ParentProcessID 可能因 PID 重用而過時,但用於起行程當下的即時偵測足敷(best-effort 警示)。
+func childProcessIDs(parentPID uint32) ([]uint32, error) {
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snapshot)
+	var e windows.ProcessEntry32
+	e.Size = uint32(unsafe.Sizeof(e))
+	var children []uint32
+	for err := windows.Process32First(snapshot, &e); err == nil; err = windows.Process32Next(snapshot, &e) {
+		if e.ParentProcessID == parentPID {
+			children = append(children, e.ProcessID)
+		}
+	}
+	return children, nil
 }
 
 // processWorkingSet 回 pid 的 WorkingSetSize(bytes);開啟或查詢失敗(行程已退出/無權限)回 0。

@@ -41,6 +41,7 @@ type fakeProv struct {
 
 	modpackCalls []ModpackInstallRequest // InstallModpack 每次呼叫的入參,供斷言(T10)
 	modpackErr   error                   // 非 nil 時 InstallModpack 回此錯誤(供測 Create 回滾路徑)
+	serverErr    error                   // 非 nil 時 InstallServer 回此錯誤(供測供應中途失敗的 #6 清理路徑)
 }
 
 func (f *fakeProv) EnsureJava(_ context.Context, _ int, progress func(protocol.ProvisionProgress)) (string, error) {
@@ -53,6 +54,9 @@ func (f *fakeProv) EnsureJava(_ context.Context, _ int, progress func(protocol.P
 }
 
 func (f *fakeProv) InstallServer(_ context.Context, _ ServerInstallRequest, progress func(protocol.ProvisionProgress)) (ServerInstallResult, error) {
+	if f.serverErr != nil {
+		return ServerInstallResult{}, f.serverErr
+	}
 	if progress != nil {
 		progress(protocol.ProvisionProgress{Stage: "server-jar", Percent: 100})
 	}

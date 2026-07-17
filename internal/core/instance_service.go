@@ -217,14 +217,15 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	if serr := validateSecrets(tmpl, opts.Secrets); serr != nil {
 		return InstanceRecord{}, serr
 	}
-	// R11 模組包前置檢查(型別相容/CF_API_KEY/手動檔格式);無副作用,失敗前不動任何狀態。
-	if merr := validateModpack(tmpl, opts.Variant, opts); merr != nil {
-		return InstanceRecord{}, merr
-	}
 	// R2 runtime 分派:由範本能力 ∩ 平台決定執行後端(未知/不支援/平台不符回錯);無副作用。
+	// 先於模組包檢查解析,使 validateModpack 能依 runtime 決定 CF_API_KEY 是否必填(#4)。
 	rt, rterr := resolveRuntime(tmpl, opts.Runtime, s.goos)
 	if rterr != nil {
 		return InstanceRecord{}, rterr
+	}
+	// R11 模組包前置檢查(型別相容/CF_API_KEY/手動檔格式);無副作用,失敗前不動任何狀態。
+	if merr := validateModpack(tmpl, opts.Variant, rt, opts); merr != nil {
+		return InstanceRecord{}, merr
 	}
 
 	uuid := s.newUUID()

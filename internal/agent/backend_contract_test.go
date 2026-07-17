@@ -26,7 +26,7 @@ func closeBackend(b RuntimeBackend) {
 
 // backendContract 描述一個受測後端工廠及其 spec 產生器(各後端 Create 前置差異由此吸收)。
 type backendContract struct {
-	name      string
+	name       string
 	newBackend func(t *testing.T) RuntimeBackend
 	makeSpec   func(uuid string) protocol.InstanceSpec
 	unknownID  protocol.RuntimeID

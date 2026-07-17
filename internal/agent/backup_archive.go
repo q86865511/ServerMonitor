@@ -39,6 +39,7 @@ type backupRecord struct {
 //     server.log*(native 滾動日誌)——皆為「執行環境」而非「實例資料」,不隨備份漂移。
 //   - mounts/ 具名掛載(R11 手動模組包檔:屬建立時輸入,跨還原保持原樣)。
 //   - .gsm-* 暫存(還原 staging/換出暫存)。
+//
 // docker 後端無 native.json/proc.json/server.log,對其為無害的 no-op 排除。
 func tarDir(root, tarPath string) (string, error) {
 	f, err := os.Create(tarPath)

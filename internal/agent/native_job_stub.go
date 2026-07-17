@@ -17,9 +17,10 @@ type jobObject struct{}
 // newJobObject 非 Windows 不建立 Job(回 nil),不視為錯誤。
 func newJobObject(limits jobLimits) (*jobObject, error) { return nil, nil }
 
-func (j *jobObject) assign(pid int) error                        { return nil }
-func (j *jobObject) stats() (jobStats, error)                    { return jobStats{}, nil }
-func (j *jobObject) terminate() error                            { return nil }
-func (j *jobObject) close() error                                { return nil }
-func (j *jobObject) memoryLimitHit() bool                        { return false }
-func (j *jobObject) awaitMemoryLimit(timeout time.Duration) bool { return false }
+func (j *jobObject) assign(pid int) error                         { return nil }
+func (j *jobObject) stats() (jobStats, error)                     { return jobStats{}, nil }
+func (j *jobObject) terminate() error                             { return nil }
+func (j *jobObject) close() error                                 { return nil }
+func (j *jobObject) memoryLimitHit() bool                         { return false }
+func (j *jobObject) awaitMemoryLimit(timeout time.Duration) bool  { return false }
+func (j *jobObject) escapedChildren(parentPID int) ([]int, error) { return nil, nil }

@@ -51,9 +51,10 @@ type NodeClient struct {
 // WS 串流不受此限(另建 Dialer)。
 // 為 var(非 const)以利單元測試注入小值驗證分級機制,不必等真實 30s 級逾時;正式路徑不改寫。
 var (
-	defaultNodeHTTPTimeout = 30 * time.Second // 短操作:單次 HTTP 呼叫預設逾時
-	defaultNodeStopTimeout = 90 * time.Second // 停機鏈:hooks.stop RCON 探測可 hang 至逾時 + 寬限期
-	defaultNodeLongTimeout = 30 * time.Minute // 備份/還原/上傳:大檔封存或傳輸可長
+	defaultNodeHTTPTimeout   = 30 * time.Second // 短操作:單次 HTTP 呼叫預設逾時
+	defaultNodeStopTimeout   = 90 * time.Second // 停機鏈:hooks.stop RCON 探測可 hang 至逾時 + 寬限期
+	defaultNodeLongTimeout   = 30 * time.Minute // 備份/還原/上傳:大檔封存或傳輸可長
+	defaultNodeCreateTimeout = 30 * time.Minute // 建立:native 首次供應(下載 JRE/server.jar,實測 108s+;SteamCMD 6-8GB 更久)遠超短操作
 )
 
 // NewNodeClient 建立 NodeClient。baseURL 為代理根位址(如 http://127.0.0.1:PORT);
@@ -83,10 +84,12 @@ func (c *NodeClient) Health(ctx context.Context) (protocol.HealthResponse, error
 }
 
 // Create 建立一個 runtime 實例(POST /instances)。以 spec.UUID 作冪等鍵,使重試回原結果。
+// 用較長預設逾時:native 首次供應需下載 JRE/server.jar(實測 108s+;Palworld SteamCMD 6-8GB 更久),
+// 遠超短操作 30s(呼叫端未帶 deadline 時,30s 會在供應完成前錯誤截斷);呼叫端顯式較嚴 deadline 仍以其為準。
 func (c *NodeClient) Create(ctx context.Context, spec protocol.InstanceSpec) (protocol.CreateInstanceResponse, error) {
 	var out protocol.CreateInstanceResponse
-	err := c.do(ctx, http.MethodPost, "/instances", spec.UUID,
-		protocol.CreateInstanceRequest{Spec: spec}, &out)
+	err := c.doWithTimeout(ctx, http.MethodPost, "/instances", spec.UUID,
+		protocol.CreateInstanceRequest{Spec: spec}, &out, defaultNodeCreateTimeout)
 	return out, err
 }
 

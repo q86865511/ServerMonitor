@@ -594,14 +594,23 @@ func runtimeFromID(id protocol.RuntimeID) string {
 	return "docker"
 }
 
+// templateRuntimes 回傳範本在本平台可選的執行後端清單,順序固定 docker、native(#13:native 僅
+// Windows 可用,非 Windows 不列出——對齊 core.resolveRuntime 的平台約束,避免 Linux GUI 顯示無法
+// 建立的 native 選項)。goos 以參數注入以利單元測。
+func templateRuntimes(t *protocol.GameTemplate, goos string) []string {
+	var rts []string
+	if t.SupportsDocker() {
+		rts = append(rts, "docker")
+	}
+	if goos == "windows" && t.SupportsNative() {
+		rts = append(rts, "native")
+	}
+	return rts
+}
+
 func toTemplateDTO(t *protocol.GameTemplate) TemplateDTO {
 	dto := TemplateDTO{ID: t.ID, Name: t.Name, Runtime: defaultRuntime(t, runtime.GOOS), Modpack: t.Mods != nil}
-	if t.SupportsDocker() {
-		dto.Runtimes = append(dto.Runtimes, "docker")
-	}
-	if t.SupportsNative() {
-		dto.Runtimes = append(dto.Runtimes, "native")
-	}
+	dto.Runtimes = templateRuntimes(t, runtime.GOOS)
 	for _, v := range t.Variants {
 		dto.Variants = append(dto.Variants, VariantDTO{ID: v.ID, Loader: v.Loader})
 	}

@@ -12,11 +12,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// procStillActive 是 GetExitCodeProcess 於行程仍執行時回傳的碼(STILL_ACTIVE，winbase.h）。
-const procStillActive = 259
-
 // adoptedProcessStatus 回報 pid 是否仍執行，並取其 OS 行程建立時間(供 start-time 防 PID 重用比對)。
 // 行程已退出/無法開啟時回 (false, zero)；存活但取不到建立時間時回 (true, zero)，由呼叫端寬鬆處理。
+//
+// #7:存活判定改用 WaitForSingleObject(h, 0),不再以 GetExitCodeProcess==STILL_ACTIVE(259)判定——後者
+// 會把「正常退出碼恰為 259」的行程誤判為仍存活。WaitForSingleObject 以行程控制代碼的 signaled 狀態為準:
+// WAIT_TIMEOUT=未 signaled(仍執行)、WAIT_OBJECT_0=已 signaled(已結束),不受退出碼數值干擾。
 func adoptedProcessStatus(pid int) (alive bool, createdAt time.Time) {
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
@@ -24,12 +25,12 @@ func adoptedProcessStatus(pid int) (alive bool, createdAt time.Time) {
 	}
 	defer windows.CloseHandle(h)
 
-	var code uint32
-	if err := windows.GetExitCodeProcess(h, &code); err != nil {
-		return false, time.Time{}
+	event, werr := windows.WaitForSingleObject(h, 0)
+	if werr != nil {
+		return false, time.Time{} // WAIT_FAILED:無法判定,保守視為不可收養。
 	}
-	if code != procStillActive {
-		return false, time.Time{} // 行程已退出(有明確退出碼)。
+	if event != uint32(windows.WAIT_TIMEOUT) {
+		return false, time.Time{} // WAIT_OBJECT_0(已 signaled=已結束)等:非存活。
 	}
 
 	var creation, exit, kernel, user windows.Filetime

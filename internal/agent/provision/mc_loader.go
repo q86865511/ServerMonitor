@@ -213,17 +213,17 @@ func fetchSHA1Sidecar(ctx context.Context, client *http.Client, artifactURL stri
 	return sum, true, nil
 }
 
-// installerChecksum 依 artifactURL 的 .sha1 旁檔組出 checksumSpec:旁檔存在則以 sha1 校驗,
-// 不存在(404)則回 skip 的 checksumSpec 並經 progress 記錄「無旁檔、跳過校驗」的偏離(比照
-// steamcmd.go 對無官方 checksum 來源的處理)。網路錯誤上拋(installer 下載本就需要網路)。
-func installerChecksum(ctx context.Context, client *http.Client, artifactURL string, progress ProgressFunc) (checksumSpec, error) {
+// installerChecksum 依 artifactURL 的 .sha1 旁檔組出 checksumSpec(以 sha1 校驗)。官方 maven
+// (Fabric/Forge/NeoForge)對每個制品必附 .sha1 旁檔,故旁檔缺失(404)代表載點異常、被竄改或非
+// 官方鏡像——不再靜默跳過校驗(雙審 #12:未校驗即安裝是完整性缺口),改為硬失敗回明確錯誤。
+// 網路錯誤上拋(installer 下載本就需要網路)。
+func installerChecksum(ctx context.Context, client *http.Client, artifactURL string) (checksumSpec, error) {
 	sum, ok, err := fetchSHA1Sidecar(ctx, client, artifactURL)
 	if err != nil {
 		return checksumSpec{}, err
 	}
 	if !ok {
-		progress.report(ProvisionProgress{Stage: "校驗 installer", Percent: -1, Detail: "無 .sha1 旁檔,跳過逐位元組校驗"})
-		return checksumSpec{}, nil
+		return checksumSpec{}, fmt.Errorf("provision: installer %s 缺 .sha1 旁檔(旁檔回 404);官方 maven 應必附,拒絕未校驗安裝", artifactURL)
 	}
 	return checksumSpec{Algo: "sha1", Value: sum}, nil
 }
