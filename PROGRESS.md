@@ -6,6 +6,7 @@
 
 ## 已完成
 
+- [2026-07-17] 📄 gui-redesign 規格二審+修訂(rev.2):Codex 第二審提 18 條(4 高/14 中),逐條驗證(agent stats 無玩家數/port_reservations 無 name 欄/native 降級零值/sibling-prefix 逃逸等皆屬實)後全數採納修訂;Codex 額度中途用罄,聚焦複審改由獨立 reviewer(opus)執行——18 條全關閉、三件套一致、判定可進實作;複審附帶 3 條低階瑕疵亦已修(覆蓋表 R12 補 T11、測試策略對齊矩陣語意、memory NULL 判定釘死為末樣本)。T4 升 HARD(共 7 HARD)。
 - [2026-07-17] 📄 gui-redesign 規格三件套核可落檔(`specs/gui-redesign/`):依 4 張 Codex 參考圖重構完整前端 GUI 的 spec(R1–R16:設計系統/Shell/hash 路由/總覽儀表板/詳細頁/主控台/四步精靈/全域頁+五項後端擴充);15 任務(5 HARD)。已對齊 c0092e(native-backend)落地後的 bindings 基準,c0092e 前端新功能(精靈 runtime/資源/CF/供應進度、CurseForge 設定卡)納入功能等價吸收要求。
 - [2026-07-17] 功能: GUI 設定 CurseForge API key——設定頁新增 CurseForge 卡(password 輸入/儲存/清除/三態徽章),金鑰直寫 OS 金鑰庫不落檔,經 dispatch→native→adapter→Provisioner 四層委派**熱生效免重啟**(RWMutex 收斂併發,-race 綠);綁定加法 SetCurseForgeAPIKey/CurseForgeKeyConfigured;README 同步。
 - [2026-07-17] 🔧 native-backend 雙審修正輪(17+1 項全修)＋聚焦複審關閉:雙審(reviewer/Opus 7 條＋Codex 13 條,3 重疊)裁決 17 條成立、使用者核可全修,分三批並行修正——批A core/GUI(Create 改 30min 逾時修 GUI 首建必逾時、CF key 驗證依 runtime 分流、覆蓋 key 自動遷入金鑰庫、GOOS 過濾 native 選項、CF 文案 runtime-aware)、批B agent(模組包 TargetDir 修雙層巢狀、native.json 兩段式寫入修回滾 404、Job 超限即 TerminateJobObject、BlockedMods cf-imports 接線、Remove ctx 解永久阻塞、259 判活/proc.json 吞錯/並發 Start 三低項)、批C provision/範本(Palworld 改 PalServer.exe＋ini 改 Pal/Saved/Config/WindowsServer 路徑、MC native 佈局對齊 data/ 修備份互轉、sha1 旁檔 404 硬失敗＋CF 直鏈強制 https)。聚焦複審確認 17+1 修到位,另抓到交互問題 A(#2×#7:模組落位須跟隨 working_dir)→主迴圈修正＋迴歸鎖。E2E 重跑 50s PASS、全套件非快取綠、tasks.md 14/14 回寫。

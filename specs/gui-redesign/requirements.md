@@ -1,6 +1,6 @@
 # gui-redesign — 需求規格(requirements.md)
 
-> 建立日期:2026-07-16｜狀態:已核可(2026-07-17)
+> 建立日期:2026-07-16｜狀態:已核可(2026-07-17;同日依 Codex 二審 18 條修訂,rev.2)
 > 需求主體使用 EARS 句式。
 > 背景裁決(2026-07-16/17):五項後端擴充納入本規格;基底=claude/session-c0092e 併入 master 後的程式碼;codex/graphite-ops-gui 分支棄用、僅作視覺參考;c0092e 新增的前端功能(精靈 runtime/資源/CF/供應進度、CurseForge 設定卡、卡片 runtime 標示)須功能等價吸收(見 R5/R8/R9)。
 
@@ -68,6 +68,8 @@
 - 概覽分頁含:CPU/RAM 歷史趨勢(時序查詢回填+即時事件追加)、連接埠清單、磁碟用量(無法採集顯示「不適用」)、快速操作(建立備份/跳轉主控台)。
 - 移除操作有 ConfirmDialog 且含 purge 勾選(沿用既有行為);成功後返回伺服器清單。
 - 分頁切換不重建整頁;直接以 `#/servers/:uuid/console` 進入時主控台為作用分頁。
+- 設定分頁為**唯讀組態檢視**(範本/變體/參數(secrets 遮罩不顯值)/埠/runtime)+「修改參數需重建實例」提示;不提供線上編輯(上位規格 game-server-manager 不支援線上 update)。
+- 詳細頁開啟期間實例被外部移除(輪詢發現 uuid 消失)時,頁面轉為錯誤態或導回伺服器清單,並釋放該實例的 logs/stats 訂閱引用;不得停留在 stale 資料上繼續操作。
 
 ### R7 即時主控台
 
@@ -87,7 +89,8 @@
 驗收條件:
 - 範本清單來自 ListTemplates,含圖示(HasIcon 者載入 `/tpl-icons/{id}`,否則佔位圖);參數欄位由範本 params/secrets 宣告動態渲染(text/int/bool/EULA/SecretRef/模組包,邏輯等價 c0092e 版 CreateWizard)。
 - runtime 選擇:選項來自 TemplateDTO.runtimes;DockerAvailable()=false 時 docker 選項置灰並提示;僅 1 項時不顯示選擇器。
-- 資源上限:memory_mb/cpu_percent 輸入隨 CreateInstanceRequest 送出(c0092e 已有欄位)。
+- 無可用 runtime 阻擋態:範本僅支援 docker 且 DockerAvailable()=false 時,精靈顯示「無可用執行後端」明確阻擋(該範本卡標示不可建立或步驟③阻擋前進),不得讓使用者送出後才收到後端錯誤。
+- 資源上限:memory_mb/cpu_percent 欄位**僅 runtime=native 時顯示並送出**;docker 時隱藏且送 0(對齊 c0092e 語意:app.go 註明僅 native 有意義)。
 - 模組包 CF 流程等價 c0092e:docker 路徑 CF 來源需填 CF_API_KEY;native 路徑由 CurseForgeEnabled() 決定 CF 選項可用性(false 置灰+提示);ref placeholder 隨 runtime 切換(native=projectID:fileID 或 cfzip 連結;docker=slug 或整合頁 URL)。
 - 建立期間訂閱 `provision` 事件顯示供應進度(stage/percent/detail);stage="blocked-mods" 時解析清單彈出對話框,列出被擋模組並可經 BrowserOpenURL 開啟下載頁(等價 c0092e 行為)。
 - 每步「下一步」前驗證,缺漏必填時阻擋並指出缺項(對齊 game-server-manager R2);上一步保留已輸入值。
@@ -122,28 +125,33 @@
 
 ### R12 已分配連接埠(後端擴充)
 
-系統應於 InstanceDTO 暴露該實例的已分配連接埠(bind_ip/protocol/host_port),供卡片與詳細頁顯示。
+系統應於 InstanceDTO 暴露該實例的已分配連接埠(name/bind_ip/protocol/host_port),供卡片與詳細頁顯示;name 用於區分遊戲埠與管理埠等角色。
 
 驗收條件:
-- 資料來自既有 port_reservations 表;ListInstances 一次查詢分組,不做 N+1。
-- 無保留埠的實例,卡片位址欄顯示「—」。
+- v3 遷移對 port_reservations 加 name 欄位(TEXT NOT NULL DEFAULT '');建立實例時寫入範本 PortSpec.Name;既有資料 name 為空 → 顯示埠但不標角色。
+- 資料來自 port_reservations 表;ListInstances 一次查詢分組,不做 N+1;InstancePortDTO 含 name。
+- 卡片位址欄顯示規則:取範本第一個 required 埠(依 name 對應)的 host_port;無 required 或 name 對不上時取清單首項;無保留埠顯示「—」。不得以 template_id 特判。
 
 ### R13 指標時序持久化(後端擴充)
 
 系統應每 15 秒將各受監控實例的 CPU/記憶體/玩家數聚合寫入 metrics 資料表,保留 36 小時,並提供 QueryMetrics(uuid, since) 與 QueryMetricsSummary(since) 綁定供趨勢圖查詢。
 
 驗收條件:
-- 寫入掛在既有 MonitorHub stats 流(2s)之上做 15s 聚合;實例停止監控即停寫。
-- QueryMetrics 回傳按時間升冪的點列;QueryMetricsSummary 回傳全體實例 15s bucket 平均。
-- 超過 36 小時的資料由每小時清理批刪;`go test ./...` 含 store_metrics 與 recorder 的單元測試。
+- 資料來源:CPU/記憶體訂閱 MonitorHub stats 流(2s);**玩家數自 MonitorHub 快照(Snapshot.PlayerCount)取得**(stats 流不含玩家數,agent 端不採集);實例停止監控即停寫。
+- 聚合語意(bucket=15s,對齊 UTC):cpu_percent=bucket 內樣本**平均**;memory_bytes/memory_limit=bucket 內**末一筆樣本**;player_count=寫入當下快照值(nil 存 NULL)。
+- 無效樣本防護:native runtime Job 降級時 stats 為零值(native.go 註明「留零值=不適用」)——**memory 判定以 bucket 末一筆樣本為準:該樣本 memory_bytes==0 即記憶體欄存 NULL**(不回溯取前段有效值),不得持久化假 0;cpu 零值合法照存。
+- QueryMetrics 回傳按時間升冪的點列(NULL 欄位透傳);QueryMetricsSummary 回傳 15s bucket 的全體平均,**分母僅計該 bucket 有樣本的實例**,無樣本實例不當 0 攤平。
+- 生命週期:recorder 的啟動/關閉接入 bootstrap 建構與 Runtime.Shutdown;Prune ticker(每小時,批刪 >36h)獨立於任何實例 watcher 存在——全部實例停止時清理仍運作;關閉後 goroutine 不得再觸碰 DB(測試驗證)。
+- `go test ./...` 含 store_metrics 與 recorder 的單元測試(含聚合語意、NULL 樣本、關閉後不寫入)。
 
 ### R14 範本 icon(後端擴充)
 
 系統應允許範本 toml 宣告選配 icon(範本目錄相對路徑),經 AssetServer Handler 以 `GET /tpl-icons/{id}` 服務;前端無圖時以「遊戲名首字+依 id 生成色塊」佔位。
 
 驗收條件:
-- icon 路徑經 Clean+前綴檢查,`../` 逃逸請求回 404;無 icon 或 rt 未就緒回 404,前端 onerror 換佔位。
-- 內建 minecraft/palworld 範本各附一張圖;TemplateDTO 含 HasIcon。
+- 路徑拘束用 boundary-aware 判定:`filepath.Rel(範本目錄, 目標)` 不得以 `..` 開頭(字串前綴檢查有 sibling-prefix 漏洞:`templates-secret` 亦以 `templates` 開頭,禁用),且目標須為 regular file(os.Stat 判定,拒 symlink/junction 指向目錄外);違反回 404。
+- 單元測試至少涵蓋:合法 icon 200、無 icon 404、`../` 逃逸 404、**同層 sibling 目錄(如 templates-secret)404**、symlink 指向外部 404(Windows 上無法建 symlink 時該案例可 skip 並註明)。
+- 無 icon 或 rt 未就緒回 404,前端 onerror 換佔位;內建 minecraft/palworld 範本各附一張圖;TemplateDTO 含 HasIcon。
 
 ### R15 資料誠實與空態
 
@@ -151,6 +159,7 @@
 
 驗收條件:
 - player_count/online 為 nil → 「不適用」;磁碟不可採集 → 「不適用」;StartedAt 空 → 「—」。
+- 趨勢圖對 metrics 的 NULL 欄位畫**缺口(gap)**,不得補 0 連線。
 - 前端程式碼無寫死的示範數值(mock 常數)進入正式渲染路徑。
 
 ### R16 非同步狀態完整性
@@ -158,15 +167,15 @@
 當任何頁面載入資料或執行操作時,系統應呈現對應的 loading(Skeleton/spinner)、empty、error(含重試)、disabled 狀態,操作類按鈕於進行中防重複點擊,完成後有成功/失敗 toast 回饋。
 
 驗收條件:
-- 逐頁巡檢清單(總覽/清單/詳細五分頁/精靈四步/六個全域頁)每頁四態齊備。
+- 逐頁巡檢矩陣(總覽/伺服器清單/詳細五分頁/精靈四步/**七個全域頁**(範本/節點/備份/排程/警報/事件/設定))——實作時先列出「頁 × 適用狀態」矩陣(並非每頁四態都適用,例:精靈步驟①的純表單無 empty/loading 資料態,標「不適用」),再逐格勾驗;不適用格須註明理由。
 - 同一操作連點兩次只發出一次請求(以按鈕 disabled 或 in-flight 鎖驗證)。
 
 ## 非功能需求
 
 - 視窗:最小 1280×720(main.go 設 MinWidth/MinHeight),預設 1440×900;於 1280×720/1440×900/1920×1080 三尺寸無版面破版。
-- 效能:日誌高頻輸出不使前端事件迴圈阻塞逾 200ms(對齊 game-server-manager R6);LogViewer 用固定上限+content-visibility,不因日誌累積使 DOM 無限膨脹。
+- 效能:日誌高頻輸出不使前端事件迴圈阻塞逾 200ms(對齊 game-server-manager R6)——量測方式:以 ≥100 行/秒**持續灌流 ≥60 秒**,期間以 PerformanceObserver(longtask)或 DevTools Performance 觀測,**p95 單次 long task <200ms** 且篩選框輸入即時回應;LogViewer 用固定上限+content-visibility,不因日誌累積使 DOM 無限膨脹。
 - 相依:不新增前端 runtime 依賴(圖表手刻 SVG、路由自製);不動已鎖定 Go 依賴版本。
-- 型別:TypeScript 無 any;svelte-check 0 錯誤。
+- 型別:**手寫程式碼(frontend/src,排除自動生成的 frontend/wailsjs/)無顯式 any**(wails 生成碼固定含 any,不在此限);驗證:`grep -rnE ": any|as any|<any>" frontend/src --include="*.ts" --include="*.svelte"`(排除 wailsjs)為空+svelte-check 0 錯誤。
 - 相容:`go test ./...`、`wails build`、`npm run build` 全綠;基底為 master 併入 claude/session-c0092e 之後,c0092e 新增的前端功能(精靈 runtime/資源/CF/供應進度、CurseForge 設定卡、卡片 runtime 標示)全部功能等價保留,不得迴歸。
 - 語言與風格:繁中 UI;系統字型+日誌 monospace;深色主題;基本無障礙(focus 可見、對比達可讀水準、Esc 關閉 modal)。
 

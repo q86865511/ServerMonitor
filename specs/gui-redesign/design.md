@@ -1,6 +1,6 @@
 # gui-redesign — 技術設計(design.md)
 
-> 建立日期:2026-07-16(2026-07-17 依 c0092e 落地內容修訂)｜狀態:已核可(2026-07-17)
+> 建立日期:2026-07-16(2026-07-17 依 c0092e 落地內容修訂;同日依 Codex 二審 18 條修訂,rev.2)｜狀態:已核可(2026-07-17)
 > 對照 requirements.md;每條 R# 見需求對應表。
 > bindings 基準:**master 併入 claude/session-c0092e 後**的 app.go——既有方法+新增 DockerAvailable/CurseForgeEnabled/CurseForgeKeyConfigured/SetCurseForgeAPIKey;事件 `logs:<uuid>`/`stats:<uuid>`/`provision`(全域,payload {stage,percent,detail},含 stage="blocked-mods");DTO 新欄位 runtime/runtimes/docker_available/memory_mb/cpu_percent(已實測存在於 c0092e 的 wailsjs)。本檔引用的檔案:行號以撰寫時的 master 為準,實作時以併入後實際碼重新定位。
 
@@ -17,33 +17,34 @@
 | R3 | `lib/router.ts`(hashchange→{page,params} store+navigate()) | 11 條路由;壞 uuid → ErrorState 頁 |
 | R4 | `lib/pages/DashboardPage.svelte`+`stores/instances.ts`+QueryMetricsSummary+QueryEvents | 聚合統計 nil 跳過;EmptyState 引導建立 |
 | R5 | `ui/ServerCard.svelte`(消費 InstanceDTO+TemplateDTO+SnapshotDTO) | 一切由範本欄位驅動;icon 走 /tpl-icons/{id}+onerror 佔位;runtime Badge |
-| R6 | `lib/pages/server/ServerDetailPage.svelte`+OverviewTab/ConsoleTab/BackupsTab/SchedulesTab/SettingsTab | 頁首操作用既有 Start/Stop/Restart/Remove;Tabs 由路由 :tab 驅動 |
+| R6 | `lib/pages/server/ServerDetailPage.svelte`+OverviewTab/ConsoleTab/BackupsTab/SchedulesTab/SettingsTab(唯讀組態檢視+重建提示,不做線上編輯) | 頁首操作用既有 Start/Stop/Restart/Remove;Tabs 由路由 :tab 驅動;實例消失→ErrorState+釋放訂閱 |
 | R7 | `ui/LogViewer.svelte`+`stores/logs.ts`+ConsoleTab(指令列邏輯自 Console.svelte:119-163 搬移) | 等級入 buffer 時解析一次;3000 行上限;引用計數訂閱+30s 延遲釋放 |
-| R8 | `lib/pages/wizard/`(CreateWizard+Step1~4);全部邏輯自 **c0092e 版** CreateWizard 搬移(runtime 選擇/DockerAvailable 置灰/memory_mb+cpu_percent/CF 金鑰三態/provision 進度/blocked-mods 對話框/BrowserOpenURL) | 逐步驗證;in-flight 鎖;provision 訂閱隨精靈生命週期(關閉 EventsOff) |
+| R8 | `lib/pages/wizard/`(CreateWizard+Step1~4);全部邏輯自 **c0092e 版** CreateWizard 搬移(runtime 選擇/DockerAvailable 置灰/memory_mb+cpu_percent/CF 金鑰三態/provision 進度/blocked-mods 對話框/BrowserOpenURL) | 逐步驗證;in-flight 鎖;provision 訂閱隨精靈生命週期(關閉 EventsOff);docker-only 範本+Docker 不可用→「無可用執行後端」阻擋態;資源欄位僅 native 顯示送值 |
 | R9 | `lib/pages/`(Templates/Nodes/Backups/Schedules/Alerts/Events/Settings Page);Backups/Schedules/Alerts 邏輯自既有 Panel 搬移;CurseForge 卡自 c0092e 的 CurseForgeSettings.svelte 搬移 | 詳細頁分頁與全域頁複用同一元件;節點頁雙狀態(在線/Docker 可用) |
 | R10 | schema.go 追加 version 3(`ALTER TABLE instances ADD COLUMN name`);store_records.go;instance_service.go CreateOptions;app.go 兩個 DTO | 遷移慣例:只追加不改舊項(schema.go:14-15) |
 | R11 | monitor.go MonitorSnapshot(:95)加 StartedAt+pollOnce(:378)經注入 statusFetcher 取 RuntimeStatus.StartedAt(dto.go:89);bootstrap.go:326 注入;app.go SnapshotDTO | 掛既有 10s 輪詢,不加迴圈 |
-| R12 | api.go 加 Runtime.PortsByInstance()(讀 store_ports.go:55 ListPortReservations 一次分組);app.go InstanceDTO.Ports | 免遷移;避免 N+1 |
-| R13 | schema v3 加 metrics 表;新檔 store_metrics.go(Insert/QueryMetrics/QueryMetricsSummary/Prune);新檔 metricsrecorder.go(仿 threshold.go:66,163 statsSource 訂閱模式);lifecycle.go start/stopMonitoring 掛 Watch/Stop;app.go 兩個查詢綁定 | 2s 流聚合 15s 入庫;36h 保留每小時 Prune;單連線序列化無寫入壓力 |
-| R14 | protocol/template.go:15 加 Icon;template_engine.go 記 sourceDir+IconPath(id)(Clean+前綴檢查);main.go:23 assetserver.Options 加 Handler(embedded 查無時 fallback);app.go HasIcon;templates/ 兩張圖 | rt 未就緒 nil-check 回 404;前端 onerror 佔位兜底 |
+| R12 | schema v3 對 port_reservations 加 name(建立時寫入 PortSpec.Name);api.go 加 Runtime.PortsByInstance()(讀 store_ports.go ListPortReservations 一次分組);app.go InstanceDTO.Ports(含 name) | 避免 N+1;卡片位址=第一個 required 埠,name 對不上取首項 |
+| R13 | schema v3 加 metrics 表(記憶體欄 nullable);新檔 store_metrics.go(Insert/QueryMetrics/QueryMetricsSummary/Prune);新檔 metricsrecorder.go(CPU/RAM 仿 threshold.go statsSource 訂閱 stats 流,**玩家數自 MonitorHub.Snapshot 取**——stats 流不含玩家數);bootstrap 建構+lifecycle start/stopMonitoring 掛 Watch/Stop+Runtime.Shutdown 收束 recorder | 2s 流聚合 15s 入庫(cpu=均值/memory=末樣本/memory_bytes==0 視為不可用存 NULL);36h 保留,Prune ticker 獨立於 watcher;單連線序列化無寫入壓力 |
+| R14 | protocol/template.go 加 Icon;template_engine.go 記 sourceDir+IconPath(id)(**filepath.Rel 判定不逃逸+regular file 檢查**,拒 sibling-prefix/symlink);main.go assetserver.Options 加 Handler(embedded 查無時 fallback);app.go HasIcon;templates/ 兩張圖 | rt 未就緒 nil-check 回 404;前端 onerror 佔位兜底 |
 | R15 | 各頁渲染規則+format.ts helper(fmtMaybe/fmtUptime/fmtBytes) | nil→「不適用」/「—」;無 mock 常數進渲染路徑 |
 | R16 | ui/ 的 Skeleton/EmptyState/ErrorState/Toast+`api.ts` call() 包裝+各操作 in-flight state | 既有 call()→toast 錯誤慣例沿用(api.ts:22) |
 
 ## 介面與資料模型
 
 **新增/變更 Go 綁定**(既有方法不動):
-- `CreateInstanceRequest` +`Name string`(app.go:136);`InstanceDTO` +`Name string, Ports []InstancePortDTO`(app.go:115);`InstancePortDTO{BindIP, Protocol string, HostPort int}`(新)。
-- `SnapshotDTO` +`StartedAt string`(RFC3339,空=不適用)(app.go:125)。
-- `TemplateDTO` +`HasIcon bool`(app.go:73)。
-- 新方法:`QueryMetrics(uuid string, sinceUnix int64) ([]MetricPointDTO, error)`、`QueryMetricsSummary(sinceUnix int64) ([]MetricPointDTO, error)`;`MetricPointDTO{TsUTC string, CPUPercent float64, MemoryBytes, MemoryLimit int64, PlayerCount *int}`。
+- `CreateInstanceRequest` +`Name string`;`InstanceDTO` +`Name string, Ports []InstancePortDTO`;`InstancePortDTO{Name, BindIP, Protocol string, HostPort int}`(新;Name 來自範本 PortSpec.Name,舊資料為空)。
+- `SnapshotDTO` +`StartedAt string`(RFC3339,空=不適用)。
+- `TemplateDTO` +`HasIcon bool`。
+- 新方法:`QueryMetrics(uuid string, sinceUnix int64) ([]MetricPointDTO, error)`、`QueryMetricsSummary(sinceUnix int64) ([]MetricPointDTO, error)`;`MetricPointDTO{TsUTC string, CPUPercent float64, MemoryBytes, MemoryLimit *int64, PlayerCount *int}`(記憶體欄 nullable:NULL=該 bucket 不可採集,前端畫缺口)。
 - HTTP(非綁定):`GET /tpl-icons/{id}` → image bytes 或 404。
 
-**DB**(schema.go 追加 version 3,一次遷移含兩件事):
+**DB**(schema.go 追加 version 3,一次遷移含三件事):
 ```sql
 ALTER TABLE instances ADD COLUMN name TEXT NOT NULL DEFAULT '';
+ALTER TABLE port_reservations ADD COLUMN name TEXT NOT NULL DEFAULT '';
 CREATE TABLE metrics (instance_uuid TEXT NOT NULL, ts_utc TEXT NOT NULL,
-  cpu_percent REAL NOT NULL, memory_bytes INTEGER NOT NULL,
-  memory_limit INTEGER NOT NULL, player_count INTEGER,
+  cpu_percent REAL NOT NULL, memory_bytes INTEGER,
+  memory_limit INTEGER, player_count INTEGER,
   PRIMARY KEY (instance_uuid, ts_utc));
 CREATE INDEX idx_metrics_ts ON metrics(ts_utc);
 ```
@@ -61,13 +62,15 @@ frontend/src/lib/
 └── pages/   DashboardPage ServersPage server/(DetailPage+5 Tab) wizard/(4 步) Templates/Nodes/Backups/Schedules/Alerts/Events/Settings Page
 ```
 舊檔處置:Modal/ConfirmDialog/ToastHost/StatePill/NodeBanner 改造遷入;Sidebar/App/InstanceList/InstanceCard/Console/CreateWizard/SettingsView 重寫後刪除;EventsView/三 Panel/CurseForgeSettings 邏輯搬移後刪除;stores.ts 拆散。
+共用元件所有權(避免詳細頁與全域頁分岔):實例維度的 BackupsPanel/SchedulesPanel 由詳細頁任務(T11)產出(以 uuid 為 prop 的單一實作),全域頁任務(T13)複用並外加實例選擇器——T13 依賴 T11。
 
 ## 關鍵流程
 
-1. **趨勢圖資料流**:MonitorHub stats(2s)→ MetricsRecorder 聚合 15s → SQLite metrics 表(36h)。前端進頁 → QueryMetrics(uuid, now-3h) 回填 ring(720 點上限)→ `stats:${uuid}` 事件即時 15s 降採樣追加 → TrendChart(SVG) 重繪。總覽走 QueryMetricsSummary。
+1. **趨勢圖資料流**:MonitorHub stats(2s,含 CPU/RAM)→ MetricsRecorder 15s bucket 聚合(cpu=樣本平均、memory=末樣本;**memory_bytes==0 視為不可採集存 NULL**,對齊 native Job 降級語意)+ 寫入當下自 MonitorHub.Snapshot 取 player_count(stats 流不含玩家數)→ SQLite metrics 表(36h)。recorder 生命週期:bootstrap 建構、lifecycle start/stopMonitoring Watch/Stop、Runtime.Shutdown 收束;Prune ticker 每小時批刪,獨立於 watcher(零實例時仍運作),Close 後不觸碰 DB。前端進頁 → QueryMetrics(uuid, now-3h) 回填 ring(720 點上限)→ `stats:${uuid}` 事件即時 15s 降採樣追加 → TrendChart(SVG,NULL 畫缺口)重繪。總覽走 QueryMetricsSummary(分母僅計該 bucket 有樣本的實例)。
 2. **日誌流**:進主控台分頁 → logs store `acquire(uuid)`(首個引用才 SubscribeLogs+EventsOn;等 subscribe promise resolve 才允許 unsubscribe,沿用 Console.svelte:49-51 防孤兒)→ 行入 buffer 時正規解析等級(stderr→error;/ERROR|SEVERE|FATAL/i→error;/WARN(ING)?/i→warn)→ LogViewer 渲染(keyed each+content-visibility)→ 離開 `release(uuid)` 30s 後真正 Unsubscribe。
 3. **建立流程**:精靈四步收集 → 開始建立時 EventsOn('provision') → CreateInstance({name, template_id, variant, params, secrets, node, modpack, runtime, memory_mb, cpu_percent}) → 進度列顯示 stage/percent/detail;stage="blocked-mods" 解析清單彈對話框(BrowserOpenURL 開下載頁)→ 成功 navigate 到 `#/servers/{uuid}`;失敗 inline 顯示留在確認步;精靈關閉 EventsOff('provision')。訂閱集中規則的例外:provision 為全域事件且僅精靈消費,隨精靈生命週期管理,不入 stores。
-4. **icon 流**:toml `icon="icons/x.png"` → LoadDir 記 sourceDir → 前端 `<img src="/tpl-icons/{id}">` → AssetServer Handler → IconPath 安全檢查 → 檔案 bytes;任何失敗 → 404 → onerror → 佔位(首字+id-hash HSL 色塊)。
+4. **icon 流**:toml `icon="icons/x.png"` → LoadDir 記 sourceDir → 前端 `<img src="/tpl-icons/{id}">` → AssetServer Handler → IconPath 安全檢查(filepath.Rel(範本目錄,目標)不以 `..` 開頭+os.Stat 為 regular file;**禁用字串前綴檢查**——`templates-secret` 亦以 `templates` 為前綴)→ 檔案 bytes;任何失敗 → 404 → onerror → 佔位(首字+id-hash HSL 色塊)。
+5. **詳細頁實例消失轉移**:instances 輪詢發現當前詳細頁 uuid 不存在 → 頁面轉 ErrorState(或導回清單)+ 釋放該 uuid 的 logs/stats 引用;後續操作按鈕停用。
 
 ## 取捨與替代方案
 
@@ -89,7 +92,7 @@ frontend/src/lib/
 
 ## 測試策略
 
-- R10-R13(Go):單元測試——migration v3 套用後欄位/表存在、store_metrics 插入/查詢/Prune、MetricsRecorder 聚合正確性(餵假 stats 流驗 15s 聚合)、IconPath 的 `../` 逃逸擋下;`go test ./...` 全綠。
-- R14(HTTP):handler 單測(有圖 200/無圖 404/逃逸 404)。
-- R1-R9、R15-R16(前端):`npm run check`(svelte-check 0 錯誤、無 any)+`npm run build`;無前端測試框架(現況),行為以 `wails dev` 實跑巡檢矩陣驗收:三尺寸(1280×720/1440×900/1920×1080)×每頁四態(loading/empty/error/正常)+R7 高頻日誌(以測試實例灌 log)+R5 第三範本實驗(臨時加一份 toml 驗證免改碼)。
+- R10-R13(Go):單元測試——migration v3 套用後欄位/表存在、store_metrics 插入/查詢/Prune、MetricsRecorder 聚合正確性(餵假 stats 流驗 15s 均值/末樣本語意、memory 零值存 NULL、玩家數自快照、Close 後不寫入)、IconPath 逃逸擋下;`go test ./...` 全綠。
+- R14(HTTP):handler 單測(有圖 200/無圖 404/`../` 404/**sibling-prefix 目錄 404**/symlink 外逸 404(Windows 無權建 symlink 時 skip 註明))。
+- R1-R9、R15-R16(前端):`npm run check`(svelte-check 0 錯誤、無 any)+`npm run build`;無前端測試框架(現況),行為以 `wails dev` 實跑巡檢矩陣驗收:三尺寸(1280×720/1440×900/1920×1080)×「頁×適用狀態」矩陣(定義見 R16/T14,並非每頁四態皆適用)+R7 高頻日誌(以測試實例灌 log)+R5 第三範本實驗(臨時加一份 toml 驗證免改碼)。
 - 迴歸:`go build ./...`、`go test ./...`、`wails build` 全綠;R9 逐項對照舊功能清單(備份/還原/排程 CRUD/警報/事件篩選/CF key 設定)。
