@@ -1,7 +1,6 @@
 <script lang="ts">
   // 實例維度的排程面板(單一實作;T13 全域頁以實例選擇器複用本元件)。
   // 功能等價舊 lib/SchedulesPanel.svelte:排程 CRUD;UI 改用 ui/ 元件 + DataTable + Modal。
-  import { onMount } from 'svelte';
   import { main } from '../../../../wailsjs/go/models';
   import { ListSchedules, UpsertSchedule, DeleteSchedule } from '../../../../wailsjs/go/main/App';
   import { call } from '../../api';
@@ -52,6 +51,7 @@
     }
   }
 
+  // 首次掛載也由本 effect 觸發(不另掛 onMount,避免雙重載入)。
   let loadedFor = '';
   $effect(() => {
     if (uuid && uuid !== loadedFor) {
@@ -59,8 +59,6 @@
       load();
     }
   });
-
-  onMount(load);
 
   function openNew(): void {
     editId = '';

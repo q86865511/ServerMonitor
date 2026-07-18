@@ -18,7 +18,7 @@
     StopInstance,
   } from '../../../wailsjs/go/main/App';
   import { call } from '../api';
-  import { fmtCPU, fmtPlayers, fmtUptime } from '../format';
+  import { fmtPlayers, fmtUptime } from '../format';
   import { navigate } from '../router';
   import { refresh } from '../stores/instances';
   import { acquireMetrics, metricSamples, releaseMetrics, type MetricSample } from '../stores/metrics';
@@ -41,10 +41,16 @@
   let {
     inst,
     template,
+    externalSnapshot,
   }: {
     inst: main.InstanceDTO;
     /** 對應範本資料;未找到(範本剛被移除等)時仍可渲染,圖示/名稱退化為 fallback。 */
     template: main.TemplateDTO | undefined;
+    /**
+     * 呼叫端已持有的快照(如總覽頁的批次輪詢)。有提供(非 undefined)時本卡不自行輪詢
+     * GetSnapshot,避免同一實例雙重輪詢;undefined(如伺服器清單頁)才自輪詢。
+     */
+    externalSnapshot?: main.SnapshotDTO | null;
   } = $props();
 
   const displayName = $derived(
@@ -76,13 +82,14 @@
   }
   const address = $derived(resolveAddress(inst, template));
 
-  // ---- 快照輪詢(玩家數/線上/運行時間)----
-  let snapshot = $state<main.SnapshotDTO | null>(null);
+  // ---- 快照(玩家數/線上/運行時間):外部提供則直用,否則自輪詢 ----
+  let polledSnapshot = $state<main.SnapshotDTO | null>(null);
   let snapshotTimer: ReturnType<typeof setInterval> | null = null;
+  const snapshot = $derived(externalSnapshot !== undefined ? externalSnapshot : polledSnapshot);
 
   async function pollSnapshot(): Promise<void> {
     try {
-      snapshot = await GetSnapshot(inst.uuid);
+      polledSnapshot = await GetSnapshot(inst.uuid);
     } catch {
       /* 靜默:輪詢失敗保留舊值,uptime/玩家數暫顯既有或「—」 */
     }
@@ -111,8 +118,10 @@
   );
 
   onMount(() => {
-    pollSnapshot();
-    snapshotTimer = setInterval(pollSnapshot, SNAPSHOT_POLL_MS);
+    if (externalSnapshot === undefined) {
+      pollSnapshot();
+      snapshotTimer = setInterval(pollSnapshot, SNAPSHOT_POLL_MS);
+    }
     clockTimer = setInterval(() => {
       now = Date.now();
     }, CLOCK_TICK_MS);

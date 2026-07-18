@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +48,7 @@ type MetricsRecorder struct {
 	pruneEvery time.Duration
 
 	mu       sync.Mutex
-	watchers map[string]watcherHandle // uuid → 正在運行的訂閱(供 Stop)
+	watchers map[string]recorderWatcher // uuid → 正在運行的訂閱(供 Stop)
 	closed   bool
 	prune    context.CancelFunc
 
@@ -99,7 +100,7 @@ func NewMetricsRecorder(cfg MetricsRecorderConfig) *MetricsRecorder {
 		bucket:     bucket,
 		retention:  retention,
 		pruneEvery: pruneEvery,
-		watchers:   make(map[string]watcherHandle),
+		watchers:   make(map[string]recorderWatcher),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	r.prune = cancel
@@ -125,11 +126,20 @@ func (r *MetricsRecorder) Watch(uuid string) {
 	}
 	ch, id := r.stats.SubscribeStats(uuid)
 	ctx, cancel := context.WithCancel(context.Background())
-	r.watchers[uuid] = watcherHandle{subID: id, cancel: cancel}
+	done := make(chan struct{})
+	r.watchers[uuid] = recorderWatcher{subID: id, cancel: cancel, done: done}
 	r.wg.Add(1)
 	r.mu.Unlock()
 
-	go r.run(ctx, uuid, ch)
+	go r.run(ctx, uuid, ch, done)
+}
+
+// recorderWatcher 是單一實例 watcher 的控制柄。done 由 run 返回時關閉,供 Stop 等待該
+// goroutine 收束——確保 Stop 返回後不再有本實例的 ingest/flush(R13「停止監控即停寫」)。
+type recorderWatcher struct {
+	subID  SubID
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // Stop 停止一個實例的指標聚合(冪等)。刻意不 flush 未完成的 bucket:部分 bucket 不寫入,
@@ -144,6 +154,9 @@ func (r *MetricsRecorder) Stop(uuid string) {
 	if ok {
 		h.cancel()
 		r.stats.UnsubscribeStats(uuid, h.subID)
+		// 等 watcher 收束:cancel 與 channel 同時 ready 時 select 可能仍選中緩衝樣本,
+		// 不等待則 Stop 返回後仍可能跨界 flush 一筆。Unsubscribe 已關閉 channel,收束即時。
+		<-h.done
 	}
 }
 
@@ -158,7 +171,7 @@ func (r *MetricsRecorder) Close() {
 	r.closed = true
 	r.closedFlag.Store(true)
 	watchers := r.watchers
-	r.watchers = make(map[string]watcherHandle)
+	r.watchers = make(map[string]recorderWatcher)
 	prune := r.prune
 	r.mu.Unlock()
 
@@ -174,7 +187,8 @@ func (r *MetricsRecorder) Close() {
 
 // run 消費一個實例的 stats channel,逐筆聚合;於 bucket 邊界寫入完成的 bucket。ctx 取消或
 // channel 關閉即返回,不寫入未完成的 bucket(對齊 Stop/Close 語意)。
-func (r *MetricsRecorder) run(ctx context.Context, uuid string, ch <-chan protocol.ResourceStats) {
+func (r *MetricsRecorder) run(ctx context.Context, uuid string, ch <-chan protocol.ResourceStats, done chan struct{}) {
+	defer close(done)
 	defer r.wg.Done()
 	var acc bucketAccumulator
 	for {
@@ -183,6 +197,10 @@ func (r *MetricsRecorder) run(ctx context.Context, uuid string, ch <-chan protoc
 			return
 		case s, ok := <-ch:
 			if !ok {
+				return
+			}
+			// cancel 與樣本同時 ready 時 select 可能選中樣本:已停止就丟棄,保證 Stop 語意。
+			if ctx.Err() != nil {
 				return
 			}
 			r.ingest(uuid, &acc, s)
@@ -259,7 +277,11 @@ func (r *MetricsRecorder) flush(uuid string, acc *bucketAccumulator) {
 			p.PlayerCount = snap.PlayerCount
 		}
 	}
-	_ = r.store.InsertMetric(p)
+	// 寫失敗不中斷聚合(單筆缺點=趨勢圖一個缺口);專案無集中 logger,以 stdlib log 留痕供
+	// wails dev / 終端觀測,避免 DB 持續寫失敗完全靜默。
+	if err := r.store.InsertMetric(p); err != nil {
+		log.Printf("metrics: InsertMetric(%s@%s) 失敗: %v", uuid, acc.bucket.Format(time.RFC3339), err)
+	}
 }
 
 // runPrune 週期批刪過期指標,獨立於任何實例 watcher(零實例時仍運作)。ctx 取消即返回。
@@ -275,7 +297,9 @@ func (r *MetricsRecorder) runPrune(ctx context.Context) {
 			if r.closedFlag.Load() {
 				return
 			}
-			_ = r.store.PruneMetrics(r.now().Add(-r.retention))
+			if err := r.store.PruneMetrics(r.now().Add(-r.retention)); err != nil {
+				log.Printf("metrics: PruneMetrics 失敗: %v", err)
+			}
 		}
 	}
 }

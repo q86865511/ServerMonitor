@@ -66,6 +66,9 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
   --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
 
+  /* 遮罩(modal overlay) */
+  --overlay: rgba(0, 0, 0, 0.6);
+
   /* 動效時長與緩動 */
   --dur-fast: 0.12s;
   --dur-base: 0.18s;

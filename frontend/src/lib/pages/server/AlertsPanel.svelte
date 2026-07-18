@@ -2,7 +2,6 @@
   // 實例維度的告警面板(單一實作;T13 全域頁以實例選擇器複用本元件,未來詳細頁亦可掛同一元件)。
   // 功能等價舊 lib/AlertsPanel.svelte:CPU/RAM 門檻讀寫 + webhook 遮罩流程;UI 改用 ui/ 元件,
   // 結構比照 pages/server/BackupsPanel.svelte / SchedulesPanel.svelte(同一 uuid prop + 重載模式)。
-  import { onMount } from 'svelte';
   import { main } from '../../../../wailsjs/go/models';
   import { GetAlertSettings, SetAlertSettings } from '../../../../wailsjs/go/main/App';
   import { call } from '../../api';
@@ -44,7 +43,7 @@
     }
   }
 
-  // uuid 變動(全域頁切換實例)時重載。
+  // uuid 變動(全域頁切換實例)時重載;首次掛載也由本 effect 觸發(不另掛 onMount,避免雙重載入)。
   let loadedFor = '';
   $effect(() => {
     if (uuid && uuid !== loadedFor) {
@@ -52,8 +51,6 @@
       load();
     }
   });
-
-  onMount(load);
 
   async function save(): Promise<void> {
     saving = true;

@@ -1,6 +1,8 @@
 <script lang="ts">
   // 全域警報頁(R9):實例選擇器 + 複用 pages/server/AlertsPanel(單一實作,同 Backups/Schedules 模式)。
   import { instances } from '../stores/instances';
+  import { templates, instanceLabel } from '../stores/templates';
+  const tpls = templates();
   import Card from '../ui/Card.svelte';
   import EmptyState from '../ui/EmptyState.svelte';
   import Select from '../ui/Select.svelte';
@@ -16,7 +18,7 @@
   const options = $derived(
     $instances.map((i) => ({
       value: i.uuid,
-      label: i.name?.trim() ? i.name : `${i.template_id} #${i.uuid.slice(0, 8)}`,
+      label: instanceLabel(i, $tpls),
     })),
   );
 </script>

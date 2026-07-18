@@ -39,10 +39,13 @@
   // 保底逾時防離線/查詢失敗時卡在 Skeleton;uuid 變動時重置(切換伺服器不沿用舊 settled 狀態)。
   let metricsLoaded = $state(false);
   $effect(() => {
+    // 捕捉當輪 uuid:cleanup 讀反應式 uuid 會拿到「已前進」的新值(uuid 變動觸發 effect 重跑,
+    // 先跑上輪 cleanup 再跑本輪 body),必須用區域副本才能釋放本輪 acquire 的同一實例,否則洩漏。
+    const id = uuid;
     metricsLoaded = false;
-    acquireMetrics(uuid);
+    acquireMetrics(id);
     let firstEmit = true;
-    const unsub = metricSamples(uuid).subscribe((v) => {
+    const unsub = metricSamples(id).subscribe((v) => {
       samples = v;
       if (!firstEmit) metricsLoaded = true;
       firstEmit = false;
@@ -52,7 +55,7 @@
     }, METRICS_LOAD_TIMEOUT_MS);
     return () => {
       unsub();
-      releaseMetrics(uuid);
+      releaseMetrics(id);
       clearTimeout(loadTimer);
     };
   });

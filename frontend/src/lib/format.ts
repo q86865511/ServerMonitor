@@ -18,6 +18,11 @@ export function fmtBytes(n: number | undefined | null): string {
 
 /** CPU 百分比;undefined/null → 不適用。 */
 export function fmtCPU(p: number | undefined | null): string {
+  return fmtPercent(p);
+}
+
+/** 泛用百分比(1 位小數;null/undefined → 不適用)。CPU/RAM 等百分比欄位共用。 */
+export function fmtPercent(p: number | undefined | null): string {
   if (p == null) return NA;
   return `${p.toFixed(1)}%`;
 }

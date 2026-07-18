@@ -3,7 +3,7 @@
 // 訂閱生命週期不變式(引用計數):
 //   - acquire(uuid) 首個引用才 QueryMetrics 回填 + SubscribeStats + EventsOn;後續引用只加計數。
 //   - release(uuid) 計數歸零即拆訂閱(stats 流輕量,不需 logs 的 30s 延遲)。
-//   - 防孤兒:teardown 前 await subscribePromise,確保 SubscribeStats 已落地才 Unsubscribe。
+//   - 防孤兒/防時序反轉:Subscribe/Unsubscribe 一律經 Entry.chain 序列化+世代守衛(見 Entry 註解)。
 //
 // 即時流語意(對齊後端 15s bucket,見 R13):2s 的 stats 事件降採樣為 15s bucket——
 //   cpu=bucket 內樣本平均;memory=bucket 末一筆樣本,末樣本 memory_bytes==0 視為不可採集存 null(畫缺口);
@@ -53,8 +53,15 @@ interface Entry {
   refCount: number;
   subscribed: boolean;
   unlisten: (() => void) | null;
-  subscribePromise: Promise<void> | null;
   open: OpenBucket | null;
+  /** 訂閱世代:每次真正建立訂閱 +1。Unsubscribe 於鏈上執行時比對,已被 re-acquire 取代即放棄。 */
+  gen: number;
+  /**
+   * Subscribe/Unsubscribe RPC 的序列化操作鏈:所有後端訂閱轉換依 enqueue 順序執行,
+   * 杜絕「Unsubscribe RPC 在途時 re-acquire 的 Subscribe 先到後端」的時序反轉
+   * (反轉時後端冪等 no-op + 隨後被舊 Unsubscribe 拆除 → 前端自認已訂閱、後端已停流)。
+   */
+  chain: Promise<void>;
 }
 
 const entries = new Map<string, Entry>();
@@ -67,8 +74,9 @@ function ensure(uuid: string): Entry {
       refCount: 0,
       subscribed: false,
       unlisten: null,
-      subscribePromise: null,
       open: null,
+      gen: 0,
+      chain: Promise.resolve(),
     };
     entries.set(uuid, e);
   }
@@ -113,7 +121,9 @@ function onStats(e: Entry, s: protocol.ResourceStats): void {
   e.open.cpuCount += 1;
   e.open.memoryBytes = s.memory_bytes > 0 ? s.memory_bytes : null; // 末樣本;0=不可採集
   e.open.memoryLimit = s.memory_limit > 0 ? s.memory_limit : null;
-  e.open.players = s.player_count ?? null;
+  // 玩家數不取自 stats 流:agent 端不採集(R13),即時 bucket 一律 null;
+  // 權威值由後端 recorder 自快照寫入 DB,經回填帶回(避免流值 0 與「不適用」的歧義)。
+  e.open.players = null;
 }
 
 function flushBucket(e: Entry): void {
@@ -136,25 +146,40 @@ export function acquireMetrics(uuid: string): void {
   e.refCount += 1;
   if (e.subscribed) return;
   e.subscribed = true;
+  e.gen += 1; // 新一輪訂閱世代
+  const myGen = e.gen;
 
   // 即時流:2s stats 事件降採樣為 15s bucket 追加。
   e.unlisten = EventsOn(`stats:${uuid}`, (s: protocol.ResourceStats) => onStats(e, s));
 
-  // 回填:now-3h 既有時序,整批取代 ring 內容(取尾 720 點)。
+  // 回填:now-3h 既有時序。與 ring 現況「合併」而非整批取代——查詢在途時即時流可能已 flush
+  // 較新的 bucket,無條件 set 會把那些點蓋掉造成假缺口;重疊 ts 以後端(完整 bucket)為準。
   QueryMetrics(uuid, Math.floor((Date.now() - BACKFILL_MS) / 1000))
     .then((points) => {
-      const samples = points.map(fromDTO);
-      e.store.set(samples.length > RING_CAP ? samples.slice(samples.length - RING_CAP) : samples);
+      if (e.gen !== myGen) return; // 已被新一輪 acquire 取代,由它自己的回填處理
+      const backfill = points.map(fromDTO);
+      e.store.update((cur) => mergeSamples(backfill, cur));
     })
     .catch(() => {
       /* 靜默:節點離線/無歷史時留空 ring,趨勢圖顯空態 */
     });
 
-  e.subscribePromise = SubscribeStats(uuid)
+  // Subscribe 進序列化操作鏈(與 Unsubscribe 嚴格依序,見 Entry.chain 註解)。
+  e.chain = e.chain
+    .then(() => SubscribeStats(uuid))
     .then(() => undefined)
     .catch(() => {
       /* 靜默:訂閱失敗不阻斷回填顯示 */
     });
+}
+
+// 合併回填與 ring 現況:回填段為準,僅保留比回填末點更新的即時點;回填為空則保留現況。
+function mergeSamples(backfill: MetricSample[], cur: MetricSample[]): MetricSample[] {
+  if (backfill.length === 0) return cur;
+  const lastTs = backfill[backfill.length - 1].ts;
+  const tail = cur.filter((s) => s.ts > lastTs);
+  const merged = backfill.concat(tail);
+  return merged.length > RING_CAP ? merged.slice(merged.length - RING_CAP) : merged;
 }
 
 /** 釋放引用:歸零即拆訂閱(不延遲)。ring 內容保留,再 acquire 時由回填覆寫。 */
@@ -166,7 +191,8 @@ export function releaseMetrics(uuid: string): void {
   teardown(e, uuid);
 }
 
-async function teardown(e: Entry, uuid: string): Promise<void> {
+function teardown(e: Entry, uuid: string): void {
+  const myGen = e.gen; // 本輪訂閱世代
   e.subscribed = false;
   e.open = null;
   if (e.unlisten) {
@@ -174,12 +200,17 @@ async function teardown(e: Entry, uuid: string): Promise<void> {
     e.unlisten = null;
   }
   EventsOff(`stats:${uuid}`);
-  try {
-    if (e.subscribePromise) await e.subscribePromise; // 防孤兒:等訂閱落地再取消
-    await UnsubscribeStats(uuid);
-  } catch {
-    /* 忽略卸載期錯誤 */
-  }
+  // Unsubscribe 進序列化操作鏈:必然排在本輪 Subscribe 之後、下一輪 Subscribe 之前執行。
+  // 世代守衛於「鏈上執行當下」評估——已被 re-acquire 取代(gen 前進)即放棄拆除,
+  // 讓後端訂閱無縫延續給新一輪(其 Subscribe 對後端是冪等 no-op)。
+  e.chain = e.chain
+    .then(async () => {
+      if (e.gen !== myGen) return;
+      await UnsubscribeStats(uuid);
+    })
+    .catch(() => {
+      /* 忽略卸載期錯誤 */
+    });
 }
 
 /** 總覽全體平均時序(分母僅計有樣本實例,由後端保證)。回傳 MetricSample[](NULL 欄位透傳)。 */
@@ -204,14 +235,4 @@ export function ramPercentTrend(samples: MetricSample[]): TrendPoint[] {
         ? (s.memoryBytes / s.memoryLimit) * 100
         : null,
   }));
-}
-
-/** 記憶體用量(bytes)序列。 */
-export function ramBytesTrend(samples: MetricSample[]): TrendPoint[] {
-  return samples.map((s) => ({ ts: s.ts, value: s.memoryBytes }));
-}
-
-/** 玩家數序列。 */
-export function playersTrend(samples: MetricSample[]): TrendPoint[] {
-  return samples.map((s) => ({ ts: s.ts, value: s.players }));
 }

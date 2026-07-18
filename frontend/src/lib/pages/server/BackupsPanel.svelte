@@ -1,7 +1,6 @@
 <script lang="ts">
   // 實例維度的備份面板(單一實作;T13 全域頁以實例選擇器複用本元件)。
   // 功能等價舊 lib/BackupsPanel.svelte:列表 / 立即備份 / 還原確認;UI 改用 ui/ 元件 + DataTable。
-  import { onMount } from 'svelte';
   import type { protocol } from '../../../../wailsjs/go/models';
   import { ListBackups, BackupNow, RestoreBackup } from '../../../../wailsjs/go/main/App';
   import { call } from '../../api';
@@ -36,7 +35,7 @@
     }
   }
 
-  // uuid 變動(全域頁切換實例)時重載。
+  // uuid 變動(全域頁切換實例)時重載;首次掛載也由本 effect 觸發(不另掛 onMount,避免雙重載入)。
   let loadedFor = '';
   $effect(() => {
     if (uuid && uuid !== loadedFor) {
@@ -44,8 +43,6 @@
       load();
     }
   });
-
-  onMount(load);
 
   async function backupNow(): Promise<void> {
     backingUp = true;

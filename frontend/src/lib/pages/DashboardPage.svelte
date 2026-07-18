@@ -14,7 +14,7 @@
   import type { main } from '../../../wailsjs/go/models';
   import { GetSnapshot, ListTemplates, QueryEvents } from '../../../wailsjs/go/main/App';
   import { call } from '../api';
-  import { fmtCPU, fmtTime, severityTone } from '../format';
+  import { fmtCPU, fmtPercent, fmtTime, severityTone } from '../format';
   import { instances, nodeStatuses } from '../stores/instances';
   import { cpuTrend, ramPercentTrend, summary, type MetricSample } from '../stores/metrics';
   import Badge from '../ui/Badge.svelte';
@@ -190,14 +190,18 @@
     <MetricCard title="運行中" value={runningCount} tone={runningCount > 0 ? 'ok' : 'neutral'} />
     <MetricCard title="線上玩家總和" value={playerValue} />
     <MetricCard title="平均 CPU" value={summaryLoaded ? fmtCPU(avgCpu) : '…'} />
-    <MetricCard title="平均 RAM" value={summaryLoaded ? fmtCPU(avgRamPercent) : '…'} />
+    <MetricCard title="平均 RAM" value={summaryLoaded ? fmtPercent(avgRamPercent) : '…'} />
   </div>
 
   <section class="block">
     <div class="section-title">伺服器</div>
     <div class="server-grid">
       {#each $instances as inst (inst.uuid)}
-        <ServerCard {inst} template={templateMap.get(inst.template_id)} />
+        <ServerCard
+          {inst}
+          template={templateMap.get(inst.template_id)}
+          externalSnapshot={snapshots[inst.uuid] ?? null}
+        />
       {/each}
     </div>
   </section>

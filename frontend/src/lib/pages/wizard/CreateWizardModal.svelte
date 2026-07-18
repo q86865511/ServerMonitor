@@ -19,6 +19,7 @@
   import Modal from '../../ui/Modal.svelte';
   import Button from '../../ui/Button.svelte';
   import ConfirmDialog from '../../ui/ConfirmDialog.svelte';
+  import ErrorState from '../../ui/ErrorState.svelte';
   import Step1Basic from './Step1Basic.svelte';
   import Step2Template from './Step2Template.svelte';
   import Step3Config from './Step3Config.svelte';
@@ -168,12 +169,21 @@
     return false;
   }
 
-  onMount(async () => {
+  // 範本載入失敗與「真的沒有範本」分開呈現(R16):失敗顯 ErrorState 可原地重試,不誤導成空。
+  let tplError = $state('');
+  async function loadTemplates(): Promise<void> {
+    loading = true;
+    tplError = '';
     try {
-      templates = await call(() => ListTemplates());
-    } catch {
-      /* toast 已呈現 */
+      templates = await call(() => ListTemplates(), { silent: true });
+    } catch (err) {
+      tplError = errMsg(err);
     }
+    loading = false;
+  }
+
+  onMount(async () => {
+    await loadTemplates();
     try {
       dockerAvailable = await call(() => DockerAvailable(), { silent: true });
     } catch {
@@ -184,7 +194,6 @@
     } catch {
       cfEnabled = false; // 查詢失敗保守視為未啟用
     }
-    loading = false;
   });
 
   onDestroy(() => {
@@ -326,6 +335,8 @@
 <Modal title="建立伺服器" wide onClose={requestClose}>
   {#if loading}
     <div class="msg">載入範本中…</div>
+  {:else if tplError}
+    <ErrorState message={`載入範本失敗:${tplError}`} onRetry={loadTemplates} />
   {:else if templates.length === 0}
     <div class="msg">無可用範本。</div>
   {:else}

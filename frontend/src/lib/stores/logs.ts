@@ -4,7 +4,7 @@
 //   - acquire(uuid) 首個引用才 SubscribeLogs + EventsOn;若有待釋放計時器則取消(切分頁往返不抖動)。
 //   - release(uuid) 計數歸零後啟動 30s 計時器;期間再 acquire 會取消它,不重訂閱。
 //   - 計時器到期且仍無引用才真正 teardown(EventsOff + UnsubscribeLogs);buffer 保留,離開再回不丟。
-//   - 防孤兒:teardown 前 await subscribePromise,確保 SubscribeLogs 已落地才 Unsubscribe。
+//   - 防孤兒/防時序反轉:Subscribe/Unsubscribe 一律經 Entry.chain 序列化+世代守衛(見 Entry 註解)。
 //
 // 效能:高頻事件不逐行 set store,先入 pending 再以 16ms 節流批次落一次(避免每行觸發整頁重渲)。
 import { writable } from 'svelte/store';
@@ -60,11 +60,14 @@ interface Entry {
   refCount: number;
   subscribed: boolean;
   unlisten: (() => void) | null;
-  subscribePromise: Promise<void> | null;
   releaseTimer: ReturnType<typeof setTimeout> | null;
   seq: number; // 遞增 id 來源
   pending: LogRow[]; // 批次緩衝
   flushTimer: ReturnType<typeof setTimeout> | null;
+  /** 訂閱世代:每次真正建立訂閱 +1。鏈上 Unsubscribe 執行時比對,已被 re-acquire 取代即放棄。 */
+  gen: number;
+  /** Subscribe/Unsubscribe RPC 序列化操作鏈(語意同 stores/metrics.ts 的 Entry.chain)。 */
+  chain: Promise<void>;
 }
 
 const entries = new Map<string, Entry>();
@@ -78,11 +81,12 @@ function ensure(uuid: string): Entry {
       refCount: 0,
       subscribed: false,
       unlisten: null,
-      subscribePromise: null,
       releaseTimer: null,
       seq: 0,
       pending: [],
       flushTimer: null,
+      gen: 0,
+      chain: Promise.resolve(),
     };
     entries.set(uuid, e);
   }
@@ -119,33 +123,44 @@ function scheduleFlush(e: Entry): void {
 
 function subscribe(e: Entry, uuid: string): void {
   e.subscribed = true;
+  e.gen += 1; // 新一輪訂閱世代
+  const myGen = e.gen;
   e.conn.set({ state: 'connecting' });
   e.unlisten = EventsOn(`logs:${uuid}`, (raw: RawLine) => ingest(e, raw));
-  e.subscribePromise = SubscribeLogs(uuid)
+  // Subscribe 進序列化操作鏈:與 Unsubscribe 嚴格依 enqueue 順序執行,杜絕 RPC 時序反轉
+  // (反轉時後端冪等 no-op + 被舊 Unsubscribe 拆除 → 前端自認已連線、後端已停流)。
+  e.chain = e.chain
+    .then(() => SubscribeLogs(uuid))
     .then(() => {
-      e.conn.set({ state: 'connected' });
+      if (e.gen === myGen) e.conn.set({ state: 'connected' });
     })
     .catch((err: unknown) => {
+      if (e.gen !== myGen) return;
       const msg = errMsg(err);
       e.conn.set({ state: 'error', error: msg });
       ingest(e, { stream: MONITOR_STREAM, line: `(無法訂閱 log:${msg})` });
     });
 }
 
-async function teardown(e: Entry, uuid: string): Promise<void> {
+function teardown(e: Entry, uuid: string): void {
+  const myGen = e.gen;
   e.subscribed = false;
   if (e.unlisten) {
     e.unlisten();
     e.unlisten = null;
   }
   EventsOff(`logs:${uuid}`);
-  try {
-    if (e.subscribePromise) await e.subscribePromise; // 防孤兒:等訂閱落地再取消
-    await UnsubscribeLogs(uuid);
-  } catch {
-    /* 忽略卸載期錯誤 */
-  }
-  e.conn.set({ state: 'idle' });
+  // Unsubscribe 進操作鏈:必然排在本輪 Subscribe 之後執行;鏈上執行當下世代已前進
+  // (被 re-acquire 取代)即放棄拆除,讓後端訂閱無縫延續給新一輪。
+  e.chain = e.chain
+    .then(async () => {
+      if (e.gen !== myGen) return;
+      await UnsubscribeLogs(uuid);
+      e.conn.set({ state: 'idle' });
+    })
+    .catch(() => {
+      /* 忽略卸載期錯誤 */
+    });
 }
 
 /** 取用某 uuid 的日誌流:首個引用觸發訂閱;有待釋放計時器則取消。 */

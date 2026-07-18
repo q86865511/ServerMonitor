@@ -29,13 +29,16 @@
   let rows = $state<LogRow[]>([]);
   let conn = $state<LogConn>({ state: 'idle' });
   $effect(() => {
-    acquireLogs(uuid);
-    const u1 = logRows(uuid).subscribe((v) => (rows = v));
-    const u2 = logConnection(uuid).subscribe((v) => (conn = v));
+    // 捕捉當輪 uuid:cleanup 讀反應式 uuid 會拿到「已前進」的新值(同 OverviewTab),
+    // 用區域副本確保 releaseLogs 釋放的是本輪 acquireLogs 的同一實例,否則舊訂閱洩漏。
+    const id = uuid;
+    acquireLogs(id);
+    const u1 = logRows(id).subscribe((v) => (rows = v));
+    const u2 = logConnection(id).subscribe((v) => (conn = v));
     return () => {
       u1();
       u2();
-      releaseLogs(uuid);
+      releaseLogs(id);
     };
   });
 
