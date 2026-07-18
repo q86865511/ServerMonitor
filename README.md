@@ -70,7 +70,7 @@ go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/age
 
 ## 範本撰寫指南
 
-新增「沿用既有 adapter」的遊戲 = 加一份 `templates/<id>.toml`,**不改核心**。範本放內建目錄(執行檔旁 `templates/`)或使用者目錄(`%LOCALAPPDATA%\ServerMonitor\templates\`),啟動時載入;缺欄位/版本/ID 重複/adapter 不存在會拒載並記 `TEMPLATE_LOAD_FAILED` 事件。schema 由 `internal/protocol/template.go` 定義,最小可跑範例見 `templates/minecraft.toml`、`templates/palworld.toml`。
+新增「沿用既有 adapter」的遊戲 = 加一份 `templates/<id>.toml`,**不改核心**。內建範本自 2026-07-18 起以 go:embed 打進執行檔(啟動時抽出到資料目錄 `templates-builtin\`,單一 exe 自足);自訂範本放使用者目錄(`%LOCALAPPDATA%\ServerMonitor\templates\`),啟動時載入;缺欄位/版本/ID 重複/adapter 不存在會拒載並記 `TEMPLATE_LOAD_FAILED` 事件。schema 由 `internal/protocol/template.go` 定義,最小可跑範例見 `templates/minecraft.toml`、`templates/palworld.toml`。
 
 schema 欄位速查(對映 `GameTemplate`):
 
