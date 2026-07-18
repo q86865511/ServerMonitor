@@ -24,6 +24,11 @@ type App struct {
 	ctx context.Context
 	rt  *app.Runtime
 
+	// tray 系統匣圖示、singleInst 單一實例喚醒通道(皆為 Windows 專屬,非 Windows 為 no-op 存根)。
+	// singleInst 於 main 建立並注入,tray 於 OnStartup 建立。
+	tray       *trayController
+	singleInst *singleInstance
+
 	subMu     sync.Mutex
 	logSubs   map[string]core.SubID
 	statsSubs map[string]core.SubID
@@ -37,33 +42,58 @@ func NewApp() *App {
 	}
 }
 
-// OnStartup 在 Wails 啟動時組裝後端。AppLock 衝突(R13)→顯示錯誤 dialog 後退出;
+// OnStartup 在 Wails 啟動時組裝後端。AppLock 衝突(R13)→Windows 上喚醒既有實例視窗後靜默
+// 退出(單一實例喚醒體驗),喚醒不可用(非 Windows/事件失效)則維持原錯誤 dialog;
 // 其餘致命錯誤同樣以 dialog 呈現後退出。Docker 不可用不致命(節點離線,GUI 照常)。
 func (a *App) OnStartup(ctx context.Context) {
 	a.ctx = ctx
 	rt, err := app.Bootstrap(app.Options{})
 	if err != nil {
-		msg := err.Error()
-		if errors.Is(err, app.ErrAppLocked) {
-			msg = "另一個 ServerMonitor 實例正在執行中,本程式將關閉。"
+		// AppLock 衝突(R13):本實例為後啟者。喚醒成功才靜默退出——此為防禦性後備,正常
+		// 時序下第二實例已於 main 的 newSingleInstance 提早偵測退出(見 singleinstance_windows.go);
+		// 喚醒失敗(非 Windows 為 no-op、或事件失效)則落到下方錯誤對話框,不讓使用者毫無提示。
+		if errors.Is(err, app.ErrAppLocked) && a.singleInst.wake() {
+			wailsruntime.Quit(ctx)
+			return
 		}
+		// 其餘致命錯誤:以對話框呈現後退出。
 		_, _ = wailsruntime.MessageDialog(ctx, wailsruntime.MessageDialogOptions{
 			Type:    wailsruntime.ErrorDialog,
 			Title:   "ServerMonitor 無法啟動",
-			Message: msg,
+			Message: err.Error(),
 		})
 		wailsruntime.Quit(ctx)
 		return
 	}
 	a.rt = rt
 	a.rt.Start()
+
+	// 系統匣圖示與單一實例喚醒監聽(僅 Windows 有實作,其他平台為 no-op 存根)。
+	a.tray = newTray()
+	a.tray.start(ctx, a.showWindow, a.quitApp)
+	a.singleInst.watch(a.showWindow)
 }
 
-// OnShutdown 在 Wails 關閉時優雅收束後端(不停任何遊戲容器)。
+// OnShutdown 在 Wails 關閉時優雅收束後端(不停任何遊戲容器),並移除系統匣圖示、釋放單一實例句柄。
 func (a *App) OnShutdown(_ context.Context) {
+	if a.tray != nil {
+		a.tray.stop()
+	}
+	a.singleInst.close()
 	if a.rt != nil {
 		a.rt.Shutdown()
 	}
+}
+
+// showWindow 顯示並還原主視窗(縮匣後由系統匣「開啟主視窗」/左鍵單擊,或第二實例喚醒觸發)。
+func (a *App) showWindow() {
+	wailsruntime.WindowShow(a.ctx)
+	wailsruntime.WindowUnminimise(a.ctx)
+}
+
+// quitApp 結束整個應用(系統匣「結束」)。經 Wails 觸發既有 OnShutdown 收束後端與系統匣。
+func (a *App) quitApp() {
+	wailsruntime.Quit(a.ctx)
 }
 
 // bgCtx 回傳狀態變更操作用的 context(不隨個別前端呼叫取消;後端關閉時另有 root context 控制)。

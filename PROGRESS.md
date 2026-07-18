@@ -6,6 +6,7 @@
 
 ## 已完成
 
+- [2026-07-18] 🖥️ 七項改進階段 2(/pipeline 波次 2)桌面封裝:**需求 3** app icon 換新(appicon.png 覆蓋+icon.ico 由 wails 重生,exe/視窗/系統匣同枚);**需求 5** 關窗縮系統匣(HideWindowOnClose+energye/systray v1.0.3,選單開窗/結束、左鍵單擊開窗)+第二實例具名事件(Local\ServerMonitor.SingleInstance.Wake)喚醒既有視窗後靜默退出(AppLock 仍為權威鎖);**需求 4** NSIS 安裝包(winget 裝 NSIS、`wails build -nsis` 產出 servermonitor-amd64-installer.exe,靜默裝測:exe/捷徑/登錄檔/解除安裝全正確)。雙審 7 條(3 中 4 低),使用者裁決全修:close 句柄競態改停止旗標+join、tray goroutine 補 LockOSThread(已驗 systray v1.0.3 init 只鎖主 goroutine)、非 Windows AppLock 衝突恢復錯誤對話框(wake 回傳 bool)、tray 結束改非同步派發;第 4/6 條依裁決記錄為已知限制。驗證:go build/vet/test 綠、GOOS=linux 綠、wails build -nsis 成功。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w2.md。
 - [2026-07-18] 🔧 七項改進階段 1(/pipeline 波次 1):**需求 1** Docker 即時偵測——NewDockerBackend 建構期 3s Ping(失敗→DockerAvailable=false、精靈 docker 置灰)、mapDockerErr/ensureImage 連線類錯誤友善化、精靈補「重試 Docker」按鈕;**需求 2** CF 金鑰條件必填——SecretSpec.Required(RCON/ADMIN_PASSWORD 標必填)、前端 missingSecrets 只計必填+CF 來源時 CF_API_KEY 才必填、後端 requiredSecretKeys 聯集 required 旗標(雙真源合流);**需求 6** 內建範本 go:embed(main.go all:templates→DefaultBuiltinFS→啟動抽出 dataRoot/templates-builtin/,暫存目錄原子替換、失敗沿用舊副本,LoadDir/Stat 錯誤不再靜默)。雙審(reviewer+Codex MCP)6 條裁決全數成立、使用者核可全修(抽出原子化/空值 secrets 不入庫不注入/mapDockerErr 全路徑友善化/必填聯集/Stat log/行尾噪音自消);驗證:go build/vet/test 全綠、svelte-check 171 檔 0 錯、wails build OK。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w1.md。
 - [2026-07-18] 🚢 v0.1.0 首次發佈:PR #3(gui-redesign)併入 master 後自主線建置,GitHub Release 附 ServerMonitor-v0.1.0-windows-amd64.zip(exe+templates/ 隨附佈局,銷掉打包待辦);內容=game-server-manager+native-backend+gui-redesign 三功能收官。
 - [2026-07-18] 🏁 gui-redesign 雙審修正輪+收官:Opus 總審(1高/1中/3低)+Codex 二審(2中/3低,額度重置後補跑)+波6一審(5低)+T13 偏離,合計 15 條裁決全數成立、使用者核可全修——高:effect cleanup 反應式 uuid 訂閱洩漏(捕捉區域副本);中:recorder Stop 等 goroutine 收束(done channel)、前端 Subscribe/Unsubscribe 改操作鏈序列化+世代守衛(metrics+logs,杜絕 RPC 時序反轉)、回填合併不覆蓋 live 點;低:死匯出/死 import/Modal overlay token/精靈範本 error 態+重試/Insert-Prune 失敗 log/Dashboard 快照下傳免雙重輪詢/面板雙重 load/fmtPercent/三全域頁 R10 標籤(templates 惰性快取)。聚焦複審 15/15 關閉、-race 綠;tasks.md 15/15 回寫;README/CLAUDE 前端慣例更新。過程教訓:裁決停點誤把自己訊息當授權先修了 3 檔(修法本身經雙審驗證正確,經使用者追認保留),已記入 judgment-rubrics 教訓。
@@ -45,7 +46,9 @@
 
 ## 已知問題
 
-(無)
+- (低)NSIS 靜默解裝曾一次殘留主程式 exe(捷徑/登錄檔/uninstall.exe 均正確清除,殘留檔非鎖檔可手刪);成因未確證(疑防毒暫時鎖新寫入 exe),重測因安裝程式啟動權限被拒未完成——待人工再測一輪,穩定復現則將 build/windows/installer/ 入版控客製 project.nsi(顯式 Delete+重試)。
+- (低)單一實例喚醒的邊角:第一實例卡在 Bootstrap 時,第二實例送出喚醒訊號後靜默退出、無人接收(裁決:記錄不修,根治需 main 提早解析 dataRoot 搶 AppLock)。
+- (低)systray 啟動失敗時關窗即隱藏、無匣圖示可喚回(可再啟一次 exe 觸發喚醒救回;裁決:延後,根治需改 OnBeforeClose 動態判斷)。
 
 ## 重要決策紀錄
 
