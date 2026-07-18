@@ -29,11 +29,12 @@ Go(核心/代理)+ Wails v2(桌面)+ Svelte-TS 前端 + Docker(執行後端,官�
   - native Minecraft 全流程 E2E(真下載 Adoptium JRE + Mojang vanilla server.jar 約 100-200MB,建立→啟動→RCON 就緒→備份→還原→移除;heavy,`-short` 跳過):`go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m`
   - native Palworld SteamCMD E2E(app_update 2394010 約 6-8GB,預設 skip;顯式啟用):`GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m`
   - docker↔native 備份互轉整合測(需 Docker daemon,雙 tag;daemon 不可用自動 skip):`go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/`
-- 開發(GUI):`wails dev`｜建置:`wails build`
+- 開發(GUI):`wails dev`｜建置:`wails build`｜安裝包:`wails build -nsis`(需 makensis,於 `C:\Program Files (x86)\NSIS`)
+- 節點代理(遠端節點用,無 GUI):`go build ./cmd/agent`;Linux 交叉編譯 `GOOS=linux GOARCH=amd64 go build -o servermonitor-agent ./cmd/agent`
 
 ## 依賴版本(已鎖定,勿升級)
 
-Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 會壞 Windows 編譯)｜gorilla/websocket v1.5.3｜modernc/sqlite v1.34.5｜go-keyring v0.2.8｜go-toml/v2。
+Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 會壞 Windows 編譯)｜gorilla/websocket v1.5.3｜modernc/sqlite v1.34.5｜go-keyring v0.2.8｜go-toml/v2｜energye/systray v1.0.3(系統匣;Windows 專屬路徑)。
 
 ## 架構約定
 
@@ -42,6 +43,8 @@ Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 
 - 核心↔代理經 `NodeClient`(HTTP),即使單機亦然(預留多節點)。
 - 敏感值(RCON 密碼、webhook URL)存 OS 金鑰庫(go-keyring),不明文落檔。
 - 新增遊戲=加範本檔;新增執行後端=實作 `RuntimeBackend` 介面。
+- 內建範本以 `//go:embed all:templates`(main.go)打進執行檔,啟動抽出到 `<dataRoot>\templates-builtin\`;使用者自訂範本放 `<dataRoot>\templates\`。
+- 多節點:遠端節點跑 `cmd/agent`(TLS 自簽+SHA-256 指紋 pinning(TOFU)或自備憑證);節點 token 一律入 OS 金鑰庫(`NodeTokenRef`),config.json 只存非敏感連線設定且必經 `SaveAppConfig` 原子寫。
 
 ## 前端慣例(gui-redesign 之後)
 

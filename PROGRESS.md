@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-**🔧 七項改進 pipeline 進行中(分支 claude/server-gui-improvements-063ebd,worktree session-c0092e):階段 1(Docker 即時偵測/CF 金鑰條件必填/範本 embed)實作+雙審 6 條全修+驗證全綠,已 commit;待使用者下令進入階段 2(icon/系統匣/NSIS)→階段 3(遠端節點+TLS)→階段 4(整體回歸)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
+**🏁 七項改進 pipeline 四階段全數完成(分支 claude/server-gui-improvements-063ebd):①Docker 即時偵測+CF 金鑰條件必填+範本 go:embed ②新 icon+關窗縮系統匣+單實例喚醒+NSIS 安裝包 ③遠端節點基礎(cmd/agent+TLS 指紋 pinning+節點管理 GUI,Ubuntu 雲端可部署)④整體回歸+文件收尾。三輪雙審(6+7+11 條)全數裁決處理;分支待 merge。留使用者手動項:GUI 縮匣/喚醒/安裝包真機一輪、遠端節點實機部署驗證;docker E2E 備份後重啟 Crashed 為 master 既有回歸(見已知問題)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
 
 ## 已完成
 
+- [2026-07-18] ✅ 七項改進階段 4(/pipeline 波次 4)整體回歸+文件收尾:免 Docker 全套 `go test ./... -count=1` 全綠、`go vet`/`GOOS=linux build` 綠、svelte-check 172 檔 0 錯、`wails build -nsis` 產出最終 exe+安裝包。docker 標籤:core/agent/protocol 整合測試綠;**發現並修復 E2E 潛在缺陷**——docker 標籤 E2E 的 Create 未釘 Runtime,native-backend 併入後 Windows 上悄悄跑成 native(Minecraft 撞 10 分鐘逾時、Palworld 誤走 SteamCMD),已在兩處 Create 加 `Runtime:"docker"`;釘住後 E2E 前段(建立/RCON 就緒/快照/日誌/備份)全過,「備份後重啟得 Crashed」經 master 對照實證為**既有回歸**(記入已知問題,另開任務追)。文件:README(多節點部署節、cmd/agent/NSIS 建置指令)、CLAUDE.md(指令/依賴/多節點約定)、PROGRESS 收官。
 - [2026-07-18] 🌐 七項改進階段 3(/pipeline 波次 3)遠端節點基礎(需求 7):**cmd/agent** 獨立執行檔(agent.toml 零設定可跑、持久 token(64-hex 驗證+原子寫)、自簽 ECDSA P-256 憑證+SHA-256 指紋、TLS auto/custom/off、Slowloris 逾時防護、優雅關閉含 WS 串流主動收束;Linux 交叉編譯過,Ubuntu 雲端可部署);**core 多節點**:AppConfig.Nodes 持久化(原子寫)、token 只入 OS 金鑰庫、NodeClient TLS 指紋 pinning(常數時間比對,HTTP/WS 同管道)、Probe/Add/Remove/ListNodes 綁定(TOFU 流程、RemoveNode 競態複查回滾、損壞節點孤兒可見可移除、開機註冊先標離線再非同步探測);**GUI**:節點頁管理區(新增/測試/指紋確認/移除)、精靈 Step1 節點下拉(離線禁選、is_local 判定不硬編)、遠端 Docker 能力如實顯「未知」。雙審(reviewer+Codex)11 條(1 高:agent 無逾時 DoS)使用者裁決全修,全數落碼;一審安全結論:pin 實作正確、token 無洩漏路徑。驗證:go build/vet/test 全綠(-count=1)、GOOS=linux 綠、svelte-check 172 檔 0 錯、真 agent 端到端(https+401+openssl 指紋比對)。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w3.md。
 - [2026-07-18] 🖥️ 七項改進階段 2(/pipeline 波次 2)桌面封裝:**需求 3** app icon 換新(appicon.png 覆蓋+icon.ico 由 wails 重生,exe/視窗/系統匣同枚);**需求 5** 關窗縮系統匣(HideWindowOnClose+energye/systray v1.0.3,選單開窗/結束、左鍵單擊開窗)+第二實例具名事件(Local\ServerMonitor.SingleInstance.Wake)喚醒既有視窗後靜默退出(AppLock 仍為權威鎖);**需求 4** NSIS 安裝包(winget 裝 NSIS、`wails build -nsis` 產出 servermonitor-amd64-installer.exe,靜默裝測:exe/捷徑/登錄檔/解除安裝全正確)。雙審 7 條(3 中 4 低),使用者裁決全修:close 句柄競態改停止旗標+join、tray goroutine 補 LockOSThread(已驗 systray v1.0.3 init 只鎖主 goroutine)、非 Windows AppLock 衝突恢復錯誤對話框(wake 回傳 bool)、tray 結束改非同步派發;第 4/6 條依裁決記錄為已知限制。驗證:go build/vet/test 綠、GOOS=linux 綠、wails build -nsis 成功。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w2.md。
 - [2026-07-18] 🔧 七項改進階段 1(/pipeline 波次 1):**需求 1** Docker 即時偵測——NewDockerBackend 建構期 3s Ping(失敗→DockerAvailable=false、精靈 docker 置灰)、mapDockerErr/ensureImage 連線類錯誤友善化、精靈補「重試 Docker」按鈕;**需求 2** CF 金鑰條件必填——SecretSpec.Required(RCON/ADMIN_PASSWORD 標必填)、前端 missingSecrets 只計必填+CF 來源時 CF_API_KEY 才必填、後端 requiredSecretKeys 聯集 required 旗標(雙真源合流);**需求 6** 內建範本 go:embed(main.go all:templates→DefaultBuiltinFS→啟動抽出 dataRoot/templates-builtin/,暫存目錄原子替換、失敗沿用舊副本,LoadDir/Stat 錯誤不再靜默)。雙審(reviewer+Codex MCP)6 條裁決全數成立、使用者核可全修(抽出原子化/空值 secrets 不入庫不注入/mapDockerErr 全路徑友善化/必填聯集/Stat log/行尾噪音自消);驗證:go build/vet/test 全綠、svelte-check 171 檔 0 錯、wails build OK。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w1.md。
@@ -32,7 +33,7 @@
 
 ## 進行中
 
-- 七項改進 pipeline(每階段暫停等使用者指令):✅階段 1 執行後端與範本可靠性;✅階段 2 桌面封裝;✅階段 3 遠端節點基礎;▶階段 4 整體回歸(docker tag 測試、E2E)+文件收尾(README 多節點/agent 部署、CLAUDE cmd/agent 指令)。
+- 七項改進 pipeline:✅✅✅✅ 四階段全完成,分支待使用者裁決 merge(PR)。
 - 多節點後續擴充(階段 3 界定範圍外,已在程式註解標明):遠端節點 /health 回報 Docker 能力(現 GUI 顯「未知」)、遠端節點背景編排(對帳/監控/事件迴圈,現只本機)、Create/Remove 共用序列化鎖根治競態。
 
 ## 待辦
@@ -48,6 +49,7 @@
 
 ## 已知問題
 
+- (中,**master 既有**,非七項改進分支造成)docker E2E `TestE2E_MinecraftFullLifecycle` 於「備份後重啟」步失敗:狀態回 Crashed 而非 Running。實證:2026-07-18 於 master(臨時加 Runtime:"docker" 釘住後)與本分支重跑,同步同狀失敗(log:scratchpad e2e-mc-{full,master}.log);上次 docker E2E 全綠為 T16(native-backend/gui-redesign 併入前),疑該兩功能之一在備份停機→重啟鏈引入回歸。前段(建立/就緒/RCON/快照/日誌/備份)全過。待另開任務診斷(重啟後容器實際退出原因/RestartPolicy 判定)。
 - (低)NSIS 靜默解裝曾一次殘留主程式 exe(捷徑/登錄檔/uninstall.exe 均正確清除,殘留檔非鎖檔可手刪);成因未確證(疑防毒暫時鎖新寫入 exe),重測因安裝程式啟動權限被拒未完成——待人工再測一輪,穩定復現則將 build/windows/installer/ 入版控客製 project.nsi(顯式 Delete+重試)。
 - (低)單一實例喚醒的邊角:第一實例卡在 Bootstrap 時,第二實例送出喚醒訊號後靜默退出、無人接收(裁決:記錄不修,根治需 main 提早解析 dataRoot 搶 AppLock)。
 - (低)systray 啟動失敗時關窗即隱藏、無匣圖示可喚回(可再啟一次 exe 觸發喚醒救回;裁決:延後,根治需改 OnBeforeClose 動態判斷)。
