@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-**🏁 gui-redesign 實作 T1–T15 全數完成(/pipeline,分支 claude/gui-redesign,9 個 commit)**;全套件驗證綠(go test 6 套件非快取全 ok、wails build 成功、svelte-check 170 檔 0 錯 0 警告、手寫碼零 any)。**待雙審裁決**(reviewer 總審進行中;Codex 第二審因額度未重置(7/23)暫緩)。已累積待裁決:波6一審 5 條(全低)+ T13/T14 偏離註記。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態呈現,截圖管線在此環境 timeout 無法目視像素版面)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。
+**🏁 gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
 
 ## 已完成
 
+- [2026-07-18] 🏁 gui-redesign 雙審修正輪+收官:Opus 總審(1高/1中/3低)+Codex 二審(2中/3低,額度重置後補跑)+波6一審(5低)+T13 偏離,合計 15 條裁決全數成立、使用者核可全修——高:effect cleanup 反應式 uuid 訂閱洩漏(捕捉區域副本);中:recorder Stop 等 goroutine 收束(done channel)、前端 Subscribe/Unsubscribe 改操作鏈序列化+世代守衛(metrics+logs,杜絕 RPC 時序反轉)、回填合併不覆蓋 live 點;低:死匯出/死 import/Modal overlay token/精靈範本 error 態+重試/Insert-Prune 失敗 log/Dashboard 快照下傳免雙重輪詢/面板雙重 load/fmtPercent/三全域頁 R10 標籤(templates 惰性快取)。聚焦複審 15/15 關閉、-race 綠;tasks.md 15/15 回寫;README/CLAUDE 前端慣例更新。過程教訓:裁決停點誤把自己訊息當授權先修了 3 檔(修法本身經雙審驗證正確,經使用者追認保留),已記入 judgment-rubrics 教訓。
 - [2026-07-18] 🚀 gui-redesign 實作 T1–T15(/pipeline,分支 claude/gui-redesign):依 4 張參考圖重構整套前端。**後端五擴充**:T1 顯示名稱+連接埠(schema v3 遷移 instances.name/port_reservations.name)、T2 指標時序(metrics 表 nullable 記憶體欄+MetricsRecorder 15s 聚合/末樣本 NULL/玩家數自快照/36h Prune+2 綁定)、T3 uptime(StatusFetcher 注入)、T4 範本 icon(filepath.Rel+EvalSymlinks 路徑拘束+AssetServer Handler+程式生成識別圖)、T5 wailsjs 重生成。**前端**:T6 tokens+20 UI 元件(runes)、T7 LogViewer(content-visibility,T7 真機實測 92s longtask=0)/TrendChart(null 畫缺口)/DataTable、T8 stores(instances 輪詢上移/metrics ring/logs 引用計數+30s 延遲釋放)、T9 hash 路由+Shell(可收合側欄/頂欄搜尋)、T10 總覽+ServerCard(範本驅動)、T11 詳細頁五分頁+主控台(共用 Backups/Schedules/AlertsPanel)、T12 四步精靈(runtime/資源/CF 三態/provision 進度/blocked-mods 等價吸收)、T13 全域七頁遷移+清理 16 舊元件、T14 四態巡檢+防重複、T15 驗證收尾。每波經主迴圈非快取抽驗。
 - [2026-07-17] 📄 gui-redesign 規格二審+修訂(rev.2):Codex 第二審提 18 條(4 高/14 中),逐條驗證(agent stats 無玩家數/port_reservations 無 name 欄/native 降級零值/sibling-prefix 逃逸等皆屬實)後全數採納修訂;Codex 額度中途用罄,聚焦複審改由獨立 reviewer(opus)執行——18 條全關閉、三件套一致、判定可進實作;複審附帶 3 條低階瑕疵亦已修(覆蓋表 R12 補 T11、測試策略對齊矩陣語意、memory NULL 判定釘死為末樣本)。T4 升 HARD(共 7 HARD)。
 - [2026-07-17] 📄 gui-redesign 規格三件套核可落檔(`specs/gui-redesign/`):依 4 張 Codex 參考圖重構完整前端 GUI 的 spec(R1–R16:設計系統/Shell/hash 路由/總覽儀表板/詳細頁/主控台/四步精靈/全域頁+五項後端擴充);15 任務(5 HARD)。已對齊 c0092e(native-backend)落地後的 bindings 基準,c0092e 前端新功能(精靈 runtime/資源/CF/供應進度、CurseForge 設定卡)納入功能等價吸收要求。
@@ -27,7 +28,7 @@
 
 ## 進行中
 
-- gui-redesign(/pipeline 分支 claude/gui-redesign):實作 T1–T15 全完成,**現於 pipeline 第 3-4 步:reviewer 對整個分支 diff 做總審 → 彙整裁決清單交使用者**(停點)。Codex 第二審因額度 7/23 才重置,依 pipeline 規則本輪註明「第二審未執行」。裁決後才做第 5 步修正+回寫 tasks.md 勾選+文件關卡(README GUI 章節/CLAUDE 前端慣例)+push/PR。
+(無——gui-redesign 收官,分支待 push/PR;等使用者 GUI 真機一輪與 native-backend 留存驗證項)
 
 ## 待辦
 

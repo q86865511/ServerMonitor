@@ -42,3 +42,12 @@ Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 
 - 核心↔代理經 `NodeClient`(HTTP),即使單機亦然(預留多節點)。
 - 敏感值(RCON 密碼、webhook URL)存 OS 金鑰庫(go-keyring),不明文落檔。
 - 新增遊戲=加範本檔;新增執行後端=實作 `RuntimeBackend` 介面。
+
+## 前端慣例(gui-redesign 之後)
+
+- 目錄:`frontend/src/lib/` 下分 `ui/`(共用元件)、`shell/`(側欄/頂欄)、`pages/`(路由頁,`pages/server/` 詳細頁分頁、`pages/wizard/` 建立精靈)、`stores/`(狀態層);`router.ts` 自製 hash 路由。
+- 元件一律 Svelte 5 runes(`$props`/`$state`/`$derived`,callback props);跨頁狀態用 svelte/store。
+- Wails 事件訂閱**集中在 stores/**(引用計數+操作鏈序列化),元件不得自行 EventsOn(唯一例外:精靈的 `provision` 事件隨精靈生命週期)。`$effect` 的 cleanup 必以區域副本捕捉 uuid 類反應式參數。
+- 色彩只用 `style.css` `:root` tokens,元件內不硬編碼色值;手寫碼禁 `any`(wailsjs 生成碼除外);UI 文案繁中。
+- 後端資料為 nil/不可採集→顯「不適用」/「—」,不捏造數值;趨勢圖 NULL 畫缺口不補 0。
+- Go 綁定簽章變動後必跑 `wails build` 重生成 `frontend/wailsjs/`(勿手改)。
