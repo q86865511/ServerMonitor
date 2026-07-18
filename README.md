@@ -8,7 +8,8 @@
 
 ## 快速開始(使用者)
 
-1. 執行 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。**Windows 預設 native 執行後端(免 Docker)**;若要用 Docker 後端,先開啟 Docker Desktop。
+1. 安裝:執行 NSIS 安裝包 `servermonitor-amd64-installer.exe`(`wails build -nsis` 產出;含開始選單捷徑與解除安裝),或直接跑可攜版 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。**Windows 預設 native 執行後端(免 Docker)**;若要用 Docker 後端,先開啟 Docker Desktop。
+   - 關閉視窗會縮到系統匣(右下通知區)持續監控;左鍵匣圖示或再次啟動 exe 可喚回視窗,tray 選單「結束」才會完整退出。
 2. 「建立伺服器」→ 選 Minecraft → 選變體 → 勾 EULA → 設 RCON 密碼 →(可選)選執行後端 → 建立(native 首次下載 JRE + 伺服器檔案、Docker 首次拉映像,均需數分鐘)。
 3. 卡片「啟動」→ 開「主控台」看 log、輸入 `list` 測指令 → 設定頁玩備份/排程/告警。
 4. 遊戲連線:`localhost:25565`。應用資料在 `%LOCALAPPDATA%\ServerMonitor\`;**關閉本工具不會停伺服器**(Docker 由容器維持、native 由收養機制接管,重開自動接管)。詳見下方「Native 執行模式」。
