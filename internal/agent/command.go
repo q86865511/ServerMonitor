@@ -127,13 +127,23 @@ func (a RconAdapter) Send(ctx context.Context, target protocol.CommandTarget, cm
 	if err := writeRconPacket(conn, rconExecID, rconTypeExecCommand, cmd.Raw); err != nil {
 		return protocol.CommandResult{}, fmt.Errorf("rcon 送出指令失敗: %w", err)
 	}
-	// 多封包聚合(哨兵法):緊接送一個空 body 的 RESPONSE_VALUE 請求(id=rconSentinelID≠
-	// rconExecID)。Minecraft/Source 慣例:伺服器對此 type-0 請求回 echo,標誌前面的 exec 多封包
-	// 回應已全數送完。單一大回應會被伺服器拆成多個 ≤4096 的封包(同 rconExecID),於此串接。
-	if err := writeRconPacket(conn, rconSentinelID, rconTypeResponse, ""); err != nil {
-		return protocol.CommandResult{}, fmt.Errorf("rcon 送出哨兵封包失敗: %w", err)
+	// 多封包聚合(循序哨兵法):先讀 exec 的第一個回應封包,**之後**才送空 body 的 EXECCOMMAND
+	// 哨兵(id=rconSentinelID≠rconExecID),再聚合讀取直到收到帶哨兵 id 的回應——其到達標誌
+	// exec 的多封包回應已全數送完(單一大回應會被伺服器拆成多個 ≤4096 的封包,同 rconExecID)。
+	// ⚠ 不可管線化(exec+哨兵連寫後才開讀):vanilla Minecraft 的 RCON 讀到 socket 緩衝裡的
+	// 第二個請求封包會直接斷線(實測 1.21.1:auth 成功後任何指令都 EOF;循序送則正常,對空
+	// 指令哨兵回「Unknown or incomplete command」)。Paper 容忍管線化,故舊寫法只在 vanilla 炸,
+	// 造成 vanilla 的就緒探針/指令/stop hook 全數失敗。哨兵同樣必須用 type 2(空指令),
+	// 不可用 Source 慣例的 type-0 RESPONSE_VALUE 請求。
+	first, err := readExecResponse(conn)
+	if err != nil {
+		return protocol.CommandResult{}, err
 	}
 	var out strings.Builder
+	out.WriteString(first)
+	if err := writeRconPacket(conn, rconSentinelID, rconTypeExecCommand, ""); err != nil {
+		return protocol.CommandResult{}, fmt.Errorf("rcon 送出哨兵封包失敗: %w", err)
+	}
 	for {
 		id, typ, body, err := readRconPacket(conn)
 		if err != nil {
@@ -141,7 +151,7 @@ func (a RconAdapter) Send(ctx context.Context, target protocol.CommandTarget, cm
 		}
 		switch {
 		case id == rconSentinelID:
-			// 哨兵回顯 → exec 回應已完結。
+			// 哨兵回應 → exec 回應已完結。
 			return protocol.CommandResult{Success: true, Output: out.String()}, nil
 		case id == rconExecID && typ == rconTypeResponse:
 			if out.Len()+len(body) > rconMaxAggregate {
@@ -150,6 +160,20 @@ func (a RconAdapter) Send(ctx context.Context, target protocol.CommandTarget, cm
 			out.WriteString(body)
 		default:
 			// 其他 id/type:忽略(防前一連線殘包;本實作每指令新連線,理論不會出現,防禦性處理)。
+		}
+	}
+}
+
+// readExecResponse 讀 exec 的第一個回應封包(哨兵送出前的循序步驟,見 Send 內註解)。
+// 忽略非 exec id 的封包(防禦性;每指令新連線理論不會出現)。
+func readExecResponse(conn net.Conn) (string, error) {
+	for {
+		id, typ, body, err := readRconPacket(conn)
+		if err != nil {
+			return "", fmt.Errorf("rcon 讀取回應失敗: %w", err)
+		}
+		if id == rconExecID && typ == rconTypeResponse {
+			return body, nil
 		}
 	}
 }
