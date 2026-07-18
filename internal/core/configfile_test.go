@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -51,7 +52,10 @@ func TestLoadAppConfig_Corrupt(t *testing.T) {
 	if !recovered {
 		t.Errorf("毀損應標記 recovered=true")
 	}
-	if cfg != DefaultAppConfig() {
+	def := DefaultAppConfig()
+	if cfg.DataRoot != def.DataRoot || cfg.Node != def.Node ||
+		cfg.EventRetentionMax != def.EventRetentionMax || cfg.CurseForgeAPIKey != def.CurseForgeAPIKey ||
+		len(cfg.Nodes) != 0 {
 		t.Errorf("毀損應回預設值, got %+v", cfg)
 	}
 }
@@ -174,10 +178,16 @@ func TestSetCurseForgeOverrideKey_NilSecrets(t *testing.T) {
 	}
 }
 
-// TestSaveLoadAppConfig_RoundTrip 驗證存/讀往返一致。
+// TestSaveLoadAppConfig_RoundTrip 驗證存/讀往返一致(含 R5 多節點 nodes 清單)。
 func TestSaveLoadAppConfig_RoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cfg.json")
-	want := AppConfig{DataRoot: "C:/gsm/data", Node: "local", EventRetentionMax: 5000}
+	want := AppConfig{
+		DataRoot: "C:/gsm/data", Node: "local", EventRetentionMax: 5000,
+		Nodes: []NodeConfig{
+			{Name: "vps1", BaseURL: "https://vps1.example.com:9444", TLSFingerprint: "AB:CD:EF"},
+			{Name: "lan", BaseURL: "http://192.168.1.10:9444", InsecureHTTP: true},
+		},
+	}
 	if err := SaveAppConfig(path, want); err != nil {
 		t.Fatalf("SaveAppConfig: %v", err)
 	}
@@ -185,7 +195,19 @@ func TestSaveLoadAppConfig_RoundTrip(t *testing.T) {
 	if err != nil || recovered {
 		t.Fatalf("LoadAppConfig: err=%v recovered=%v", err, recovered)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("往返不符: got=%+v want=%+v", got, want)
+	}
+}
+
+// TestNodeTokenRef_Namespaced 驗證節點 token 參照以節點名命名空間,且不同節點互異。
+func TestNodeTokenRef_Namespaced(t *testing.T) {
+	a := NodeTokenRef("vps1")
+	b := NodeTokenRef("vps2")
+	if a.Key == b.Key {
+		t.Fatalf("不同節點的 token 鍵不應相同: %s", a.Key)
+	}
+	if a.Key != "node-token/vps1" {
+		t.Errorf("命名空間格式非預期: %s", a.Key)
 	}
 }

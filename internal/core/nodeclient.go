@@ -43,6 +43,9 @@ type NodeClient struct {
 	baseURL string // 如 http://127.0.0.1:PORT(不含版本前綴)
 	token   string
 	hc      *http.Client
+	// wsDialer 為 WS 升級用的自訂 dialer(遠端節點帶 TLS 指紋 pin/連線逾時,見 NewRemoteNodeClient);
+	// nil 時 dialWS 退回 websocket.DefaultDialer(loopback in-process 節點沿用舊行為)。
+	wsDialer *websocket.Dialer
 }
 
 // 逾時分級:短操作(GET/建立/狀態/指令等)用 30s;停機鏈(hooks.stop 探測 + 寬限期)與備份/
@@ -262,7 +265,7 @@ func (c *NodeClient) doWithTimeout(ctx context.Context, method, path, idemKey st
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		// 傳輸層失敗(連線被拒/逾時/context 取消)→ 節點不可達。
-		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+		return fmt.Errorf("%w: %w", ErrNodeUnreachable, err)
 	}
 	defer resp.Body.Close()
 
@@ -298,7 +301,7 @@ func (c *NodeClient) doUpload(ctx context.Context, path string, r io.Reader) err
 
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+		return fmt.Errorf("%w: %w", ErrNodeUnreachable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
@@ -342,14 +345,21 @@ func (c *NodeClient) dialWS(ctx context.Context, path string) (*websocket.Conn, 
 
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+c.token)
-	h.Set("Origin", "http://127.0.0.1") // 通過代理的 loopback Origin 檢查
+	// 固定送 loopback Origin 以通過代理的 Origin 檢查。注意:此 Origin 檢查對「本機瀏覽器 CSRF」有效,
+	// 對遠端節點連線不構成安全邊界(任何客戶端都能自行送此 Origin)——遠端連線的實質認證是 bearer
+	// token(+TLS 指紋 pin),Origin 僅為相容既有 loopback 代理的檢查而設。
+	h.Set("Origin", "http://127.0.0.1")
 
-	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsEndpoint, h)
+	dialer := c.wsDialer
+	if dialer == nil {
+		dialer = websocket.DefaultDialer
+	}
+	conn, resp, err := dialer.DialContext(ctx, wsEndpoint, h)
 	if err != nil {
 		if resp != nil && resp.StatusCode >= 400 {
 			return nil, c.mapError(resp)
 		}
-		return nil, fmt.Errorf("%w: %v", ErrNodeUnreachable, err)
+		return nil, fmt.Errorf("%w: %w", ErrNodeUnreachable, err)
 	}
 	return conn, nil
 }

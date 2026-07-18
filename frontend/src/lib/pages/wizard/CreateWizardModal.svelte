@@ -11,6 +11,7 @@
     CreateInstance,
     DockerAvailable,
     CurseForgeEnabled,
+    RetryDocker,
   } from '../../../../wailsjs/go/main/App';
   import { EventsOn, EventsOff, BrowserOpenURL } from '../../../../wailsjs/runtime/runtime';
   import { call, errMsg } from '../../api';
@@ -45,6 +46,7 @@
 
   interface WizardForm {
     name: string;
+    node: string;
     templateId: string;
     variant: string;
     paramValues: Record<string, string>;
@@ -70,6 +72,7 @@
   let loading = $state(true);
   let dockerAvailable = $state(true);
   let cfEnabled = $state(false);
+  let dockerRetrying = $state(false);
 
   let step = $state(1);
   let submitting = $state(false);
@@ -78,6 +81,7 @@
 
   let form = $state<WizardForm>({
     name: '',
+    node: 'local',
     templateId: '',
     variant: '',
     paramValues: {},
@@ -97,7 +101,6 @@
   let blockedMods = $state<BlockedMod[]>([]);
   let unlistenProv: (() => void) | null = null;
 
-  const nodeLabel = $derived($nodeStatuses[0]?.node || 'local');
   const tmpl = $derived(templates.find((t) => t.id === form.templateId));
 
   const isCFSource = $derived(form.modpackType === 'curseforge' || form.modpackType === 'manual-cfzip');
@@ -117,8 +120,16 @@
           : '',
   );
 
+  // 所選節點是否為本機:以後端 is_local 旗標判定,不硬編節點名(使用者可能自訂本機節點名)。
+  const selectedNodeIsLocal = $derived(
+    $nodeStatuses.find((n) => n.node === form.node)?.is_local ?? form.node === 'local',
+  );
+
   // docker-only 範本 + Docker 不可用 → 無可用執行後端(阻擋前進)。
+  // dockerAvailable 僅反映本機偵測;選了遠端節點時遠端 Docker 能力未知(後端限制,見
+  // Step3Config 提示),不可用本機旗標阻擋——留給節點端實際供應時判斷。
   const noRuntimeAvailable = $derived.by(() => {
+    if (!selectedNodeIsLocal) return false;
     const rts = tmpl?.runtimes ?? [];
     if (rts.length === 0) return false;
     return rts.every((r) => r === 'docker') && !dockerAvailable;
@@ -131,8 +142,14 @@
       return p.type === 'bool' ? v !== 'true' : v.trim() === '';
     }),
   );
+  // 機密僅 required=true 才必填;CF_API_KEY 例外 —— 範本內含此 secret 且選了 CurseForge
+  // 來源(非 native)時,即使範本未標 required 也視為必填(選了 CF 來源就必填金鑰)。
   const missingSecrets = $derived(
-    (tmpl?.secrets ?? []).filter((s) => (form.secretValues[s.key] ?? '').trim() === ''),
+    (tmpl?.secrets ?? []).filter((s) => {
+      if ((form.secretValues[s.key] ?? '').trim() !== '') return false;
+      if (s.required) return true;
+      return needsCFKey && templateHasCFSecret && s.key === CF_KEY;
+    }),
   );
   const modpackIncomplete = $derived(form.modpackType !== '' && form.modpackRef.trim() === '');
   const cfKeyMissing = $derived(needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() === '');
@@ -195,6 +212,22 @@
       cfEnabled = false; // 查詢失敗保守視為未啟用
     }
   });
+
+  // 精靈內重試 Docker 偵測(R:Docker 未啟動時免關閉精靈重開 app)——沿用既有
+  // DockerAvailable() 查詢流程(與 onMount 同一支)刷新本地 dockerAvailable 狀態。
+  async function retryDocker(): Promise<void> {
+    if (dockerRetrying) return;
+    dockerRetrying = true;
+    try {
+      await call(() => RetryDocker());
+      pushToast('success', '已重試連線 Docker');
+      dockerAvailable = await call(() => DockerAvailable(), { silent: true });
+    } catch {
+      /* 錯誤 toast 已由 call() 呈現(RetryDocker 失敗時) */
+    } finally {
+      dockerRetrying = false;
+    }
+  }
 
   onDestroy(() => {
     // 精靈關閉(任何路徑,含成功 navigate 後卸載)一律解除 provision 訂閱。
@@ -295,7 +328,11 @@
       provDetail = p.detail ?? '';
     });
 
-    const secrets: Record<string, string> = { ...form.secretValues };
+    // 留空的選填機密不送出:後端以「鍵存在」判定已提供,空字串會被入庫並注入成空環境變數。
+    const secrets: Record<string, string> = {};
+    for (const [k, v] of Object.entries(form.secretValues)) {
+      if (v.trim() !== '') secrets[k] = v;
+    }
     if (needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() !== '') {
       secrets[CF_KEY] = form.cfApiKey.trim();
     }
@@ -305,7 +342,7 @@
       variant: form.variant,
       params: { ...form.paramValues },
       secrets,
-      node: '',
+      node: form.node,
       runtime: form.runtime,
       memory_mb: form.runtime === 'native' ? parseIntOr0(form.memoryMB) : 0,
       cpu_percent: form.runtime === 'native' ? parseIntOr0(form.cpuPercent) : 0,
@@ -359,7 +396,7 @@
 
       <section class="content">
         {#if step === 1}
-          <Step1Basic {form} {nodeLabel} />
+          <Step1Basic {form} nodeStatuses={$nodeStatuses} />
         {:else if step === 2}
           <Step2Template
             {templates}
@@ -377,12 +414,15 @@
             {form}
             {tmpl}
             {dockerAvailable}
+            {dockerRetrying}
+            onRetryDocker={retryDocker}
             {cfDisabled}
             {cfNativeUnavailable}
             {needsCFKey}
             {templateHasCFSecret}
             {modpackRefPlaceholder}
             {noRuntimeAvailable}
+            isRemoteNode={!selectedNodeIsLocal}
           />
           {#if missingItems.length > 0}
             <div class="missing">
@@ -396,7 +436,6 @@
           <Step4Confirm
             {form}
             {tmpl}
-            {nodeLabel}
             {submitting}
             {provStage}
             {provPercent}

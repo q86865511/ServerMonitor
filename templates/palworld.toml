@@ -74,6 +74,7 @@ default = false                        # spike:RCON 已 deprecated,維持關閉
 [[secrets]]
 key = "ADMIN_PASSWORD"
 label = "Admin 密碼(含 REST API 認證)"
+required = true                        # REST 主協定認證、stop/健康探針皆依賴,無它核心流程不可用
 
 # ── 指令協定:REST(主;spike 第 1.2 節具名動作) ──
 [[command_protocols]]

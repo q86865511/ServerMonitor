@@ -5,8 +5,12 @@
   import type { main } from '../../../../wailsjs/go/models';
   import TextField from '../../ui/TextField.svelte';
   import Select from '../../ui/Select.svelte';
+  import Button from '../../ui/Button.svelte';
+
+  const CF_KEY = 'CF_API_KEY';
 
   interface WizardForm {
+    node: string;
     paramValues: Record<string, string>;
     secretValues: Record<string, string>;
     runtime: string;
@@ -22,22 +26,30 @@
     form,
     tmpl,
     dockerAvailable,
+    dockerRetrying,
+    onRetryDocker,
     cfDisabled,
     cfNativeUnavailable,
     needsCFKey,
     templateHasCFSecret,
     modpackRefPlaceholder,
     noRuntimeAvailable,
+    isRemoteNode,
   }: {
     form: WizardForm;
     tmpl: main.TemplateDTO;
     dockerAvailable: boolean;
+    dockerRetrying: boolean;
+    onRetryDocker: () => void;
     cfDisabled: boolean;
     cfNativeUnavailable: boolean;
     needsCFKey: boolean;
     templateHasCFSecret: boolean;
     modpackRefPlaceholder: string;
     noRuntimeAvailable: boolean;
+    // 所選節點是否為遠端:由父層依後端 is_local 旗標判定並傳入(不在此硬編節點名)。
+    // 遠端節點的 Docker 能力後端尚未回報,不可用本機旗標置灰,只如實提示「以節點端實際為準」。
+    isRemoteNode: boolean;
   } = $props();
 
   const runtimes = $derived(tmpl.runtimes ?? []);
@@ -67,25 +79,37 @@
       <div class="err-box">
         此範本僅支援 Docker 執行,但未偵測到可用的 Docker。請啟動 Docker Desktop 後重試,
         或改用支援本機行程的範本。<strong>無可用執行後端</strong>,無法建立。
+        <div class="err-actions">
+          <Button size="sm" variant="secondary" loading={dockerRetrying} onclick={onRetryDocker}>
+            重試 Docker
+          </Button>
+        </div>
       </div>
     {:else if showRuntimePicker}
       <div class="field">
         <span class="lbl">執行後端<span class="req">*</span></span>
         <div class="runtime-opts">
           {#each runtimes as rt}
-            {@const disabled = rt === 'docker' && !dockerAvailable}
-            <label class="runtime-opt" class:disabled class:on={form.runtime === rt}>
-              <input
-                type="radio"
-                name="runtime"
-                value={rt}
-                checked={form.runtime === rt}
-                {disabled}
-                onchange={() => (form.runtime = rt)}
-              />
-              <span class="rt-name">{runtimeName(rt)}</span>
-              {#if disabled}<span class="rt-note">未偵測到 Docker</span>{/if}
-            </label>
+            {@const disabled = rt === 'docker' && !dockerAvailable && !isRemoteNode}
+            <div class="runtime-opt-row">
+              <label class="runtime-opt" class:disabled class:on={form.runtime === rt}>
+                <input
+                  type="radio"
+                  name="runtime"
+                  value={rt}
+                  checked={form.runtime === rt}
+                  {disabled}
+                  onchange={() => (form.runtime = rt)}
+                />
+                <span class="rt-name">{runtimeName(rt)}</span>
+                {#if disabled}<span class="rt-note">未偵測到 Docker</span>{/if}
+              </label>
+              {#if disabled}
+                <Button size="sm" variant="secondary" loading={dockerRetrying} onclick={onRetryDocker}>
+                  重試 Docker
+                </Button>
+              {/if}
+            </div>
           {/each}
         </div>
         <div class="hint">
@@ -95,6 +119,9 @@
               ? 'Docker 容器:需 Docker Desktop,提供檔案系統與網路隔離。'
               : '選擇此實例的執行方式。'}
         </div>
+        {#if isRemoteNode}
+          <div class="hint">遠端節點的 Docker 能力以節點端實際為準,本機偵測結果不適用。</div>
+        {/if}
       </div>
     {:else}
       <div class="field">
@@ -161,13 +188,15 @@
     <h4 class="sect">機密</h4>
     <div class="hint hint-block">以下欄位存入 OS 金鑰庫,不明文落檔。</div>
     {#each tmpl.secrets as s}
+      {@const cfRequiredHere = s.key === CF_KEY && needsCFKey}
       <div class="field">
         <TextField
           label={s.label || s.key}
-          required
+          required={s.required || cfRequiredHere}
           type="password"
           value={form.secretValues[s.key] ?? ''}
           onInput={(v) => (form.secretValues[s.key] = v)}
+          hint={s.key === CF_KEY ? '選擇 CurseForge 來源時必填,其餘可留空。' : undefined}
         />
       </div>
     {/each}
@@ -262,6 +291,11 @@
     flex-wrap: wrap;
     gap: var(--space-2);
   }
+  .runtime-opt-row {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
   .runtime-opt {
     display: flex;
     align-items: center;
@@ -316,5 +350,8 @@
     color: var(--fg-0);
     white-space: pre-wrap;
     font-size: var(--text-sm);
+  }
+  .err-actions {
+    margin-top: var(--space-2);
   }
 </style>

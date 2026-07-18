@@ -24,6 +24,11 @@ type App struct {
 	ctx context.Context
 	rt  *app.Runtime
 
+	// tray 系統匣圖示、singleInst 單一實例喚醒通道(皆為 Windows 專屬,非 Windows 為 no-op 存根)。
+	// singleInst 於 main 建立並注入,tray 於 OnStartup 建立。
+	tray       *trayController
+	singleInst *singleInstance
+
 	subMu     sync.Mutex
 	logSubs   map[string]core.SubID
 	statsSubs map[string]core.SubID
@@ -37,33 +42,58 @@ func NewApp() *App {
 	}
 }
 
-// OnStartup 在 Wails 啟動時組裝後端。AppLock 衝突(R13)→顯示錯誤 dialog 後退出;
+// OnStartup 在 Wails 啟動時組裝後端。AppLock 衝突(R13)→Windows 上喚醒既有實例視窗後靜默
+// 退出(單一實例喚醒體驗),喚醒不可用(非 Windows/事件失效)則維持原錯誤 dialog;
 // 其餘致命錯誤同樣以 dialog 呈現後退出。Docker 不可用不致命(節點離線,GUI 照常)。
 func (a *App) OnStartup(ctx context.Context) {
 	a.ctx = ctx
 	rt, err := app.Bootstrap(app.Options{})
 	if err != nil {
-		msg := err.Error()
-		if errors.Is(err, app.ErrAppLocked) {
-			msg = "另一個 ServerMonitor 實例正在執行中,本程式將關閉。"
+		// AppLock 衝突(R13):本實例為後啟者。喚醒成功才靜默退出——此為防禦性後備,正常
+		// 時序下第二實例已於 main 的 newSingleInstance 提早偵測退出(見 singleinstance_windows.go);
+		// 喚醒失敗(非 Windows 為 no-op、或事件失效)則落到下方錯誤對話框,不讓使用者毫無提示。
+		if errors.Is(err, app.ErrAppLocked) && a.singleInst.wake() {
+			wailsruntime.Quit(ctx)
+			return
 		}
+		// 其餘致命錯誤:以對話框呈現後退出。
 		_, _ = wailsruntime.MessageDialog(ctx, wailsruntime.MessageDialogOptions{
 			Type:    wailsruntime.ErrorDialog,
 			Title:   "ServerMonitor 無法啟動",
-			Message: msg,
+			Message: err.Error(),
 		})
 		wailsruntime.Quit(ctx)
 		return
 	}
 	a.rt = rt
 	a.rt.Start()
+
+	// 系統匣圖示與單一實例喚醒監聽(僅 Windows 有實作,其他平台為 no-op 存根)。
+	a.tray = newTray()
+	a.tray.start(ctx, a.showWindow, a.quitApp)
+	a.singleInst.watch(a.showWindow)
 }
 
-// OnShutdown 在 Wails 關閉時優雅收束後端(不停任何遊戲容器)。
+// OnShutdown 在 Wails 關閉時優雅收束後端(不停任何遊戲容器),並移除系統匣圖示、釋放單一實例句柄。
 func (a *App) OnShutdown(_ context.Context) {
+	if a.tray != nil {
+		a.tray.stop()
+	}
+	a.singleInst.close()
 	if a.rt != nil {
 		a.rt.Shutdown()
 	}
+}
+
+// showWindow 顯示並還原主視窗(縮匣後由系統匣「開啟主視窗」/左鍵單擊,或第二實例喚醒觸發)。
+func (a *App) showWindow() {
+	wailsruntime.WindowShow(a.ctx)
+	wailsruntime.WindowUnminimise(a.ctx)
+}
+
+// quitApp 結束整個應用(系統匣「結束」)。經 Wails 觸發既有 OnShutdown 收束後端與系統匣。
+func (a *App) quitApp() {
+	wailsruntime.Quit(a.ctx)
 }
 
 // bgCtx 回傳狀態變更操作用的 context(不隨個別前端呼叫取消;後端關閉時另有 root context 控制)。
@@ -107,8 +137,9 @@ type ParamDTO struct {
 
 // SecretDTO 是機密欄位視圖(只含宣告,不含值)。
 type SecretDTO struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Required bool   `json:"required"`
 }
 
 // PortDTO 是埠宣告視圖。
@@ -245,8 +276,11 @@ type NodeStatusDTO struct {
 	Online bool   `json:"online"`
 	// DockerAvailable 表示本節點 Docker 能力是否就緒(節點在線與 Docker 能力分離;native-backend
 	// R12/R13)。native 恆在使節點可在線但 Docker 仍不可用;供表單 docker 選項置灰判斷。
-	DockerAvailable bool   `json:"docker_available"`
-	LastErr         string `json:"last_err"`
+	// 僅本機節點反映實際值;遠端節點一律 false(能力未知,GUI 據 IsLocal 顯「未知」而非「無」)。
+	DockerAvailable bool `json:"docker_available"`
+	// IsLocal 為本機 in-process 節點;前端據此判定本機節點,不硬編 "local" 名稱。
+	IsLocal bool   `json:"is_local"`
+	LastErr string `json:"last_err"`
 }
 
 // ---- 範本 / 建立 ----
@@ -633,10 +667,17 @@ func (a *App) QueryEvents(req QueryEventsRequest) ([]EventDTO, error) {
 // (與在線分離;native-backend R12/R13):單機下對本機節點填 a.rt.DockerAvailable()。
 func (a *App) NodeStatus() []NodeStatusDTO {
 	sts := a.rt.NodeStatuses()
+	localNode := a.rt.Node()
 	dockerOK := a.rt.DockerAvailable()
 	out := make([]NodeStatusDTO, 0, len(sts))
 	for _, s := range sts {
-		out = append(out, NodeStatusDTO{Node: s.Node, Online: s.Online, DockerAvailable: dockerOK, LastErr: s.LastErr})
+		isLocal := s.Node == localNode || s.Node == "local"
+		// 遠端節點 Docker 能力未知(/health 未回報),不複製本機值以免誤導;GUI 據 IsLocal 顯「未知」。
+		docker := false
+		if isLocal {
+			docker = dockerOK
+		}
+		out = append(out, NodeStatusDTO{Node: s.Node, Online: s.Online, DockerAvailable: docker, IsLocal: isLocal, LastErr: s.LastErr})
 	}
 	return out
 }
@@ -666,6 +707,70 @@ func (a *App) CurseForgeKeyConfigured() bool { return a.rt.CurseForgeOverrideKey
 
 // RetryDocker 重試連線 Docker(節點離線時)(R5)。
 func (a *App) RetryDocker() error { return a.rt.RetryDocker() }
+
+// ---- 遠端節點管理(R5 多節點)----
+
+// ProbeNodeResultDTO 是撥測(尚未新增)一個遠端節點的結果視圖。撥測成功時 OK=true、Version 帶回;
+// https 撥測即使 token 未驗也會回 Fingerprint 供 GUI 顯示讓使用者確認(TOFU)。Error 非空=失敗(繁中)。
+type ProbeNodeResultDTO struct {
+	OK          bool   `json:"ok"`
+	Fingerprint string `json:"fingerprint"`
+	Version     string `json:"version"`
+	Error       string `json:"error"`
+}
+
+// NodeInfoDTO 是節點清單的前端視圖(R5 多節點)。DockerAvailable 對本機節點反映實際 Docker 能力;
+// 遠端節點目前一律 false(需額外查詢代理,留待後續)。Removable=false 表示不可移除("local")。
+type NodeInfoDTO struct {
+	Name            string `json:"name"`
+	BaseURL         string `json:"base_url"`
+	Online          bool   `json:"online"`
+	DockerAvailable bool   `json:"docker_available"`
+	Fingerprint     string `json:"fingerprint"`
+	InsecureHTTP    bool   `json:"insecure_http"`
+	LastErr         string `json:"last_err"`
+	Removable       bool   `json:"removable"`
+	IsLocal         bool   `json:"is_local"`
+}
+
+// AddNodeRequest 是新增遠端節點的輸入。Token 為 agent 啟動時印出的持久 bearer token;Fingerprint
+// 為使用者於撥測後確認的 TLS 指紋(空=對端為正式憑證、走系統 CA);InsecureHTTP 允許明文(僅內網)。
+type AddNodeRequest struct {
+	Name         string `json:"name"`
+	BaseURL      string `json:"base_url"`
+	Token        string `json:"token"`
+	Fingerprint  string `json:"fingerprint"`
+	InsecureHTTP bool   `json:"insecure_http"`
+}
+
+// ProbeNode 撥測一個遠端節點(TOFU:回傳 TLS 指紋供使用者確認)。不持久化;失敗以 result.Error
+// 繁中回報(不拋 error)。
+func (a *App) ProbeNode(baseURL, token string, insecureHTTP bool) ProbeNodeResultDTO {
+	res := a.rt.ProbeNode(baseURL, token, insecureHTTP)
+	return ProbeNodeResultDTO{OK: res.OK, Fingerprint: res.Fingerprint, Version: res.Version, Error: res.Err}
+}
+
+// AddNode 新增並持久化一個遠端節點(token 入金鑰庫、設定入 config、即時註冊上線)。失敗回繁中錯誤。
+func (a *App) AddNode(req AddNodeRequest) error {
+	return a.rt.AddNode(req.Name, req.BaseURL, req.Token, req.Fingerprint, req.InsecureHTTP)
+}
+
+// RemoveNode 移除一個遠端節點(反註冊、清 config 與金鑰庫);掛有實例時拒絕。"local" 不可移除。
+func (a *App) RemoveNode(name string) error { return a.rt.RemoveNode(name) }
+
+// ListNodes 回傳所有節點的摘要(name/baseURL/online/dockerAvailable/fingerprint 等;R5 多節點)。
+func (a *App) ListNodes() []NodeInfoDTO {
+	infos := a.rt.ListNodes()
+	out := make([]NodeInfoDTO, 0, len(infos))
+	for _, n := range infos {
+		out = append(out, NodeInfoDTO{
+			Name: n.Name, BaseURL: n.BaseURL, Online: n.Online, DockerAvailable: n.DockerAvailable,
+			Fingerprint: n.Fingerprint, InsecureHTTP: n.InsecureHTTP, LastErr: n.LastErr,
+			Removable: n.Removable, IsLocal: n.IsLocal,
+		})
+	}
+	return out
+}
 
 // ---- DTO 轉換 ----
 
@@ -719,7 +824,7 @@ func toTemplateDTO(t *protocol.GameTemplate) TemplateDTO {
 		dto.Params = append(dto.Params, ParamDTO{Key: p.Key, Label: p.Label, Type: p.Type, Default: p.Default, Required: p.Required})
 	}
 	for _, s := range t.Secrets {
-		dto.Secrets = append(dto.Secrets, SecretDTO{Key: s.Key, Label: s.Label})
+		dto.Secrets = append(dto.Secrets, SecretDTO{Key: s.Key, Label: s.Label, Required: s.Required})
 	}
 	for _, p := range t.Ports {
 		dto.Ports = append(dto.Ports, PortDTO{Name: p.Name, Container: p.Container, HostPort: p.HostPort, Protocol: p.Protocol, Required: p.Required})

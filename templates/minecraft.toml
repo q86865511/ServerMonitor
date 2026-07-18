@@ -79,6 +79,7 @@ required = true                        # R2 未接受不得建立(不暗中預�
 [[secrets]]                            # R12 SecretRef:輸入即入金鑰庫,不進 params_json
 key = "RCON_PASSWORD"
 label = "RCON 密碼"
+required = true                        # stop hook 與健康探針依賴 RCON
 
 [[secrets]]                            # R11 CurseForge 模組包金鑰(使用者自申;非必填,選 CurseForge 來源時才需)
 key = "CF_API_KEY"

@@ -87,8 +87,8 @@ func TestParseTemplate_MinecraftGolden(t *testing.T) {
 	}
 
 	// [[secrets]]
-	if len(tmpl.Secrets) != 1 || tmpl.Secrets[0].Key != "RCON_PASSWORD" {
-		t.Errorf("Secrets = %+v, 期望 [RCON_PASSWORD]", tmpl.Secrets)
+	if len(tmpl.Secrets) != 1 || tmpl.Secrets[0].Key != "RCON_PASSWORD" || !tmpl.Secrets[0].Required {
+		t.Errorf("Secrets = %+v, 期望 [RCON_PASSWORD/required]", tmpl.Secrets)
 	}
 
 	// [[command_protocols]] — tagged union(rcon)

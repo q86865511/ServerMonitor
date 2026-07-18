@@ -8,7 +8,8 @@
 
 ## 快速開始(使用者)
 
-1. 執行 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。**Windows 預設 native 執行後端(免 Docker)**;若要用 Docker 後端,先開啟 Docker Desktop。
+1. 安裝:執行 NSIS 安裝包 `servermonitor-amd64-installer.exe`(`wails build -nsis` 產出;含開始選單捷徑與解除安裝),或直接跑可攜版 `build\bin\servermonitor.exe`(或開發模式 `wails dev`)。**Windows 預設 native 執行後端(免 Docker)**;若要用 Docker 後端,先開啟 Docker Desktop。
+   - 關閉視窗會縮到系統匣(右下通知區)持續監控;左鍵匣圖示或再次啟動 exe 可喚回視窗,tray 選單「結束」才會完整退出。
 2. 「建立伺服器」→ 選 Minecraft → 選變體 → 勾 EULA → 設 RCON 密碼 →(可選)選執行後端 → 建立(native 首次下載 JRE + 伺服器檔案、Docker 首次拉映像,均需數分鐘)。
 3. 卡片「啟動」→ 開「主控台」看 log、輸入 `list` 測指令 → 設定頁玩備份/排程/告警。
 4. 遊戲連線:`localhost:25565`。應用資料在 `%LOCALAPPDATA%\ServerMonitor\`;**關閉本工具不會停伺服器**(Docker 由容器維持、native 由收養機制接管,重開自動接管)。詳見下方「Native 執行模式」。
@@ -44,33 +45,44 @@ Go + Wails(桌面)+ Svelte 5(TypeScript)前端 + Docker/Native 雙執行後端�
 
 ```
 go build ./...               # 編譯全部套件
-go test ./...                # 單元/整合測試(免 Docker)
-go test -tags docker ./...   # 真 Docker 整合測試 + 端到端 + 效能基準(需 Docker daemon)
 wails dev                    # 開發模式(GUI)
 wails build                  # 產出 Windows 可執行檔
+wails build -nsis            # 另產出 NSIS 安裝包(需本機裝 NSIS:winget install NSIS.NSIS)
+go build ./cmd/agent         # 遠端節點代理(本平台)
+GOOS=linux GOARCH=amd64 go build -o servermonitor-agent ./cmd/agent   # 交叉編譯 Linux 節點代理
 ```
 
-端到端(T16,需 Docker daemon;會實際拉映像、建/啟容器,測後自動清理):
-
-```
-go test -tags docker -run TestE2E ./internal/app/                     # Minecraft 全流程 + 重啟對帳 + 效能基準
+<!-- 測試指令(開發者用;一般使用者不需,故以註解隱藏。完整矩陣另見 CLAUDE.md「常用指令」)
+go test ./...                                                        # 單元/整合測試(免 Docker)
+go test -tags docker ./...                                           # 真 Docker 整合測試 + 端到端 + 效能基準(需 Docker daemon)
+go test -tags docker -run TestE2E ./internal/app/                    # 端到端(需 Docker;拉映像建容器,測後自動清理)
 go test -tags docker -run TestE2E_MinecraftFullLifecycle ./internal/app/
-go test -tags docker -run TestE2E_Palworld ./internal/app/            # 需先 docker pull palworld 映像
-go test -tags docker -run TestPerf_LogThroughput ./internal/core/     # log 高流量 fanout 基準
-```
+go test -tags docker -run TestE2E_Palworld ./internal/app/           # 需先 docker pull palworld 映像
+go test -tags docker -run TestPerf_LogThroughput ./internal/core/    # log 高流量 fanout 基準
+go test -tags native ./...                                           # native 後端(僅 Windows,非 Windows 自動 skip)
+go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m
+GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m
+go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/   # docker↔native 備份互轉
+-->
 
-Native 執行後端測試(build tag `native`;僅 Windows,非 Windows 自動 skip;heavy E2E `-short` 跳過):
 
-```
-go test -tags native ./...                                                       # native 單元/整合測試(免 Docker)
-go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m   # 真下載 JRE+server.jar,全流程
-GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m  # SteamCMD 約 6-8GB,opt-in
-go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/  # docker↔native 備份互轉(需 Docker daemon)
-```
+
+## 多節點(遠端/雲端節點)
+
+GUI 之外,伺服器可跑在遠端主機上:遠端跑獨立的**節點代理**(`cmd/agent`,純命令列單一執行檔,無需 GUI/WebView2/NSIS),本機 GUI 經 HTTPS+bearer token 管理。Linux 節點(如 Ubuntu 雲端主機)需安裝 Docker Engine(Linux 一律以 Docker 後端執行遊戲;native 為 Windows 專屬)。
+
+部署流程:
+
+1. 交叉編譯並上傳:`GOOS=linux GOARCH=amd64 go build -o servermonitor-agent ./cmd/agent`,scp 到遠端主機。
+2. 首次啟動 `./servermonitor-agent`(可零設定;選用 `--config agent.toml` 自訂 bind/資料目錄/TLS)。首啟自動生成**持久 token** 與**自簽 TLS 憑證**,console 印出監聽位址、憑證 SHA-256 指紋與 token。
+3. GUI「節點」頁 →「新增節點」:填名稱、位址(`https://主機:9444`)與 token →「測試連線」→ 比對顯示的指紋與 agent console 印出者一致 →「確認新增」(TOFU 指紋釘選;之後憑證被換會直接拒連)。也支援自備正式憑證(agent.toml `[tls] mode="custom"`,GUI 留空指紋走系統 CA)。
+4. 建立伺服器時精靈第一步選擇節點即可;防火牆需放行 agent 監聽埠。
+
+安全注意:token 與 TLS 私鑰存於 agent 資料目錄(unix 權限 0600;Windows 請以 NTFS 權限保護);`[tls] mode="off"` 為明文 HTTP,僅限內網/VPN(如 WireGuard/Tailscale)。目前限制:遠端節點的 Docker 能力於 GUI 顯示「未知」、遠端實例的背景監控/對帳尚未啟用(操作與日誌均可用),備份檔留在其所屬節點。
 
 ## 範本撰寫指南
 
-新增「沿用既有 adapter」的遊戲 = 加一份 `templates/<id>.toml`,**不改核心**。範本放內建目錄(執行檔旁 `templates/`)或使用者目錄(`%LOCALAPPDATA%\ServerMonitor\templates\`),啟動時載入;缺欄位/版本/ID 重複/adapter 不存在會拒載並記 `TEMPLATE_LOAD_FAILED` 事件。schema 由 `internal/protocol/template.go` 定義,最小可跑範例見 `templates/minecraft.toml`、`templates/palworld.toml`。
+新增「沿用既有 adapter」的遊戲 = 加一份 `templates/<id>.toml`,**不改核心**。內建範本自 2026-07-18 起以 go:embed 打進執行檔(啟動時抽出到資料目錄 `templates-builtin\`,單一 exe 自足);自訂範本放使用者目錄(`%LOCALAPPDATA%\ServerMonitor\templates\`),啟動時載入;缺欄位/版本/ID 重複/adapter 不存在會拒載並記 `TEMPLATE_LOAD_FAILED` 事件。schema 由 `internal/protocol/template.go` 定義,最小可跑範例見 `templates/minecraft.toml`、`templates/palworld.toml`。
 
 schema 欄位速查(對映 `GameTemplate`):
 

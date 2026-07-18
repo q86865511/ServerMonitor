@@ -254,9 +254,10 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	}()
 
 	// 2. 機密入庫(R12:值寫 OS 金鑰庫,DB 不落明文;金鑰庫鍵以 UUID 命名空間避免跨實例碰撞)。
+	// 空白值視同未提供:精靈對選填機密會送出空字串,入庫/注入空值會覆蓋映像端的預設行為。
 	for _, sec := range tmpl.Secrets {
 		val, provided := opts.Secrets[sec.Key]
-		if !provided {
+		if !provided || strings.TrimSpace(val) == "" {
 			continue
 		}
 		ref := protocol.NewSecretRef(instanceSecretKey(uuid, sec.Key))
@@ -581,8 +582,9 @@ func (s *InstanceService) reservePorts(ports []PortReservation) error {
 func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTemplate, opts CreateOptions, variantEnv map[string]string, runtime string) protocol.InstanceSpec {
 	env := resolveEnv(tmpl, opts.Params, variantEnv)
 	// 機密以明文注入 Env(R12 runtime 明文例外;僅在 loopback 信任域內經 NodeClient 傳遞)。
+	// 空白值不注入,避免以空環境變數覆蓋映像端「未設定時自動產生」類預設行為。
 	for _, sec := range tmpl.Secrets {
-		if val, ok := opts.Secrets[sec.Key]; ok {
+		if val, ok := opts.Secrets[sec.Key]; ok && strings.TrimSpace(val) != "" {
 			env[sec.Key] = val
 		}
 	}
@@ -750,10 +752,11 @@ func validateParams(tmpl *protocol.GameTemplate, params map[string]string) error
 	return nil
 }
 
-// requiredSecretKeys 回傳「被啟用中的 command_protocols 引用」的必填機密鍵(E 修正)。
-// legacy=true 的協定(如 Palworld RCON)首版不啟用,其引用的 secret 不計入必填,避免
-// 使用者被要求填一個用不到的機密。同一鍵可能被協定層與動作層(可覆寫)重複引用,
-// 去重後依鍵名排序回傳,使缺項清單順序穩定、可測。
+// requiredSecretKeys 回傳必填機密鍵(E 修正):「被啟用中的 command_protocols 引用」與
+// 「範本顯式標 required=true」兩者的聯集——後者與前端精靈的必填判定同源,避免兩個真源
+// 漂移(範本漏標時前端不擋、後端才爆)。legacy=true 的協定(如 Palworld RCON)首版不啟用,
+// 其引用的 secret 不計入必填,避免使用者被要求填一個用不到的機密。同一鍵可能被協定層與
+// 動作層(可覆寫)重複引用,去重後依鍵名排序回傳,使缺項清單順序穩定、可測。
 func requiredSecretKeys(tmpl *protocol.GameTemplate) []string {
 	seen := make(map[string]bool)
 	for _, cp := range tmpl.CommandProtocols {
@@ -767,6 +770,11 @@ func requiredSecretKeys(tmpl *protocol.GameTemplate) []string {
 			if act.PasswordRef != "" {
 				seen[act.PasswordRef] = true
 			}
+		}
+	}
+	for _, sec := range tmpl.Secrets {
+		if sec.Required {
+			seen[sec.Key] = true
 		}
 	}
 	keys := make([]string, 0, len(seen))

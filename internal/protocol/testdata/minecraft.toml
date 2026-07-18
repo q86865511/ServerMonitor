@@ -43,6 +43,7 @@ required = true                        # R2 未接受不得建立
 [[secrets]]                            # R12 SecretRef:輸入即入金鑰庫,不進 params_json
 key = "RCON_PASSWORD"
 label = "RCON 密碼"
+required = true
 
 [[command_protocols]]                  # R7 tagged union
 protocol_id = "mc-rcon"

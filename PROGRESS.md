@@ -2,11 +2,15 @@
 
 ## 目前狀態
 
-**🏁 gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
+**🏁 七項改進 pipeline 四階段全數完成(分支 claude/server-gui-improvements-063ebd):①Docker 即時偵測+CF 金鑰條件必填+範本 go:embed ②新 icon+關窗縮系統匣+單實例喚醒+NSIS 安裝包 ③遠端節點基礎(cmd/agent+TLS 指紋 pinning+節點管理 GUI,Ubuntu 雲端可部署)④整體回歸+文件收尾。三輪雙審(6+7+11 條)全數裁決處理;分支待 merge。留使用者手動項:GUI 縮匣/喚醒/安裝包真機一輪、遠端節點實機部署驗證。docker E2E 備份後重啟 Crashed 回歸已由另一 session 修復併入(PR #4,die 事件改抵達時刻判 TTL)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
 
 ## 已完成
 
 - [2026-07-18] 🐛 修復 docker E2E 備份後誤判 Crashed 回歸:根因為核心結構性競態——備份在 per-instance 鎖內做「停機→封存→重啟→等 RCON 就緒」(常 >60s),停機 die 事件的 handleDie 被同一把鎖擋到備份結束,planned-stop token(TTL=2×grace=60s,掛鐘計時)已過期 → 預期停機被誤判崩潰(Running→Crashed+假 INSTANCE_CRASHED+RestartPolicy 誤計)。修法:die 事件改以「抵達核心時刻」(搶鎖前取樣)判 TTL(handleDieAt/consumeAt,internal/core/lifecycle.go),鎖等待不計入;真崩潰的 die 抵達時刻必是當下,不遮蔽防線不放寬。附帶:e2e_docker_test.go 兩處 Create 釘 Runtime:"docker"(範本有 [native] 區段,Windows 未指定預設 native,「docker E2E」實跑 native)。新增決定性回歸測試 2 支(fake clock,修前紅已實證);go test ./... 全綠、docker E2E TestE2E_MinecraftFullLifecycle PASS(949s)。
+- [2026-07-18] ✅ 七項改進階段 4(/pipeline 波次 4)整體回歸+文件收尾:免 Docker 全套 `go test ./... -count=1` 全綠、`go vet`/`GOOS=linux build` 綠、svelte-check 172 檔 0 錯、`wails build -nsis` 產出最終 exe+安裝包。docker 標籤:core/agent/protocol 整合測試綠;**發現並修復 E2E 潛在缺陷**——docker 標籤 E2E 的 Create 未釘 Runtime,native-backend 併入後 Windows 上悄悄跑成 native(Minecraft 撞 10 分鐘逾時、Palworld 誤走 SteamCMD),已在兩處 Create 加 `Runtime:"docker"`;釘住後 E2E 前段(建立/RCON 就緒/快照/日誌/備份)全過,「備份後重啟得 Crashed」經 master 對照實證為**既有回歸**(記入已知問題,另開任務追)。文件:README(多節點部署節、cmd/agent/NSIS 建置指令)、CLAUDE.md(指令/依賴/多節點約定)、PROGRESS 收官。
+- [2026-07-18] 🌐 七項改進階段 3(/pipeline 波次 3)遠端節點基礎(需求 7):**cmd/agent** 獨立執行檔(agent.toml 零設定可跑、持久 token(64-hex 驗證+原子寫)、自簽 ECDSA P-256 憑證+SHA-256 指紋、TLS auto/custom/off、Slowloris 逾時防護、優雅關閉含 WS 串流主動收束;Linux 交叉編譯過,Ubuntu 雲端可部署);**core 多節點**:AppConfig.Nodes 持久化(原子寫)、token 只入 OS 金鑰庫、NodeClient TLS 指紋 pinning(常數時間比對,HTTP/WS 同管道)、Probe/Add/Remove/ListNodes 綁定(TOFU 流程、RemoveNode 競態複查回滾、損壞節點孤兒可見可移除、開機註冊先標離線再非同步探測);**GUI**:節點頁管理區(新增/測試/指紋確認/移除)、精靈 Step1 節點下拉(離線禁選、is_local 判定不硬編)、遠端 Docker 能力如實顯「未知」。雙審(reviewer+Codex)11 條(1 高:agent 無逾時 DoS)使用者裁決全修,全數落碼;一審安全結論:pin 實作正確、token 無洩漏路徑。驗證:go build/vet/test 全綠(-count=1)、GOOS=linux 綠、svelte-check 172 檔 0 錯、真 agent 端到端(https+401+openssl 指紋比對)。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w3.md。
+- [2026-07-18] 🖥️ 七項改進階段 2(/pipeline 波次 2)桌面封裝:**需求 3** app icon 換新(appicon.png 覆蓋+icon.ico 由 wails 重生,exe/視窗/系統匣同枚);**需求 5** 關窗縮系統匣(HideWindowOnClose+energye/systray v1.0.3,選單開窗/結束、左鍵單擊開窗)+第二實例具名事件(Local\ServerMonitor.SingleInstance.Wake)喚醒既有視窗後靜默退出(AppLock 仍為權威鎖);**需求 4** NSIS 安裝包(winget 裝 NSIS、`wails build -nsis` 產出 servermonitor-amd64-installer.exe,靜默裝測:exe/捷徑/登錄檔/解除安裝全正確)。雙審 7 條(3 中 4 低),使用者裁決全修:close 句柄競態改停止旗標+join、tray goroutine 補 LockOSThread(已驗 systray v1.0.3 init 只鎖主 goroutine)、非 Windows AppLock 衝突恢復錯誤對話框(wake 回傳 bool)、tray 結束改非同步派發;第 4/6 條依裁決記錄為已知限制。驗證:go build/vet/test 綠、GOOS=linux 綠、wails build -nsis 成功。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w2.md。
+- [2026-07-18] 🔧 七項改進階段 1(/pipeline 波次 1):**需求 1** Docker 即時偵測——NewDockerBackend 建構期 3s Ping(失敗→DockerAvailable=false、精靈 docker 置灰)、mapDockerErr/ensureImage 連線類錯誤友善化、精靈補「重試 Docker」按鈕;**需求 2** CF 金鑰條件必填——SecretSpec.Required(RCON/ADMIN_PASSWORD 標必填)、前端 missingSecrets 只計必填+CF 來源時 CF_API_KEY 才必填、後端 requiredSecretKeys 聯集 required 旗標(雙真源合流);**需求 6** 內建範本 go:embed(main.go all:templates→DefaultBuiltinFS→啟動抽出 dataRoot/templates-builtin/,暫存目錄原子替換、失敗沿用舊副本,LoadDir/Stat 錯誤不再靜默)。雙審(reviewer+Codex MCP)6 條裁決全數成立、使用者核可全修(抽出原子化/空值 secrets 不入庫不注入/mapDockerErr 全路徑友善化/必填聯集/Stat log/行尾噪音自消);驗證:go build/vet/test 全綠、svelte-check 171 檔 0 錯、wails build OK。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w1.md。
 - [2026-07-18] 🚢 v0.1.0 首次發佈:PR #3(gui-redesign)併入 master 後自主線建置,GitHub Release 附 ServerMonitor-v0.1.0-windows-amd64.zip(exe+templates/ 隨附佈局,銷掉打包待辦);內容=game-server-manager+native-backend+gui-redesign 三功能收官。
 - [2026-07-18] 🏁 gui-redesign 雙審修正輪+收官:Opus 總審(1高/1中/3低)+Codex 二審(2中/3低,額度重置後補跑)+波6一審(5低)+T13 偏離,合計 15 條裁決全數成立、使用者核可全修——高:effect cleanup 反應式 uuid 訂閱洩漏(捕捉區域副本);中:recorder Stop 等 goroutine 收束(done channel)、前端 Subscribe/Unsubscribe 改操作鏈序列化+世代守衛(metrics+logs,杜絕 RPC 時序反轉)、回填合併不覆蓋 live 點;低:死匯出/死 import/Modal overlay token/精靈範本 error 態+重試/Insert-Prune 失敗 log/Dashboard 快照下傳免雙重輪詢/面板雙重 load/fmtPercent/三全域頁 R10 標籤(templates 惰性快取)。聚焦複審 15/15 關閉、-race 綠;tasks.md 15/15 回寫;README/CLAUDE 前端慣例更新。過程教訓:裁決停點誤把自己訊息當授權先修了 3 檔(修法本身經雙審驗證正確,經使用者追認保留),已記入 judgment-rubrics 教訓。
 - [2026-07-18] 🚀 gui-redesign 實作 T1–T15(/pipeline,分支 claude/gui-redesign):依 4 張參考圖重構整套前端。**後端五擴充**:T1 顯示名稱+連接埠(schema v3 遷移 instances.name/port_reservations.name)、T2 指標時序(metrics 表 nullable 記憶體欄+MetricsRecorder 15s 聚合/末樣本 NULL/玩家數自快照/36h Prune+2 綁定)、T3 uptime(StatusFetcher 注入)、T4 範本 icon(filepath.Rel+EvalSymlinks 路徑拘束+AssetServer Handler+程式生成識別圖)、T5 wailsjs 重生成。**前端**:T6 tokens+20 UI 元件(runes)、T7 LogViewer(content-visibility,T7 真機實測 92s longtask=0)/TrendChart(null 畫缺口)/DataTable、T8 stores(instances 輪詢上移/metrics ring/logs 引用計數+30s 延遲釋放)、T9 hash 路由+Shell(可收合側欄/頂欄搜尋)、T10 總覽+ServerCard(範本驅動)、T11 詳細頁五分頁+主控台(共用 Backups/Schedules/AlertsPanel)、T12 四步精靈(runtime/資源/CF 三態/provision 進度/blocked-mods 等價吸收)、T13 全域七頁遷移+清理 16 舊元件、T14 四態巡檢+防重複、T15 驗證收尾。每波經主迴圈非快取抽驗。
@@ -30,7 +34,8 @@
 
 ## 進行中
 
-(無——gui-redesign 收官,分支待 push/PR;等使用者 GUI 真機一輪與 native-backend 留存驗證項)
+- 七項改進 pipeline:✅✅✅✅ 四階段全完成,分支待使用者裁決 merge(PR)。
+- 多節點後續擴充(階段 3 界定範圍外,已在程式註解標明):遠端節點 /health 回報 Docker 能力(現 GUI 顯「未知」)、遠端節點背景編排(對帳/監控/事件迴圈,現只本機)、Create/Remove 共用序列化鎖根治競態。
 
 ## 待辦
 
@@ -40,12 +45,14 @@
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
-- [x] 打包:release zip 已隨附 templates/(v0.1.0 起,見 GitHub Releases);長期若要免隨附可改 go:embed(未做)
+- [x] 打包:release zip 已隨附 templates/(v0.1.0 起);2026-07-18 七項改進階段 1 起內建範本已 go:embed 進 exe,單檔自足,隨附 templates/ 僅作使用者覆蓋範例
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 
 ## 已知問題
 
-(無)
+- (低)NSIS 靜默解裝曾一次殘留主程式 exe(捷徑/登錄檔/uninstall.exe 均正確清除,殘留檔非鎖檔可手刪);成因未確證(疑防毒暫時鎖新寫入 exe),重測因安裝程式啟動權限被拒未完成——待人工再測一輪,穩定復現則將 build/windows/installer/ 入版控客製 project.nsi(顯式 Delete+重試)。
+- (低)單一實例喚醒的邊角:第一實例卡在 Bootstrap 時,第二實例送出喚醒訊號後靜默退出、無人接收(裁決:記錄不修,根治需 main 提早解析 dataRoot 搶 AppLock)。
+- (低)systray 啟動失敗時關窗即隱藏、無匣圖示可喚回(可再啟一次 exe 觸發喚醒救回;裁決:延後,根治需改 OnBeforeClose 動態判斷)。
 
 ## 重要決策紀錄
 

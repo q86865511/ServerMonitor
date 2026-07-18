@@ -122,8 +122,9 @@ type ParamSpec struct {
 
 // SecretSpec 對應 [[secrets]]:敏感輸入的宣告。輸入即入金鑰庫、不進 params_json(R12)。
 type SecretSpec struct {
-	Key   string `toml:"key"`
-	Label string `toml:"label"`
+	Key      string `toml:"key"`
+	Label    string `toml:"label"`
+	Required bool   `toml:"required"` // 預設 false(選填);核心流程依賴時(如 RCON)標 true
 }
 
 // CommandProtocol 對應 [[command_protocols]],是 kind 判別的 tagged union(R7)。
