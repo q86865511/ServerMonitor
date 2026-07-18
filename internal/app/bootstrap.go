@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +26,13 @@ import (
 	"servermonitor/internal/core"
 	"servermonitor/internal/protocol"
 )
+
+// DefaultBuiltinFS 是內建範本(embed)的套件層預設值。main 套件在 wails.Run 前設定此變數,
+// 使 //go:embed 出的 templates/ 樹得以交給 Bootstrap——main.go 並不直接呼叫 Bootstrap
+// (呼叫鏈是 App.OnStartup 內的 `app.Bootstrap(app.Options{})`,該檔屬並行任務範圍、本次不改動
+// 其呼叫式),故改以套件層預設值傳遞,避免更動既有呼叫鏈。Options.BuiltinFS 顯式非 nil 時
+// 仍優先(供測試以 fstest.MapFS 之類注入,不受此預設值影響)。
+var DefaultBuiltinFS fs.FS
 
 // BackendFactory 依 agent.BackendOptions 建立節點代理的頂層執行後端(native-backend R2)。
 // 生產為 defaultBackendFactory(Windows 回 dispatchBackend 併 native+docker;非 Windows 回
@@ -74,8 +83,16 @@ func defaultDockerFactory(opts agent.BackendOptions) (agent.RuntimeBackend, erro
 type Options struct {
 	// DataRoot 覆寫資料根目錄;空字串用 config 的 data_root,再空則用 %LOCALAPPDATA%\ServerMonitor。
 	DataRoot string
-	// BuiltinTemplateDir 是隨執行檔散布的內建範本目錄;空字串用「執行檔目錄/templates」。
+	// BuiltinTemplateDir 是隨執行檔散布的內建範本目錄;空字串則依 BuiltinFS/DefaultBuiltinFS
+	// 抽出後的目錄,兩者皆無才退回「執行檔目錄/templates」。非空時優先(測試固定目錄用)。
 	BuiltinTemplateDir string
+	// BuiltinFS 是內嵌的內建範本(embed.FS),內含頂層 templates/ 目錄樹(範本 *.toml 與
+	// icons/ 子目錄)。非 nil 時,Bootstrap 於每次啟動把其內容覆寫抽出到
+	// <dataRoot>/templates-builtin/ 後再載入,取代舊有「執行檔旁 templates/ 目錄」機制
+	// (該機制在 wails dev 下無效——執行檔在暫存目錄旁沒有 templates/)。為 nil 時退回
+	// DefaultBuiltinFS(見該變數說明);兩者皆為 nil 才退回 BuiltinTemplateDir 空值時的
+	// exe 旁目錄 fallback。
+	BuiltinFS fs.FS
 	// BackendFactory 建立頂層執行後端;nil 用 defaultBackendFactory(Windows dispatch、其餘 docker)。
 	BackendFactory BackendFactory
 	// DockerFactory 只建 docker 子後端,供 RetryDocker 於 dispatch 頂層熱替換;nil 用 defaultDockerFactory。
@@ -97,14 +114,15 @@ type Options struct {
 const appConfigFileName = "config.json"
 
 const (
-	subDirJournalCreate = "journal/create" // 建立 journal(Reconciler 解讀為未完成建立)
-	subDirJournalOps    = "journal/ops"    // 備份/還原 op-journal(必與 create 相異)
-	subDirInstances     = "instances"      // agent dataRoot
-	subDirBackups       = "backups"        // agent backupRoot
-	subDirCache         = "cache"          // native 供應共用快取根(JRE/SteamCMD)
-	subDirTemplates     = "templates"      // 使用者自訂範本
-	appDBFileName       = "app.db"
-	fallbackFileName    = "events-fallback.ndjson"
+	subDirJournalCreate    = "journal/create"    // 建立 journal(Reconciler 解讀為未完成建立)
+	subDirJournalOps       = "journal/ops"       // 備份/還原 op-journal(必與 create 相異)
+	subDirInstances        = "instances"         // agent dataRoot
+	subDirBackups          = "backups"           // agent backupRoot
+	subDirCache            = "cache"             // native 供應共用快取根(JRE/SteamCMD)
+	subDirTemplates        = "templates"         // 使用者自訂範本
+	subDirBuiltinTemplates = "templates-builtin" // BuiltinFS 抽出目的地(每次啟動覆寫重建)
+	appDBFileName          = "app.db"
+	fallbackFileName       = "events-fallback.ndjson"
 )
 
 // announceRestartMessage 是排程重啟前的公告文案(範本 hooks.announce 的 {msg})。
@@ -280,7 +298,11 @@ func Bootstrap(opts Options) (*Runtime, error) {
 		r.secrets = core.NewSecretStore(core.DefaultKeyringService)
 	}
 	r.engine = core.NewTemplateEngine(core.DefaultAdapterRegistry(), events)
-	loadTemplates(r.engine, opts.BuiltinTemplateDir, userTemplatesDir)
+	builtinFS := opts.BuiltinFS
+	if builtinFS == nil {
+		builtinFS = DefaultBuiltinFS
+	}
+	loadTemplates(r.engine, opts.BuiltinTemplateDir, builtinFS, dataRoot, userTemplatesDir)
 
 	// 5b) CurseForge 覆蓋金鑰:實值存 OS 金鑰庫(#11:不明文落 config.json);讀到舊版明文則遷入
 	//     金鑰庫、清空 config.json 並記事件。解析失敗為非致命(CF 為選用能力,失敗僅停用)。
@@ -600,22 +622,98 @@ func defaultBaseRoot() string {
 // offlinePlaceholderURL 是代理未啟動時註冊的佔位位址(對其呼叫必失敗→節點維持離線)。
 const offlinePlaceholderURL = "http://127.0.0.1:9"
 
-// loadTemplates 載入內建範本目錄(空則用執行檔目錄/templates)與使用者範本目錄,best-effort:
-// 目錄不存在只略過,不致命(範本可於執行期由使用者補入後重啟載入)。
-func loadTemplates(engine *core.TemplateEngine, builtinDir, userDir string) {
-	if builtinDir == "" {
+// loadTemplates 載入內建範本目錄與使用者範本目錄,best-effort:目錄不存在只略過,不致命
+// (範本可於執行期由使用者補入後重啟載入)。內建範本來源依序判定:
+//  1. builtinDir 非空(測試固定目錄)→ 照舊直接載入該目錄。
+//  2. 否則 builtinFS 非 nil → 把其 templates/ 樹(含 icons/)覆寫抽出到
+//     <dataRoot>/templates-builtin/ 後,載入抽出後的目錄。
+//  3. 兩者皆無 → 退回「執行檔目錄/templates」(相容執行檔旁散裝散布)。
+//
+// 目錄層級失敗(讀目錄失敗、抽出失敗)一律記 log,不再靜默吞掉;個別範本檔的失敗已由
+// TemplateEngine.LoadDir 逐檔記 TEMPLATE_LOAD_FAILED 事件,此處不重造。
+func loadTemplates(engine *core.TemplateEngine, builtinDir string, builtinFS fs.FS, dataRoot, userDir string) {
+	switch {
+	case builtinDir != "":
+		// 測試注入的固定目錄,略過抽出直接用。
+	case builtinFS != nil:
+		extracted := filepath.Join(dataRoot, subDirBuiltinTemplates)
+		if err := extractBuiltinTemplates(builtinFS, extracted); err != nil {
+			// 抽出失敗(防毒鎖檔/磁碟滿等)時沿用磁碟上前一份抽出副本(若存在),
+			// 不讓內建範本整批消失;下方 Stat 守門處理副本也不存在的情況。
+			log.Printf("templates: 抽出內建範本失敗(沿用前一份抽出副本): %v", err)
+		}
+		builtinDir = extracted
+	default:
 		if exe, err := os.Executable(); err == nil {
 			builtinDir = filepath.Join(filepath.Dir(exe), subDirTemplates)
 		}
 	}
 	if builtinDir != "" {
 		if _, err := os.Stat(builtinDir); err == nil {
-			_, _ = engine.LoadDir(builtinDir)
+			if _, err := engine.LoadDir(builtinDir); err != nil {
+				log.Printf("templates: 載入內建範本目錄 %s 失敗: %v", builtinDir, err)
+			}
+		} else if !os.IsNotExist(err) {
+			log.Printf("templates: 檢查內建範本目錄 %s 失敗: %v", builtinDir, err)
 		}
 	}
 	if userDir != "" {
 		if _, err := os.Stat(userDir); err == nil {
-			_, _ = engine.LoadDir(userDir)
+			if _, err := engine.LoadDir(userDir); err != nil {
+				log.Printf("templates: 載入使用者範本目錄 %s 失敗: %v", userDir, err)
+			}
+		} else if !os.IsNotExist(err) {
+			log.Printf("templates: 檢查使用者範本目錄 %s 失敗: %v", userDir, err)
 		}
 	}
+}
+
+// extractBuiltinTemplates 把 builtinFS 內嵌的頂層 templates/ 目錄樹(範本 *.toml 與 icons/
+// 子目錄)覆寫抽出到 destDir:先完整抽到同層暫存目錄,全部成功才替換正式目錄,確保中途失敗
+// (防毒鎖檔/磁碟滿)不會摧毀前一份可用副本;成功替換也保證舊檔不殘留(R14 icon 路徑安全
+// 判定以磁碟實體檔案為準,殘留舊檔會讓已刪範本的圖示仍可被服務)。
+func extractBuiltinTemplates(builtinFS fs.FS, destDir string) error {
+	tmpDir := destDir + ".tmp"
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return fmt.Errorf("清除抽出暫存目錄失敗: %w", err)
+	}
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return fmt.Errorf("建立抽出暫存目錄失敗: %w", err)
+	}
+	walkErr := fs.WalkDir(builtinFS, subDirTemplates, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return fmt.Errorf("走訪內嵌範本 %s 失敗: %w", path, err)
+		}
+		rel, rerr := filepath.Rel(subDirTemplates, filepath.FromSlash(path))
+		if rerr != nil {
+			return fmt.Errorf("解析內嵌範本相對路徑 %s 失敗: %w", path, rerr)
+		}
+		target := filepath.Join(tmpDir, rel)
+		if d.IsDir() {
+			if rel == "." {
+				return nil
+			}
+			return os.MkdirAll(target, 0o755)
+		}
+		data, rerr := fs.ReadFile(builtinFS, path)
+		if rerr != nil {
+			return fmt.Errorf("讀取內嵌範本檔 %s 失敗: %w", path, rerr)
+		}
+		if werr := os.WriteFile(target, data, 0o644); werr != nil {
+			return fmt.Errorf("寫入抽出範本檔 %s 失敗: %w", target, werr)
+		}
+		return nil
+	})
+	if walkErr != nil {
+		_ = os.RemoveAll(tmpDir)
+		return walkErr
+	}
+	if err := os.RemoveAll(destDir); err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return fmt.Errorf("清除內建範本抽出目錄失敗: %w", err)
+	}
+	if err := os.Rename(tmpDir, destDir); err != nil {
+		return fmt.Errorf("替換內建範本抽出目錄失敗: %w", err)
+	}
+	return nil
 }

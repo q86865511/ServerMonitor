@@ -2,10 +2,11 @@
 
 ## 目前狀態
 
-**🏁 gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
+**🔧 七項改進 pipeline 進行中(分支 claude/server-gui-improvements-063ebd,worktree session-c0092e):階段 1(Docker 即時偵測/CF 金鑰條件必填/範本 embed)實作+雙審 6 條全修+驗證全綠,已 commit;待使用者下令進入階段 2(icon/系統匣/NSIS)→階段 3(遠端節點+TLS)→階段 4(整體回歸)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
 
 ## 已完成
 
+- [2026-07-18] 🔧 七項改進階段 1(/pipeline 波次 1):**需求 1** Docker 即時偵測——NewDockerBackend 建構期 3s Ping(失敗→DockerAvailable=false、精靈 docker 置灰)、mapDockerErr/ensureImage 連線類錯誤友善化、精靈補「重試 Docker」按鈕;**需求 2** CF 金鑰條件必填——SecretSpec.Required(RCON/ADMIN_PASSWORD 標必填)、前端 missingSecrets 只計必填+CF 來源時 CF_API_KEY 才必填、後端 requiredSecretKeys 聯集 required 旗標(雙真源合流);**需求 6** 內建範本 go:embed(main.go all:templates→DefaultBuiltinFS→啟動抽出 dataRoot/templates-builtin/,暫存目錄原子替換、失敗沿用舊副本,LoadDir/Stat 錯誤不再靜默)。雙審(reviewer+Codex MCP)6 條裁決全數成立、使用者核可全修(抽出原子化/空值 secrets 不入庫不注入/mapDockerErr 全路徑友善化/必填聯集/Stat log/行尾噪音自消);驗證:go build/vet/test 全綠、svelte-check 171 檔 0 錯、wails build OK。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w1.md。
 - [2026-07-18] 🚢 v0.1.0 首次發佈:PR #3(gui-redesign)併入 master 後自主線建置,GitHub Release 附 ServerMonitor-v0.1.0-windows-amd64.zip(exe+templates/ 隨附佈局,銷掉打包待辦);內容=game-server-manager+native-backend+gui-redesign 三功能收官。
 - [2026-07-18] 🏁 gui-redesign 雙審修正輪+收官:Opus 總審(1高/1中/3低)+Codex 二審(2中/3低,額度重置後補跑)+波6一審(5低)+T13 偏離,合計 15 條裁決全數成立、使用者核可全修——高:effect cleanup 反應式 uuid 訂閱洩漏(捕捉區域副本);中:recorder Stop 等 goroutine 收束(done channel)、前端 Subscribe/Unsubscribe 改操作鏈序列化+世代守衛(metrics+logs,杜絕 RPC 時序反轉)、回填合併不覆蓋 live 點;低:死匯出/死 import/Modal overlay token/精靈範本 error 態+重試/Insert-Prune 失敗 log/Dashboard 快照下傳免雙重輪詢/面板雙重 load/fmtPercent/三全域頁 R10 標籤(templates 惰性快取)。聚焦複審 15/15 關閉、-race 綠;tasks.md 15/15 回寫;README/CLAUDE 前端慣例更新。過程教訓:裁決停點誤把自己訊息當授權先修了 3 檔(修法本身經雙審驗證正確,經使用者追認保留),已記入 judgment-rubrics 教訓。
 - [2026-07-18] 🚀 gui-redesign 實作 T1–T15(/pipeline,分支 claude/gui-redesign):依 4 張參考圖重構整套前端。**後端五擴充**:T1 顯示名稱+連接埠(schema v3 遷移 instances.name/port_reservations.name)、T2 指標時序(metrics 表 nullable 記憶體欄+MetricsRecorder 15s 聚合/末樣本 NULL/玩家數自快照/36h Prune+2 綁定)、T3 uptime(StatusFetcher 注入)、T4 範本 icon(filepath.Rel+EvalSymlinks 路徑拘束+AssetServer Handler+程式生成識別圖)、T5 wailsjs 重生成。**前端**:T6 tokens+20 UI 元件(runes)、T7 LogViewer(content-visibility,T7 真機實測 92s longtask=0)/TrendChart(null 畫缺口)/DataTable、T8 stores(instances 輪詢上移/metrics ring/logs 引用計數+30s 延遲釋放)、T9 hash 路由+Shell(可收合側欄/頂欄搜尋)、T10 總覽+ServerCard(範本驅動)、T11 詳細頁五分頁+主控台(共用 Backups/Schedules/AlertsPanel)、T12 四步精靈(runtime/資源/CF 三態/provision 進度/blocked-mods 等價吸收)、T13 全域七頁遷移+清理 16 舊元件、T14 四態巡檢+防重複、T15 驗證收尾。每波經主迴圈非快取抽驗。
@@ -29,7 +30,7 @@
 
 ## 進行中
 
-(無——gui-redesign 收官,分支待 push/PR;等使用者 GUI 真機一輪與 native-backend 留存驗證項)
+- 七項改進 pipeline(每階段暫停等使用者指令):✅階段 1 執行後端與範本可靠性;⬜階段 2 桌面封裝(icon 已備於主 repo build/ICON.png、energye/systray 縮匣+第二實例喚醒、NSIS 安裝包);⬜階段 3 遠端節點基礎(cmd/agent、持久 token、自簽憑證+指紋 pinning、節點管理 UI);⬜階段 4 整體回歸+文件關卡。
 
 ## 待辦
 
@@ -39,7 +40,7 @@
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
-- [x] 打包:release zip 已隨附 templates/(v0.1.0 起,見 GitHub Releases);長期若要免隨附可改 go:embed(未做)
+- [x] 打包:release zip 已隨附 templates/(v0.1.0 起);2026-07-18 七項改進階段 1 起內建範本已 go:embed 進 exe,單檔自足,隨附 templates/ 僅作使用者覆蓋範例
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 
 ## 已知問題

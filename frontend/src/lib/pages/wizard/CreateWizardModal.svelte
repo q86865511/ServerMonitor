@@ -11,6 +11,7 @@
     CreateInstance,
     DockerAvailable,
     CurseForgeEnabled,
+    RetryDocker,
   } from '../../../../wailsjs/go/main/App';
   import { EventsOn, EventsOff, BrowserOpenURL } from '../../../../wailsjs/runtime/runtime';
   import { call, errMsg } from '../../api';
@@ -70,6 +71,7 @@
   let loading = $state(true);
   let dockerAvailable = $state(true);
   let cfEnabled = $state(false);
+  let dockerRetrying = $state(false);
 
   let step = $state(1);
   let submitting = $state(false);
@@ -131,8 +133,14 @@
       return p.type === 'bool' ? v !== 'true' : v.trim() === '';
     }),
   );
+  // 機密僅 required=true 才必填;CF_API_KEY 例外 —— 範本內含此 secret 且選了 CurseForge
+  // 來源(非 native)時,即使範本未標 required 也視為必填(選了 CF 來源就必填金鑰)。
   const missingSecrets = $derived(
-    (tmpl?.secrets ?? []).filter((s) => (form.secretValues[s.key] ?? '').trim() === ''),
+    (tmpl?.secrets ?? []).filter((s) => {
+      if ((form.secretValues[s.key] ?? '').trim() !== '') return false;
+      if (s.required) return true;
+      return needsCFKey && templateHasCFSecret && s.key === CF_KEY;
+    }),
   );
   const modpackIncomplete = $derived(form.modpackType !== '' && form.modpackRef.trim() === '');
   const cfKeyMissing = $derived(needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() === '');
@@ -195,6 +203,22 @@
       cfEnabled = false; // 查詢失敗保守視為未啟用
     }
   });
+
+  // 精靈內重試 Docker 偵測(R:Docker 未啟動時免關閉精靈重開 app)——沿用既有
+  // DockerAvailable() 查詢流程(與 onMount 同一支)刷新本地 dockerAvailable 狀態。
+  async function retryDocker(): Promise<void> {
+    if (dockerRetrying) return;
+    dockerRetrying = true;
+    try {
+      await call(() => RetryDocker());
+      pushToast('success', '已重試連線 Docker');
+      dockerAvailable = await call(() => DockerAvailable(), { silent: true });
+    } catch {
+      /* 錯誤 toast 已由 call() 呈現(RetryDocker 失敗時) */
+    } finally {
+      dockerRetrying = false;
+    }
+  }
 
   onDestroy(() => {
     // 精靈關閉(任何路徑,含成功 navigate 後卸載)一律解除 provision 訂閱。
@@ -295,7 +319,11 @@
       provDetail = p.detail ?? '';
     });
 
-    const secrets: Record<string, string> = { ...form.secretValues };
+    // 留空的選填機密不送出:後端以「鍵存在」判定已提供,空字串會被入庫並注入成空環境變數。
+    const secrets: Record<string, string> = {};
+    for (const [k, v] of Object.entries(form.secretValues)) {
+      if (v.trim() !== '') secrets[k] = v;
+    }
     if (needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() !== '') {
       secrets[CF_KEY] = form.cfApiKey.trim();
     }
@@ -377,6 +405,8 @@
             {form}
             {tmpl}
             {dockerAvailable}
+            {dockerRetrying}
+            onRetryDocker={retryDocker}
             {cfDisabled}
             {cfNativeUnavailable}
             {needsCFKey}

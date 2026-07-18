@@ -65,6 +65,7 @@ type dockerAPI interface {
 	Events(ctx context.Context, options events.ListOptions) (<-chan events.Message, <-chan error)
 	ImageInspectWithRaw(ctx context.Context, imageID string) (types.ImageInspect, []byte, error)
 	ImagePull(ctx context.Context, refStr string, options image.PullOptions) (io.ReadCloser, error)
+	Ping(ctx context.Context) (types.Ping, error)
 	Close() error
 }
 
@@ -101,13 +102,30 @@ type DockerBackend struct {
 
 var _ RuntimeBackend = (*DockerBackend)(nil)
 
-// NewDockerBackend 以環境(DOCKER_HOST 等)建立連線並啟動事件監看。
+// NewDockerBackend 以環境(DOCKER_HOST 等)建立連線,即時 ping daemon 確認可連線後才啟動事件監看。
+// client.NewClientWithOpts 本身是 lazy 的(僅解析設定,不接觸 daemon),若省略 ping,daemon 未啟動
+// 時仍會建構成功,導致 DockerAvailable() 誤判為可用,直到實際操作(如拉映像)才爆冗長底層錯誤。
 func NewDockerBackend(opts DockerOptions) (*DockerBackend, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("建立 docker client 失敗: %w", err)
 	}
+	if err := pingDaemon(cli); err != nil {
+		_ = cli.Close()
+		return nil, err
+	}
 	return newDockerBackendWithClient(cli, opts)
+}
+
+// pingDaemon 以 3 秒逾時 ping daemon 確認可連線,失敗時回傳友善錯誤訊息。獨立成函式(接受
+// dockerAPI 而非具體 *client.Client)供單元測試以假 client 注入,免真連 daemon。
+func pingDaemon(cli dockerAPI) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := cli.Ping(ctx); err != nil {
+		return fmt.Errorf("無法連線 Docker daemon(Docker Desktop 是否未啟動?): %w", err)
+	}
+	return nil
 }
 
 // newDockerBackendWithClient 以既有 client 建立後端(供整合測試注入)。
@@ -425,17 +443,26 @@ func (b *DockerBackend) ensureImage(ctx context.Context, ref string) error {
 	if _, _, err := b.cli.ImageInspectWithRaw(ctx, ref); err == nil {
 		return nil
 	} else if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("檢查映像 %s 失敗: %w", ref, err)
+		return friendlyDockerErr(err, fmt.Sprintf("檢查映像 %s 失敗", ref))
 	}
 	rc, err := b.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
-		return fmt.Errorf("拉取映像 %s 失敗: %w", ref, err)
+		return friendlyDockerErr(err, fmt.Sprintf("拉取映像 %s 失敗", ref))
 	}
 	defer rc.Close()
 	if _, err := io.Copy(io.Discard, rc); err != nil { // 須排空至結束才算拉完
-		return fmt.Errorf("拉取映像 %s 串流失敗: %w", ref, err)
+		return friendlyDockerErr(err, fmt.Sprintf("拉取映像 %s 串流失敗", ref))
 	}
 	return nil
+}
+
+// friendlyDockerErr 判定 err 是否為連線類錯誤(daemon 未啟動/斷線),是則轉為使用者友善訊息;
+// 否則以 fallback 包裝原始錯誤(維持既有訊息格式)。
+func friendlyDockerErr(err error, fallback string) error {
+	if client.IsErrConnectionFailed(err) {
+		return fmt.Errorf("Docker 未啟動或連線中斷,請啟動 Docker Desktop 後重試: %w", err)
+	}
+	return fmt.Errorf("%s: %w", fallback, err)
 }
 
 // sanitizeDataDir 把容器路徑轉為安全的單層 host 目錄名。
@@ -581,6 +608,11 @@ func mapDockerErr(err error) error {
 	}
 	if errdefs.IsNotFound(err) {
 		return ErrNotFound
+	}
+	// daemon 中途斷線(啟動後關閉 Docker Desktop)時,所有操作路徑統一回友善訊息,
+	// 不讓 named-pipe 原始錯誤直達 GUI。
+	if client.IsErrConnectionFailed(err) {
+		return fmt.Errorf("Docker 未啟動或連線中斷,請啟動 Docker Desktop 後重試: %w", err)
 	}
 	return err
 }

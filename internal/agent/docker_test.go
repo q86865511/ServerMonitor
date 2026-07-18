@@ -30,9 +30,10 @@ func newITestBackend(t *testing.T) *DockerBackend {
 		Schema:     "1",
 	})
 	if err != nil {
-		t.Fatalf("NewDockerBackend: %v", err)
+		// NewDockerBackend 內建 ping;daemon 不可用時建構本身即失敗,同樣視為跳過而非測試失敗。
+		t.Skipf("Docker daemon 不可用,跳過: %v", err)
 	}
-	// daemon 可達性檢查:不可達則跳過。
+	// 額外以 List 驗證 API 可正常互動(ping 只保證連線,不保證後續呼叫皆正常)。
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := b.List(ctx); err != nil {

@@ -107,8 +107,9 @@ type ParamDTO struct {
 
 // SecretDTO 是機密欄位視圖(只含宣告,不含值)。
 type SecretDTO struct {
-	Key   string `json:"key"`
-	Label string `json:"label"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Required bool   `json:"required"`
 }
 
 // PortDTO 是埠宣告視圖。
@@ -719,7 +720,7 @@ func toTemplateDTO(t *protocol.GameTemplate) TemplateDTO {
 		dto.Params = append(dto.Params, ParamDTO{Key: p.Key, Label: p.Label, Type: p.Type, Default: p.Default, Required: p.Required})
 	}
 	for _, s := range t.Secrets {
-		dto.Secrets = append(dto.Secrets, SecretDTO{Key: s.Key, Label: s.Label})
+		dto.Secrets = append(dto.Secrets, SecretDTO{Key: s.Key, Label: s.Label, Required: s.Required})
 	}
 	for _, p := range t.Ports {
 		dto.Ports = append(dto.Ports, PortDTO{Name: p.Name, Container: p.Container, HostPort: p.HostPort, Protocol: p.Protocol, Required: p.Required})

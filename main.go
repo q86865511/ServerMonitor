@@ -6,12 +6,25 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+
+	appcore "servermonitor/internal/app"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
 
+// builtinTemplates 內嵌內建遊戲範本(templates/*.toml 與 templates/icons/),使單一執行檔
+// 自足、不再依賴「執行檔旁 templates/ 目錄」——該法在 wails dev 下無效(執行檔位於暫存目錄,
+// 旁邊沒有 templates/),曾導致 GUI 範本頁靜默顯示空清單。
+//
+//go:embed all:templates
+var builtinTemplates embed.FS
+
 func main() {
+	// 在 wails.Run 前設定套件層預設值,供 App.OnStartup 內的 app.Bootstrap(app.Options{})
+	// 讀取(該呼叫式所在的 app.go 屬並行任務範圍,本次不改動其呼叫鏈)。
+	appcore.DefaultBuiltinFS = builtinTemplates
+
 	// Create an instance of the app structure
 	app := NewApp()
 

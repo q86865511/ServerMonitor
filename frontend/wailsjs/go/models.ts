@@ -361,6 +361,7 @@ export namespace main {
 	export class SecretDTO {
 	    key: string;
 	    label: string;
+	    required: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new SecretDTO(source);
@@ -370,6 +371,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
 	        this.label = source["label"];
+	        this.required = source["required"];
 	    }
 	}
 	export class SnapshotDTO {
