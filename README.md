@@ -45,8 +45,6 @@ Go + Wails(桌面)+ Svelte 5(TypeScript)前端 + Docker/Native 雙執行後端�
 
 ```
 go build ./...               # 編譯全部套件
-go test ./...                # 單元/整合測試(免 Docker)
-go test -tags docker ./...   # 真 Docker 整合測試 + 端到端 + 效能基準(需 Docker daemon)
 wails dev                    # 開發模式(GUI)
 wails build                  # 產出 Windows 可執行檔
 wails build -nsis            # 另產出 NSIS 安裝包(需本機裝 NSIS:winget install NSIS.NSIS)
@@ -54,23 +52,20 @@ go build ./cmd/agent         # 遠端節點代理(本平台)
 GOOS=linux GOARCH=amd64 go build -o servermonitor-agent ./cmd/agent   # 交叉編譯 Linux 節點代理
 ```
 
-端到端(T16,需 Docker daemon;會實際拉映像、建/啟容器,測後自動清理):
-
-```
-go test -tags docker -run TestE2E ./internal/app/                     # Minecraft 全流程 + 重啟對帳 + 效能基準
+<!-- 測試指令(開發者用;一般使用者不需,故以註解隱藏。完整矩陣另見 CLAUDE.md「常用指令」)
+go test ./...                                                        # 單元/整合測試(免 Docker)
+go test -tags docker ./...                                           # 真 Docker 整合測試 + 端到端 + 效能基準(需 Docker daemon)
+go test -tags docker -run TestE2E ./internal/app/                    # 端到端(需 Docker;拉映像建容器,測後自動清理)
 go test -tags docker -run TestE2E_MinecraftFullLifecycle ./internal/app/
-go test -tags docker -run TestE2E_Palworld ./internal/app/            # 需先 docker pull palworld 映像
-go test -tags docker -run TestPerf_LogThroughput ./internal/core/     # log 高流量 fanout 基準
-```
+go test -tags docker -run TestE2E_Palworld ./internal/app/           # 需先 docker pull palworld 映像
+go test -tags docker -run TestPerf_LogThroughput ./internal/core/    # log 高流量 fanout 基準
+go test -tags native ./...                                           # native 後端(僅 Windows,非 Windows 自動 skip)
+go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m
+GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m
+go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/   # docker↔native 備份互轉
+-->
 
-Native 執行後端測試(build tag `native`;僅 Windows,非 Windows 自動 skip;heavy E2E `-short` 跳過):
 
-```
-go test -tags native ./...                                                       # native 單元/整合測試(免 Docker)
-go test -tags native -run TestE2E_NativeMinecraftFullLifecycle ./internal/app/ -timeout 25m   # 真下載 JRE+server.jar,全流程
-GSM_NATIVE_PALWORLD_E2E=1 go test -tags native -run TestE2E_NativePalworld ./internal/app/ -timeout 40m  # SteamCMD 約 6-8GB,opt-in
-go test -tags "docker native" -run TestBackupInterop_DockerNative ./internal/agent/  # docker↔native 備份互轉(需 Docker daemon)
-```
 
 ## 多節點(遠端/雲端節點)
 

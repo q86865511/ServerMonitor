@@ -81,11 +81,9 @@ func TestE2E_MinecraftFullLifecycle(t *testing.T) {
 	rec, err := rt.Create(ctx, core.CreateOptions{
 		TemplateID: "minecraft",
 		Variant:    "paper",
+		Runtime:    "docker", // 範本有 [native] 區段,Windows 未指定會預設 native;本測試驗 docker 後端,須釘住
 		Params:     map[string]string{"EULA": "true"}, // VERSION 沿用範本 default(1.21.1)
 		Secrets:    map[string]string{"RCON_PASSWORD": mcRconPassword},
-		// 本檔為 docker 標籤 E2E,必須釘住 docker:範本含 [native] 後,Windows 未指定時
-		// resolveRuntime 預設 native,會使本測試悄悄走 JRE 下載路徑並撞測試逾時。
-		Runtime: "docker",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -287,9 +285,8 @@ func TestE2E_Palworld(t *testing.T) {
 	ctx := context.Background()
 	rec, err := rt.Create(ctx, core.CreateOptions{
 		TemplateID: "palworld",
+		Runtime:    "docker", // 同 Minecraft 測試:palworld 範本亦有 [native] 區段,須釘住 docker
 		Secrets:    map[string]string{"ADMIN_PASSWORD": "e2e-palworld-admin"},
-		// docker 標籤 E2E 釘住 docker(理由同 Minecraft 測試:Windows 未指定時預設 native)。
-		Runtime: "docker",
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
