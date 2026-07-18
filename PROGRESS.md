@@ -6,6 +6,7 @@
 
 ## 已完成
 
+- [2026-07-18] 🌐 七項改進階段 3(/pipeline 波次 3)遠端節點基礎(需求 7):**cmd/agent** 獨立執行檔(agent.toml 零設定可跑、持久 token(64-hex 驗證+原子寫)、自簽 ECDSA P-256 憑證+SHA-256 指紋、TLS auto/custom/off、Slowloris 逾時防護、優雅關閉含 WS 串流主動收束;Linux 交叉編譯過,Ubuntu 雲端可部署);**core 多節點**:AppConfig.Nodes 持久化(原子寫)、token 只入 OS 金鑰庫、NodeClient TLS 指紋 pinning(常數時間比對,HTTP/WS 同管道)、Probe/Add/Remove/ListNodes 綁定(TOFU 流程、RemoveNode 競態複查回滾、損壞節點孤兒可見可移除、開機註冊先標離線再非同步探測);**GUI**:節點頁管理區(新增/測試/指紋確認/移除)、精靈 Step1 節點下拉(離線禁選、is_local 判定不硬編)、遠端 Docker 能力如實顯「未知」。雙審(reviewer+Codex)11 條(1 高:agent 無逾時 DoS)使用者裁決全修,全數落碼;一審安全結論:pin 實作正確、token 無洩漏路徑。驗證:go build/vet/test 全綠(-count=1)、GOOS=linux 綠、svelte-check 172 檔 0 錯、真 agent 端到端(https+401+openssl 指紋比對)。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w3.md。
 - [2026-07-18] 🖥️ 七項改進階段 2(/pipeline 波次 2)桌面封裝:**需求 3** app icon 換新(appicon.png 覆蓋+icon.ico 由 wails 重生,exe/視窗/系統匣同枚);**需求 5** 關窗縮系統匣(HideWindowOnClose+energye/systray v1.0.3,選單開窗/結束、左鍵單擊開窗)+第二實例具名事件(Local\ServerMonitor.SingleInstance.Wake)喚醒既有視窗後靜默退出(AppLock 仍為權威鎖);**需求 4** NSIS 安裝包(winget 裝 NSIS、`wails build -nsis` 產出 servermonitor-amd64-installer.exe,靜默裝測:exe/捷徑/登錄檔/解除安裝全正確)。雙審 7 條(3 中 4 低),使用者裁決全修:close 句柄競態改停止旗標+join、tray goroutine 補 LockOSThread(已驗 systray v1.0.3 init 只鎖主 goroutine)、非 Windows AppLock 衝突恢復錯誤對話框(wake 回傳 bool)、tray 結束改非同步派發;第 4/6 條依裁決記錄為已知限制。驗證:go build/vet/test 綠、GOOS=linux 綠、wails build -nsis 成功。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w2.md。
 - [2026-07-18] 🔧 七項改進階段 1(/pipeline 波次 1):**需求 1** Docker 即時偵測——NewDockerBackend 建構期 3s Ping(失敗→DockerAvailable=false、精靈 docker 置灰)、mapDockerErr/ensureImage 連線類錯誤友善化、精靈補「重試 Docker」按鈕;**需求 2** CF 金鑰條件必填——SecretSpec.Required(RCON/ADMIN_PASSWORD 標必填)、前端 missingSecrets 只計必填+CF 來源時 CF_API_KEY 才必填、後端 requiredSecretKeys 聯集 required 旗標(雙真源合流);**需求 6** 內建範本 go:embed(main.go all:templates→DefaultBuiltinFS→啟動抽出 dataRoot/templates-builtin/,暫存目錄原子替換、失敗沿用舊副本,LoadDir/Stat 錯誤不再靜默)。雙審(reviewer+Codex MCP)6 條裁決全數成立、使用者核可全修(抽出原子化/空值 secrets 不入庫不注入/mapDockerErr 全路徑友善化/必填聯集/Stat log/行尾噪音自消);驗證:go build/vet/test 全綠、svelte-check 171 檔 0 錯、wails build OK。證據:.pipeline/reviews/2026-07-18-{reviewer,codex}-w1.md。
 - [2026-07-18] 🚢 v0.1.0 首次發佈:PR #3(gui-redesign)併入 master 後自主線建置,GitHub Release 附 ServerMonitor-v0.1.0-windows-amd64.zip(exe+templates/ 隨附佈局,銷掉打包待辦);內容=game-server-manager+native-backend+gui-redesign 三功能收官。
@@ -31,7 +32,8 @@
 
 ## 進行中
 
-- 七項改進 pipeline(每階段暫停等使用者指令):✅階段 1 執行後端與範本可靠性;⬜階段 2 桌面封裝(icon 已備於主 repo build/ICON.png、energye/systray 縮匣+第二實例喚醒、NSIS 安裝包);⬜階段 3 遠端節點基礎(cmd/agent、持久 token、自簽憑證+指紋 pinning、節點管理 UI);⬜階段 4 整體回歸+文件關卡。
+- 七項改進 pipeline(每階段暫停等使用者指令):✅階段 1 執行後端與範本可靠性;✅階段 2 桌面封裝;✅階段 3 遠端節點基礎;▶階段 4 整體回歸(docker tag 測試、E2E)+文件收尾(README 多節點/agent 部署、CLAUDE cmd/agent 指令)。
+- 多節點後續擴充(階段 3 界定範圍外,已在程式註解標明):遠端節點 /health 回報 Docker 能力(現 GUI 顯「未知」)、遠端節點背景編排(對帳/監控/事件迴圈,現只本機)、Create/Remove 共用序列化鎖根治競態。
 
 ## 待辦
 

@@ -1,5 +1,25 @@
 export namespace main {
 	
+	export class AddNodeRequest {
+	    name: string;
+	    base_url: string;
+	    token: string;
+	    fingerprint: string;
+	    insecure_http: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new AddNodeRequest(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.base_url = source["base_url"];
+	        this.token = source["token"];
+	        this.fingerprint = source["fingerprint"];
+	        this.insecure_http = source["insecure_http"];
+	    }
+	}
 	export class AlertSettingsDTO {
 	    webhook_configured: boolean;
 	    cpu_percent: number;
@@ -256,10 +276,39 @@ export namespace main {
 	    }
 	}
 	
+	export class NodeInfoDTO {
+	    name: string;
+	    base_url: string;
+	    online: boolean;
+	    docker_available: boolean;
+	    fingerprint: string;
+	    insecure_http: boolean;
+	    last_err: string;
+	    removable: boolean;
+	    is_local: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeInfoDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.base_url = source["base_url"];
+	        this.online = source["online"];
+	        this.docker_available = source["docker_available"];
+	        this.fingerprint = source["fingerprint"];
+	        this.insecure_http = source["insecure_http"];
+	        this.last_err = source["last_err"];
+	        this.removable = source["removable"];
+	        this.is_local = source["is_local"];
+	    }
+	}
 	export class NodeStatusDTO {
 	    node: string;
 	    online: boolean;
 	    docker_available: boolean;
+	    is_local: boolean;
 	    last_err: string;
 	
 	    static createFrom(source: any = {}) {
@@ -271,6 +320,7 @@ export namespace main {
 	        this.node = source["node"];
 	        this.online = source["online"];
 	        this.docker_available = source["docker_available"];
+	        this.is_local = source["is_local"];
 	        this.last_err = source["last_err"];
 	    }
 	}
@@ -312,6 +362,24 @@ export namespace main {
 	        this.host_port = source["host_port"];
 	        this.protocol = source["protocol"];
 	        this.required = source["required"];
+	    }
+	}
+	export class ProbeNodeResultDTO {
+	    ok: boolean;
+	    fingerprint: string;
+	    version: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeNodeResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.ok = source["ok"];
+	        this.fingerprint = source["fingerprint"];
+	        this.version = source["version"];
+	        this.error = source["error"];
 	    }
 	}
 	export class QueryEventsRequest {

@@ -69,6 +69,13 @@ func defaultBackendFactory(opts agent.BackendOptions) (agent.RuntimeBackend, err
 	return agent.NewDispatchBackend(native, docker)
 }
 
+// NewDefaultBackend 依 BackendOptions 建立與 in-process 節點代理等價的頂層執行後端(Windows 為
+// dispatch(native+docker)、非 Windows 為 docker-only),供獨立 agent 執行檔(cmd/agent)組裝
+// 與 in-process 完全相同的後端鏈——確保遠端 agent 的備份 tar 格式、資料目錄結構與行為和本機互通。
+func NewDefaultBackend(opts agent.BackendOptions) (agent.RuntimeBackend, error) {
+	return defaultBackendFactory(opts)
+}
+
 // defaultDockerFactory 由 BackendOptions 建立官方 Docker SDK 後端(dispatch 子後端與非 Windows
 // 頂層共用)。
 func defaultDockerFactory(opts agent.BackendOptions) (agent.RuntimeBackend, error) {
@@ -131,8 +138,13 @@ const announceRestartMessage = "伺服器即將依排程重新啟動,請留意�
 // Runtime 是組裝完成的應用後端。持有全部服務與背景迴圈的生命週期控制。
 // 綁定層經其匯出方法/欄位操作 core;背景迴圈由 Start 啟動、Shutdown 依序收束。
 type Runtime struct {
-	node     string
-	dataRoot string
+	node       string
+	dataRoot   string
+	configPath string // 一般設定檔(config.json)路徑;R5 多節點的 nodes 清單持久化於此
+
+	// nodesMu 序列化遠端節點的新增/移除(config 讀改寫 + 金鑰庫 + registry 註冊)的關鍵區段,
+	// 使並行的 AddNode/RemoveNode 不互踩 config 檔與 registry(R5 多節點)。
+	nodesMu sync.Mutex
 
 	// 基礎設施。
 	lock    *core.AppLock
@@ -267,10 +279,11 @@ func Bootstrap(opts Options) (*Runtime, error) {
 
 	// 從此點起若中途失敗,須釋放已取得的資源。
 	r := &Runtime{
-		node:     node,
-		dataRoot: dataRoot,
-		lock:     lock,
-		watched:  make(map[string]bool),
+		node:       node,
+		dataRoot:   dataRoot,
+		configPath: filepath.Join(baseRoot, appConfigFileName),
+		lock:       lock,
+		watched:    make(map[string]bool),
 	}
 	fail := func(e error) (*Runtime, error) {
 		r.releasePartial()
@@ -344,6 +357,10 @@ func Bootstrap(opts Options) (*Runtime, error) {
 		// 「r.client 恆非 nil」的不變式,杜絕其他潛在使用點的 nil deref(T15 雙審 #1)。
 		r.client = placeholder
 	}
+
+	// 8b) 遠端節點(R5 多節點):把 config.json 的 nodes 逐一以金鑰庫 token 建 NodeClient 註冊進
+	//     registry;離線/設定錯不阻擋啟動(比照 local 的離線容忍),失敗僅記 log 並標離線。
+	r.registerConfiguredNodes(cfg.Nodes)
 
 	// 9) core 服務接線。
 	rootCtx, rootCancel := context.WithCancel(context.Background())

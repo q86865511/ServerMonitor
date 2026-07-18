@@ -6,6 +6,7 @@
 
   interface WizardForm {
     name: string;
+    node: string;
     variant: string;
     paramValues: Record<string, string>;
     secretValues: Record<string, string>;
@@ -20,7 +21,6 @@
   let {
     form,
     tmpl,
-    nodeLabel,
     submitting,
     provStage,
     provPercent,
@@ -29,7 +29,6 @@
   }: {
     form: WizardForm;
     tmpl: main.TemplateDTO;
-    nodeLabel: string;
     submitting: boolean;
     provStage: string;
     provPercent: number;
@@ -73,7 +72,7 @@
     {#if variantLabel !== ''}
       <div class="row"><dt>變體</dt><dd>{variantLabel}</dd></div>
     {/if}
-    <div class="row"><dt>節點</dt><dd>{nodeLabel}</dd></div>
+    <div class="row"><dt>節點</dt><dd>{form.node}</dd></div>
     <div class="row"><dt>執行後端</dt><dd>{runtimeName(form.runtime)}</dd></div>
     {#if form.runtime === 'native'}
       <div class="row">

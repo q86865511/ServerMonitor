@@ -46,6 +46,7 @@
 
   interface WizardForm {
     name: string;
+    node: string;
     templateId: string;
     variant: string;
     paramValues: Record<string, string>;
@@ -80,6 +81,7 @@
 
   let form = $state<WizardForm>({
     name: '',
+    node: 'local',
     templateId: '',
     variant: '',
     paramValues: {},
@@ -99,7 +101,6 @@
   let blockedMods = $state<BlockedMod[]>([]);
   let unlistenProv: (() => void) | null = null;
 
-  const nodeLabel = $derived($nodeStatuses[0]?.node || 'local');
   const tmpl = $derived(templates.find((t) => t.id === form.templateId));
 
   const isCFSource = $derived(form.modpackType === 'curseforge' || form.modpackType === 'manual-cfzip');
@@ -119,8 +120,16 @@
           : '',
   );
 
+  // 所選節點是否為本機:以後端 is_local 旗標判定,不硬編節點名(使用者可能自訂本機節點名)。
+  const selectedNodeIsLocal = $derived(
+    $nodeStatuses.find((n) => n.node === form.node)?.is_local ?? form.node === 'local',
+  );
+
   // docker-only 範本 + Docker 不可用 → 無可用執行後端(阻擋前進)。
+  // dockerAvailable 僅反映本機偵測;選了遠端節點時遠端 Docker 能力未知(後端限制,見
+  // Step3Config 提示),不可用本機旗標阻擋——留給節點端實際供應時判斷。
   const noRuntimeAvailable = $derived.by(() => {
+    if (!selectedNodeIsLocal) return false;
     const rts = tmpl?.runtimes ?? [];
     if (rts.length === 0) return false;
     return rts.every((r) => r === 'docker') && !dockerAvailable;
@@ -333,7 +342,7 @@
       variant: form.variant,
       params: { ...form.paramValues },
       secrets,
-      node: '',
+      node: form.node,
       runtime: form.runtime,
       memory_mb: form.runtime === 'native' ? parseIntOr0(form.memoryMB) : 0,
       cpu_percent: form.runtime === 'native' ? parseIntOr0(form.cpuPercent) : 0,
@@ -387,7 +396,7 @@
 
       <section class="content">
         {#if step === 1}
-          <Step1Basic {form} {nodeLabel} />
+          <Step1Basic {form} nodeStatuses={$nodeStatuses} />
         {:else if step === 2}
           <Step2Template
             {templates}
@@ -413,6 +422,7 @@
             {templateHasCFSecret}
             {modpackRefPlaceholder}
             {noRuntimeAvailable}
+            isRemoteNode={!selectedNodeIsLocal}
           />
           {#if missingItems.length > 0}
             <div class="missing">
@@ -426,7 +436,6 @@
           <Step4Confirm
             {form}
             {tmpl}
-            {nodeLabel}
             {submitting}
             {provStage}
             {provPercent}

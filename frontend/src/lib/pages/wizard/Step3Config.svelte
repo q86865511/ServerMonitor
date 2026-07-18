@@ -10,6 +10,7 @@
   const CF_KEY = 'CF_API_KEY';
 
   interface WizardForm {
+    node: string;
     paramValues: Record<string, string>;
     secretValues: Record<string, string>;
     runtime: string;
@@ -33,6 +34,7 @@
     templateHasCFSecret,
     modpackRefPlaceholder,
     noRuntimeAvailable,
+    isRemoteNode,
   }: {
     form: WizardForm;
     tmpl: main.TemplateDTO;
@@ -45,6 +47,9 @@
     templateHasCFSecret: boolean;
     modpackRefPlaceholder: string;
     noRuntimeAvailable: boolean;
+    // 所選節點是否為遠端:由父層依後端 is_local 旗標判定並傳入(不在此硬編節點名)。
+    // 遠端節點的 Docker 能力後端尚未回報,不可用本機旗標置灰,只如實提示「以節點端實際為準」。
+    isRemoteNode: boolean;
   } = $props();
 
   const runtimes = $derived(tmpl.runtimes ?? []);
@@ -85,7 +90,7 @@
         <span class="lbl">執行後端<span class="req">*</span></span>
         <div class="runtime-opts">
           {#each runtimes as rt}
-            {@const disabled = rt === 'docker' && !dockerAvailable}
+            {@const disabled = rt === 'docker' && !dockerAvailable && !isRemoteNode}
             <div class="runtime-opt-row">
               <label class="runtime-opt" class:disabled class:on={form.runtime === rt}>
                 <input
@@ -114,6 +119,9 @@
               ? 'Docker 容器:需 Docker Desktop,提供檔案系統與網路隔離。'
               : '選擇此實例的執行方式。'}
         </div>
+        {#if isRemoteNode}
+          <div class="hint">遠端節點的 Docker 能力以節點端實際為準,本機偵測結果不適用。</div>
+        {/if}
       </div>
     {:else}
       <div class="field">

@@ -1,20 +1,34 @@
 <script lang="ts">
   // 步驟①基本資訊:顯示名稱(選填,空→後端存空,由卡片 fallback「範本名 #uuid 前 8 碼」)
-  // 與節點(單節點顯示 local 不可選)。
+  // 與節點選擇(R5 多節點:下拉來源為 nodeStatuses 輪詢快照,離線節點標示並禁選)。
+  import type { main } from '../../../../wailsjs/go/models';
   import TextField from '../../ui/TextField.svelte';
+  import Select from '../../ui/Select.svelte';
 
   interface WizardForm {
     name: string;
+    node: string;
     [k: string]: unknown;
   }
 
   let {
     form,
-    nodeLabel,
+    nodeStatuses,
   }: {
     form: WizardForm;
-    nodeLabel: string;
+    nodeStatuses: main.NodeStatusDTO[];
   } = $props();
+
+  // 未輪詢到任何節點(如首次載入尚未拉到)時仍保底提供 local,避免下拉空白。
+  const nodeOptions = $derived(
+    nodeStatuses.length > 0
+      ? nodeStatuses.map((n) => ({
+          value: n.node,
+          label: n.online ? n.node : `${n.node}(離線)`,
+          disabled: !n.online,
+        }))
+      : [{ value: 'local', label: 'local' }],
+  );
 </script>
 
 <div class="step">
@@ -27,13 +41,13 @@
   />
 
   <div class="field">
-    <span class="lbl">節點</span>
-    <div class="node-val">
-      <span class="dot" aria-hidden="true"></span>
-      <span class="node-name">{nodeLabel}</span>
-      <span class="muted">單一節點,不可變更</span>
-    </div>
-    <div class="hint">目前為單機部署;多節點為預留能力。</div>
+    <Select
+      label="節點"
+      value={form.node}
+      options={nodeOptions}
+      onChange={(v) => (form.node = v)}
+    />
+    <div class="hint">離線節點無法選取;新增節點請至「節點」頁管理。</div>
   </div>
 </div>
 
@@ -47,35 +61,6 @@
     display: flex;
     flex-direction: column;
     gap: 4px;
-  }
-  .lbl {
-    font-size: var(--text-sm);
-    color: var(--fg-1);
-  }
-  .node-val {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    background-color: var(--bg-0);
-    border: 1px solid var(--line-strong);
-    border-radius: var(--radius-sm);
-    padding: 7px 10px;
-    color: var(--fg-0);
-    font-size: var(--text-base);
-  }
-  .dot {
-    width: 8px;
-    height: 8px;
-    border-radius: var(--radius-full);
-    background-color: var(--ok);
-    flex: none;
-  }
-  .node-name {
-    font-weight: 600;
-  }
-  .muted {
-    color: var(--fg-2);
-    font-size: var(--text-xs);
   }
   .hint {
     font-size: var(--text-xs);

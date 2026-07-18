@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"servermonitor/internal/protocol"
@@ -26,6 +27,30 @@ type AppConfig struct {
 	// 本欄位僅作「遷移入口」:使用者(或舊版)以編輯設定檔填入明文時,啟動時遷入金鑰庫並清空回寫
 	// (欄位 omitempty,清空後不再序列化)。故正常運行的 config.json 不含此欄位;讀到值即代表待遷移。
 	CurseForgeAPIKey string `json:"curseforge_api_key,omitempty"`
+	// Nodes 是使用者新增的遠端節點清單(R5 多節點)。本機 in-process 節點("local")不列於此——
+	// 它由 Bootstrap 恆註冊,不持久化。每個節點的 bearer token **不落 config**,以 SecretStore
+	// 存(鍵含節點名命名空間,見 NodeTokenRef);config 只保存非敏感的連線與信任設定。
+	Nodes []NodeConfig `json:"nodes,omitempty"`
+}
+
+// NodeConfig 是一個遠端節點的持久化連線/信任設定(R5 多節點)。敏感的 bearer token 不在此——
+// 存 OS 金鑰庫(NodeTokenRef(Name))。
+type NodeConfig struct {
+	// Name 是節點在核心中的唯一識別(gsm.node 命名空間;不可為 "local")。
+	Name string `json:"name"`
+	// BaseURL 是節點代理根位址(如 https://vps.example.com:9444;不含 API 版本前綴)。
+	BaseURL string `json:"base_url"`
+	// TLSFingerprint 是對端葉憑證的 SHA-256 指紋(冒號分隔 hex;自簽 TOFU 模式 pin 用)。
+	// 空=走系統 CA 驗證(對端為正式憑證時)。
+	TLSFingerprint string `json:"tls_fingerprint,omitempty"`
+	// InsecureHTTP true 時允許 BaseURL 為明文 http(僅限內網/VPN)。
+	InsecureHTTP bool `json:"insecure_http,omitempty"`
+}
+
+// NodeTokenRef 回傳某節點 bearer token 在 OS 金鑰庫的參照(R5 多節點)。以節點名命名空間,
+// 避免與逐實例機密(instanceSecretKey)或節點層單一覆蓋值(curseForgeOverrideRef)相撞。
+func NodeTokenRef(name string) protocol.SecretRef {
+	return protocol.SecretRef{Key: "node-token/" + name}
 }
 
 // DefaultAppConfig 回傳內建預設設定。
@@ -126,14 +151,37 @@ func CurseForgeOverrideKeySet(secrets *SecretStore) bool {
 	return strings.TrimSpace(v) != ""
 }
 
-// SaveAppConfig 以 UTF-8 JSON(縮排、易讀)寫出設定檔。
+// SaveAppConfig 以 UTF-8 JSON(縮排、易讀)寫出設定檔。採「寫暫存檔→rename」原子替換,避免寫入
+// 途中崩潰/磁碟滿留下半份 config.json——毀損檔會使 LoadAppConfig 降級為預設值,靜默丟失所有已設
+// 定的遠端節點(其 token 亦成金鑰庫孤兒)。暫存檔與目標同目錄以確保 rename 為同檔系統原子操作。
 func SaveAppConfig(path string, cfg AppConfig) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化設定失敗: %w", err)
 	}
-	if err := os.WriteFile(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("寫入設定檔失敗: %w", err)
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".tmp-config-*.json")
+	if err != nil {
+		return fmt.Errorf("建立設定暫存檔失敗: %w", err)
+	}
+	tmp := f.Name()
+	if _, werr := f.Write(append(data, '\n')); werr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("寫入設定暫存檔失敗: %w", werr)
+	}
+	if serr := f.Sync(); serr != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("同步設定暫存檔失敗: %w", serr)
+	}
+	if cerr := f.Close(); cerr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("關閉設定暫存檔失敗: %w", cerr)
+	}
+	if rerr := os.Rename(tmp, path); rerr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("替換設定檔失敗: %w", rerr)
 	}
 	return nil
 }

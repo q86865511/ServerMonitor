@@ -55,6 +55,14 @@ func (r *NodeRegistry) Register(node string, client *NodeClient) {
 	r.nodes[node] = &nodeEntry{client: client, online: true}
 }
 
+// Unregister 移除一個節點的登錄(供 RemoveNode 反註冊;R5 多節點)。查無視為成功(冪等)。
+// 移除後對該節點的 Call 回 ErrUnknownNode、List/Status 不再含它。
+func (r *NodeRegistry) Unregister(node string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.nodes, node)
+}
+
 // Client 取得某節點的 NodeClient;未註冊回 ErrUnknownNode。
 func (r *NodeRegistry) Client(node string) (*NodeClient, error) {
 	r.mu.Lock()
