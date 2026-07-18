@@ -113,9 +113,12 @@ func (f *fakeRcon) handle(conn net.Conn) {
 			}
 			_ = writeRconPacket(conn, respID, rconTypeAuthResponse, "") // 認證結果
 		case rconTypeExecCommand:
-			f.mu.Lock()
-			f.execs = append(f.execs, body)
-			f.mu.Unlock()
+			// 空 body 為 adapter 的循序哨兵(空指令),回應但不記入 execs(免蓋掉 lastExec 斷言)。
+			if body != "" {
+				f.mu.Lock()
+				f.execs = append(f.execs, body)
+				f.mu.Unlock()
+			}
 			switch f.mode {
 			case fakeRconMultiPacket:
 				// 把回應拆成 3 個封包(同 execID),測試哨兵法聚合。

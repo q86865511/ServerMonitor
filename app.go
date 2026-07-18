@@ -47,7 +47,10 @@ func NewApp() *App {
 // 其餘致命錯誤同樣以 dialog 呈現後退出。Docker 不可用不致命(節點離線,GUI 照常)。
 func (a *App) OnStartup(ctx context.Context) {
 	a.ctx = ctx
-	rt, err := app.Bootstrap(app.Options{})
+	// ReadyTimeout:遊戲伺服器冷啟(itzg 前置下載/JVM 起動/世界生成、native 下載 JRE+伺服器檔)
+	// 是分鐘級(E2E 對 Minecraft/Palworld 分別給 8~15 分鐘),預設 60s 會把健康的首次啟動判成
+	// 逾時並標 Error。GUI 放寬到 10 分鐘;就緒探針一成功即返回,不會讓正常啟動多等。
+	rt, err := app.Bootstrap(app.Options{ReadyTimeout: 10 * time.Minute})
 	if err != nil {
 		// AppLock 衝突(R13):本實例為後啟者。喚醒成功才靜默退出——此為防禦性後備,正常
 		// 時序下第二實例已於 main 的 newSingleInstance 提早偵測退出(見 singleinstance_windows.go);
