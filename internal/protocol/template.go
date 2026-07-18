@@ -16,6 +16,7 @@ type GameTemplate struct {
 	SchemaVersion    int               `toml:"schema_version"`
 	ID               string            `toml:"id"`
 	Name             string            `toml:"name"`
+	Icon             string            `toml:"icon"`    // 選配:範本圖示,範本目錄相對路徑(R14);經 AssetServer /tpl-icons/{id} 服務
 	Runtime          string            `toml:"runtime"` // 預設 runtime:"docker" | "native"(能力另由 [docker]/[native] 區段存在推導)
 	DataDirs         []string          `toml:"data_dirs"`
 	Docker           *DockerImage      `toml:"docker"`

@@ -86,7 +86,8 @@ type TemplateDTO struct {
 	Params   []ParamDTO   `json:"params"`
 	Secrets  []SecretDTO  `json:"secrets"`
 	Ports    []PortDTO    `json:"ports"`
-	Modpack  bool         `json:"modpack"` // 是否支援模組包(R11)
+	Modpack  bool         `json:"modpack"`  // 是否支援模組包(R11)
+	HasIcon  bool         `json:"has_icon"` // 範本是否有可服務的 icon(R14);true 時前端載入 /tpl-icons/{id},否則用佔位圖
 }
 
 // VariantDTO 是變體視圖。
@@ -121,15 +122,28 @@ type PortDTO struct {
 
 // InstanceDTO 是實例的前端視圖(含 desired/observed)。
 type InstanceDTO struct {
-	UUID          string `json:"uuid"`
-	TemplateID    string `json:"template_id"`
-	Variant       string `json:"variant"`
+	UUID       string `json:"uuid"`
+	TemplateID string `json:"template_id"`
+	Variant    string `json:"variant"`
+	// Name 是使用者指定的顯示名稱(R10);空字串時前端以「範本名 #uuid8」fallback。
+	Name          string `json:"name"`
 	Node          string `json:"node"`
 	DesiredState  string `json:"desired_state"`
 	ObservedState string `json:"observed_state"`
 	// Runtime 是此實例的執行後端標記("native" | "docker";native-backend R12),由 RuntimeID
 	// 前綴推導(見 runtimeFromID),供清單/卡片顯示 runtime badge。
 	Runtime string `json:"runtime"`
+	// Ports 是此實例已分配的連接埠(R12);name 用於區分遊戲埠與管理埠等角色(既有資料 name 為空)。
+	Ports []InstancePortDTO `json:"ports"`
+}
+
+// InstancePortDTO 是實例已分配連接埠的前端視圖(R12)。Name 取自範本 PortSpec.Name(舊資料為空);
+// 卡片位址欄依 name 對應範本第一個 required 埠決定顯示哪一項。
+type InstancePortDTO struct {
+	Name     string `json:"name"`
+	BindIP   string `json:"bind_ip"`
+	Protocol string `json:"protocol"`
+	HostPort int    `json:"host_port"`
 }
 
 // SnapshotDTO 是聚合監控快照的前端視圖(R6)。
@@ -140,6 +154,7 @@ type SnapshotDTO struct {
 	Stats         protocol.ResourceStats `json:"stats"`
 	PlayerCount   *int                   `json:"player_count"`
 	Online        *bool                  `json:"online"`
+	StartedAt     string                 `json:"started_at"` // 運行中實例啟動時刻(RFC3339;R11);停止/未知為空字串,前端顯示「—」
 	ObservedState string                 `json:"observed_state"`
 }
 
@@ -147,6 +162,7 @@ type SnapshotDTO struct {
 type CreateInstanceRequest struct {
 	TemplateID string            `json:"template_id"`
 	Variant    string            `json:"variant"`
+	Name       string            `json:"name"` // 使用者指定的顯示名稱(R10;可空)
 	Params     map[string]string `json:"params"`
 	Secrets    map[string]string `json:"secrets"`
 	Node       string            `json:"node"`
@@ -240,7 +256,9 @@ func (a *App) ListTemplates() []TemplateDTO {
 	tmpls := a.rt.Templates()
 	out := make([]TemplateDTO, 0, len(tmpls))
 	for _, t := range tmpls {
-		out = append(out, toTemplateDTO(t))
+		dto := toTemplateDTO(t)
+		_, dto.HasIcon = a.rt.TemplateIconPath(t.ID) // R14:engine 查得可服務 icon 才 true
+		out = append(out, dto)
 	}
 	return out
 }
@@ -273,6 +291,7 @@ func (req CreateInstanceRequest) toCreateOptions() core.CreateOptions {
 	opts := core.CreateOptions{
 		TemplateID: req.TemplateID,
 		Variant:    req.Variant,
+		Name:       req.Name,
 		Params:     req.Params,
 		Secrets:    req.Secrets,
 		Node:       req.Node,
@@ -303,21 +322,38 @@ func (a *App) RemoveInstance(uuid string, purge bool) error {
 	return a.rt.RemoveInstance(a.bgCtx(), uuid, purge)
 }
 
-// ListInstances 回傳所有實例(含 desired/observed)。
+// ListInstances 回傳所有實例(含 desired/observed 與已分配連接埠)。埠以單次查詢分組帶入,
+// 避免對每個實例各查一次的 N+1(R12)。
 func (a *App) ListInstances() ([]InstanceDTO, error) {
 	recs, err := a.rt.Instances()
+	if err != nil {
+		return nil, err
+	}
+	portsByInst, err := a.rt.PortsByInstance()
 	if err != nil {
 		return nil, err
 	}
 	out := make([]InstanceDTO, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, InstanceDTO{
-			UUID: r.UUID, TemplateID: r.TemplateID, Variant: r.Variant, Node: r.Node,
+			UUID: r.UUID, TemplateID: r.TemplateID, Variant: r.Variant, Name: r.Name, Node: r.Node,
 			DesiredState: string(r.DesiredState), ObservedState: string(r.ObservedState),
 			Runtime: runtimeFromID(r.RuntimeID),
+			Ports:   toInstancePortDTOs(portsByInst[r.UUID]),
 		})
 	}
 	return out, nil
+}
+
+// toInstancePortDTOs 把 core 埠預留轉為前端視圖(R12)。
+func toInstancePortDTOs(ports []core.PortReservation) []InstancePortDTO {
+	out := make([]InstancePortDTO, 0, len(ports))
+	for _, p := range ports {
+		out = append(out, InstancePortDTO{
+			Name: p.Name, BindIP: p.BindIP, Protocol: p.Protocol, HostPort: p.HostPort,
+		})
+	}
+	return out
 }
 
 // ---- 監控 ----
@@ -328,10 +364,60 @@ func (a *App) GetSnapshot(uuid string) (SnapshotDTO, error) {
 	if !ok {
 		return SnapshotDTO{UUID: uuid, Monitored: false}, nil
 	}
+	startedAt := ""
+	if snap.StartedAt != nil {
+		startedAt = snap.StartedAt.UTC().Format(time.RFC3339)
+	}
 	return SnapshotDTO{
 		UUID: snap.UUID, Monitored: true, HasStats: snap.HasStats, Stats: snap.Stats,
-		PlayerCount: snap.PlayerCount, Online: snap.Online, ObservedState: string(snap.ObservedState),
+		PlayerCount: snap.PlayerCount, Online: snap.Online, StartedAt: startedAt,
+		ObservedState: string(snap.ObservedState),
 	}, nil
+}
+
+// MetricPointDTO 是聚合指標時序的前端視圖(R13)。TsUTC 為 15s bucket 起點(RFC3339,UTC);
+// MemoryBytes/MemoryLimit/PlayerCount 為 nil 時表該點該欄不可採集/不適用,趨勢圖畫缺口不補 0。
+type MetricPointDTO struct {
+	TsUTC       string  `json:"ts_utc"`
+	CPUPercent  float64 `json:"cpu_percent"`
+	MemoryBytes *int64  `json:"memory_bytes"`
+	MemoryLimit *int64  `json:"memory_limit"`
+	PlayerCount *int    `json:"player_count"`
+}
+
+// QueryMetrics 回傳某實例自 sinceUnix(Unix 秒;含)起的聚合指標時序,按時間升冪(R13)。
+// 供詳細頁趨勢圖回填歷史。
+func (a *App) QueryMetrics(uuid string, sinceUnix int64) ([]MetricPointDTO, error) {
+	pts, err := a.rt.QueryMetrics(uuid, time.Unix(sinceUnix, 0).UTC())
+	if err != nil {
+		return nil, err
+	}
+	return toMetricPointDTOs(pts), nil
+}
+
+// QueryMetricsSummary 回傳自 sinceUnix(Unix 秒;含)起、各 15s bucket 的全體平均(R13)。
+// 供總覽頁全體 CPU/RAM 歷史趨勢。
+func (a *App) QueryMetricsSummary(sinceUnix int64) ([]MetricPointDTO, error) {
+	pts, err := a.rt.QueryMetricsSummary(time.Unix(sinceUnix, 0).UTC())
+	if err != nil {
+		return nil, err
+	}
+	return toMetricPointDTOs(pts), nil
+}
+
+// toMetricPointDTOs 把 core 指標點轉為前端視圖(NULL 欄位以 nil 指標透傳)。
+func toMetricPointDTOs(pts []core.MetricPoint) []MetricPointDTO {
+	out := make([]MetricPointDTO, 0, len(pts))
+	for _, p := range pts {
+		out = append(out, MetricPointDTO{
+			TsUTC:       p.TsUTC.UTC().Format(time.RFC3339),
+			CPUPercent:  p.CPUPercent,
+			MemoryBytes: p.MemoryBytes,
+			MemoryLimit: p.MemoryLimit,
+			PlayerCount: p.PlayerCount,
+		})
+	}
+	return out
 }
 
 // SubscribeLogs 開始把某實例的 log 串流經事件 "logs:<uuid>" 推送給前端(冪等)。

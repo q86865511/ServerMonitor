@@ -16,6 +16,7 @@ type InstanceRecord struct {
 	UUID          string
 	TemplateID    string
 	Variant       string
+	Name          string // 使用者指定的顯示名稱(R10);空=前端以「範本名 #uuid8」fallback
 	ParamsJSON    json.RawMessage
 	Node          string
 	RuntimeID     protocol.RuntimeID
@@ -32,18 +33,19 @@ func (s *Store) UpsertInstance(rec InstanceRecord) error {
 	}
 	_, err := s.db.Exec(`
 		INSERT INTO instances
-			(uuid, template_id, variant, params_json, node, runtime_id, desired_state, observed_state, op_generation)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(uuid, template_id, variant, name, params_json, node, runtime_id, desired_state, observed_state, op_generation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(uuid) DO UPDATE SET
 			template_id    = excluded.template_id,
 			variant        = excluded.variant,
+			name           = excluded.name,
 			params_json    = excluded.params_json,
 			node           = excluded.node,
 			runtime_id     = excluded.runtime_id,
 			desired_state  = excluded.desired_state,
 			observed_state = excluded.observed_state,
 			op_generation  = excluded.op_generation`,
-		rec.UUID, rec.TemplateID, rec.Variant, string(params), rec.Node,
+		rec.UUID, rec.TemplateID, rec.Variant, rec.Name, string(params), rec.Node,
 		string(rec.RuntimeID), string(rec.DesiredState), string(rec.ObservedState), rec.OpGeneration)
 	if err != nil {
 		return fmt.Errorf("寫入實例 %s 失敗: %w", rec.UUID, err)
@@ -54,7 +56,7 @@ func (s *Store) UpsertInstance(rec InstanceRecord) error {
 // GetInstance 依 uuid 取一列實例;查無回 ErrNotFound。
 func (s *Store) GetInstance(uuid string) (InstanceRecord, error) {
 	row := s.db.QueryRow(`
-		SELECT uuid, template_id, variant, params_json, node, runtime_id, desired_state, observed_state, op_generation
+		SELECT uuid, template_id, variant, name, params_json, node, runtime_id, desired_state, observed_state, op_generation
 		FROM instances WHERE uuid = ?`, uuid)
 	rec, err := scanInstance(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -66,7 +68,7 @@ func (s *Store) GetInstance(uuid string) (InstanceRecord, error) {
 // ListInstances 回傳所有實例,依 uuid 排序(穩定輸出)。
 func (s *Store) ListInstances() ([]InstanceRecord, error) {
 	rows, err := s.db.Query(`
-		SELECT uuid, template_id, variant, params_json, node, runtime_id, desired_state, observed_state, op_generation
+		SELECT uuid, template_id, variant, name, params_json, node, runtime_id, desired_state, observed_state, op_generation
 		FROM instances ORDER BY uuid`)
 	if err != nil {
 		return nil, fmt.Errorf("查詢實例清單失敗: %w", err)
@@ -106,7 +108,7 @@ func scanInstance(sc rowScanner) (InstanceRecord, error) {
 		desired  string
 		observed string
 	)
-	if err := sc.Scan(&rec.UUID, &rec.TemplateID, &rec.Variant, &params, &rec.Node,
+	if err := sc.Scan(&rec.UUID, &rec.TemplateID, &rec.Variant, &rec.Name, &params, &rec.Node,
 		&runtime, &desired, &observed, &rec.OpGeneration); err != nil {
 		return InstanceRecord{}, err
 	}

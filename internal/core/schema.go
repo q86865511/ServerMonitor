@@ -92,6 +92,31 @@ var migrations = []migration{
 			`ALTER TABLE schedules ADD COLUMN last_fired_utc TEXT`,
 		},
 	},
+	{
+		// v3(gui-redesign T1/T2):一次遷移含三件事——
+		//   - instances.name:實例顯示名稱(R10);既有實例為空,前端以「範本名 #uuid8」fallback。
+		//   - port_reservations.name:埠角色名(R12,取自範本 PortSpec.Name);既有資料為空 →
+		//     顯示埠但不標角色。
+		//   - metrics 表(R13):15s 聚合的 CPU/記憶體/玩家數時序,保留 36h。memory_bytes/
+		//     memory_limit 為 nullable INTEGER(NULL=該 bucket 不可採集,前端畫缺口;不持久化假 0);
+		//     player_count 亦 nullable(nil=不適用)。ts_utc 為固定寬度 UTC 字串(字典序即時序),
+		//     idx_metrics_ts 供 Prune 批刪走索引範圍掃描。
+		version: 3,
+		stmts: []string{
+			`ALTER TABLE instances ADD COLUMN name TEXT NOT NULL DEFAULT ''`,
+			`ALTER TABLE port_reservations ADD COLUMN name TEXT NOT NULL DEFAULT ''`,
+			`CREATE TABLE metrics (
+				instance_uuid TEXT NOT NULL,
+				ts_utc        TEXT NOT NULL,
+				cpu_percent   REAL NOT NULL,
+				memory_bytes  INTEGER,
+				memory_limit  INTEGER,
+				player_count  INTEGER,
+				PRIMARY KEY (instance_uuid, ts_utc)
+			)`,
+			`CREATE INDEX idx_metrics_ts ON metrics(ts_utc)`,
+		},
+	},
 }
 
 // schemaVersion 是本二進位期望的最新 schema 版本。

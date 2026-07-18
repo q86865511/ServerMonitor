@@ -20,15 +20,17 @@ import (
 //
 // 依賴以「消費端介面」注入以維持解耦與可測:StreamDialer 開 WS(生產接 NodeClient,單機亦然,
 // 預留多節點 routing);CommandSender 送玩家數查詢指令(生產接 CommandService);OnlineProber
-// 判線上(生產接 T11 探針);InstanceLookup 取實例記錄與範本(生產接 Store+TemplateEngine)。
-// 任一相依為 nil 時對應維度以「不適用」呈現而不報錯。併發安全。
+// 判線上(生產接 T11 探針);InstanceLookup 取實例記錄與範本(生產接 Store+TemplateEngine);
+// StatusFetcher 取 runtime 狀態供 uptime(生產接 registry 委派)。任一相依為 nil 時對應維度以
+// 「不適用」呈現而不報錯。併發安全。
 type MonitorHub struct {
-	dialer StreamDialer
-	sender CommandSender
-	prober OnlineProber
-	lookup InstanceLookup
-	cfg    MonitorConfig
-	now    func() time.Time
+	dialer  StreamDialer
+	sender  CommandSender
+	prober  OnlineProber
+	lookup  InstanceLookup
+	fetcher StatusFetcher
+	cfg     MonitorConfig
+	now     func() time.Time
 
 	mu    sync.Mutex
 	insts map[string]*monitoredInstance
@@ -59,6 +61,13 @@ type OnlineProber interface {
 // (見 NewStoreInstanceLookup);測試用 fake。
 type InstanceLookup interface {
 	Lookup(uuid string) (InstanceRecord, *protocol.GameTemplate, error)
+}
+
+// StatusFetcher 取一個實例的 runtime 層即時狀態(供 R11 uptime:讀 RuntimeStatus.StartedAt)。
+// 生產接 registry 委派(見 NewRegistryStatusFetcher,經 NodeClient.Status);測試用 fake。
+// nil 時 uptime 維度以「不適用」(StartedAt=nil)呈現而不報錯。
+type StatusFetcher interface {
+	Status(ctx context.Context, node, uuid string) (protocol.RuntimeStatus, error)
 }
 
 // MonitorConfig 是 MonitorHub 的可調參數;零值欄位採預設。
@@ -98,12 +107,13 @@ type MonitorSnapshot struct {
 	Stats         protocol.ResourceStats // 最新資源取樣:CPU%(正規化)/記憶體/資料磁碟
 	PlayerCount   *int                   // 權威玩家數;nil = 不適用
 	Online        *bool                  // 權威線上狀態;nil = 不適用
+	StartedAt     *time.Time             // 運行中實例的啟動時刻(R11 uptime);nil = 停止/未知/不適用
 	ObservedState protocol.InstanceState // 最近一次輪詢取得的觀測狀態
 }
 
-// NewMonitorHub 建立監控聚合。dialer 必填(否則無法訂閱 WS);sender/prober/lookup 可為 nil
+// NewMonitorHub 建立監控聚合。dialer 必填(否則無法訂閱 WS);sender/prober/lookup/fetcher 可為 nil
 // (對應維度顯示「不適用」)。cfg 零值欄位採預設。
-func NewMonitorHub(dialer StreamDialer, sender CommandSender, prober OnlineProber, lookup InstanceLookup, cfg MonitorConfig) *MonitorHub {
+func NewMonitorHub(dialer StreamDialer, sender CommandSender, prober OnlineProber, lookup InstanceLookup, fetcher StatusFetcher, cfg MonitorConfig) *MonitorHub {
 	if cfg.ReconnectBase <= 0 {
 		cfg.ReconnectBase = monitorReconnectBase
 	}
@@ -120,13 +130,14 @@ func NewMonitorHub(dialer StreamDialer, sender CommandSender, prober OnlineProbe
 		cfg.StatsBufferSize = monitorStatsBufferSize
 	}
 	return &MonitorHub{
-		dialer: dialer,
-		sender: sender,
-		prober: prober,
-		lookup: lookup,
-		cfg:    cfg,
-		now:    time.Now,
-		insts:  make(map[string]*monitoredInstance),
+		dialer:  dialer,
+		sender:  sender,
+		prober:  prober,
+		lookup:  lookup,
+		fetcher: fetcher,
+		cfg:     cfg,
+		now:     time.Now,
+		insts:   make(map[string]*monitoredInstance),
 	}
 }
 
@@ -265,6 +276,7 @@ func (h *MonitorHub) Snapshot(uuid string) (MonitorSnapshot, bool) {
 		Stats:         mi.lastStats,
 		PlayerCount:   copyIntPtr(mi.playerCount),
 		Online:        copyBoolPtr(mi.online),
+		StartedAt:     copyTimePtr(mi.startedAt),
 		ObservedState: mi.observed,
 	}, true
 }
@@ -388,6 +400,7 @@ func (h *MonitorHub) pollOnce(ctx context.Context, mi *monitoredInstance) {
 	}
 	online := h.probeOnline(ctx, tmpl, rec, ok)
 	players := h.queryPlayers(ctx, mi.uuid, tmpl, ok)
+	startedAt := h.fetchStartedAt(ctx, rec, ok)
 
 	mi.mu.Lock()
 	if !mi.stopped {
@@ -396,8 +409,25 @@ func (h *MonitorHub) pollOnce(ctx context.Context, mi *monitoredInstance) {
 		}
 		mi.online = online
 		mi.playerCount = players
+		mi.startedAt = startedAt
 	}
 	mi.mu.Unlock()
+}
+
+// fetchStartedAt 以注入的 StatusFetcher 取 runtime 狀態並回傳運行中實例的啟動時刻(R11)。
+// 無 fetcher、查無實例、狀態查詢失敗、或實例非運行中 → nil(uptime 顯示「不適用」/「—」)。
+// 僅運行中(Running)才回 StartedAt:停止/已結束的容器其 StartedAt 仍為上次啟動時刻,不應顯示為
+// 「運行中」的計時起點。
+func (h *MonitorHub) fetchStartedAt(ctx context.Context, rec InstanceRecord, ok bool) *time.Time {
+	if h.fetcher == nil || !ok {
+		return nil
+	}
+	st, err := h.fetcher.Status(ctx, rec.Node, rec.UUID)
+	if err != nil || !st.Running || st.StartedAt == nil {
+		return nil
+	}
+	t := *st.StartedAt
+	return &t
 }
 
 // probeOnline 以注入的探針判定線上狀態;無探針、查無實例或範本無 health → nil(不適用)。
@@ -475,6 +505,7 @@ type monitoredInstance struct {
 	hasStats    bool
 	playerCount *int
 	online      *bool
+	startedAt   *time.Time // 運行中實例的啟動時刻(R11);停止/未知時為 nil
 	observed    protocol.InstanceState
 }
 
@@ -639,6 +670,14 @@ func copyBoolPtr(p *bool) *bool {
 	return &v
 }
 
+func copyTimePtr(p *time.Time) *time.Time {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // storeInstanceLookup 以 Store + TemplateEngine 實作 InstanceLookup(生產配接)。
 type storeInstanceLookup struct {
 	store  *Store
@@ -697,8 +736,33 @@ func (d registryStreamDialer) LogsWS(ctx context.Context, uuid string) (*websock
 	return c.LogsWS(ctx, uuid)
 }
 
+// registryStatusFetcher 是委派 NodeRegistry 的 StatusFetcher(R11 uptime):每次查詢都經 registry
+// 取當前節點 NodeClient 呼叫 Status,理由同 registryStreamDialer(離線啟動/RetryDocker 後仍取到
+// 當前連線)。節點未登錄或不可達時回錯,交呼叫端轉「不適用」(StartedAt=nil)。
+type registryStatusFetcher struct {
+	registry *NodeRegistry
+}
+
+// NewRegistryStatusFetcher 建立委派 registry 的 StatusFetcher(供單機 MonitorHub 注入)。
+func NewRegistryStatusFetcher(registry *NodeRegistry) StatusFetcher {
+	return registryStatusFetcher{registry: registry}
+}
+
+func (f registryStatusFetcher) Status(ctx context.Context, node, uuid string) (protocol.RuntimeStatus, error) {
+	var st protocol.RuntimeStatus
+	err := f.registry.Call(node, func(c *NodeClient) error {
+		var e error
+		st, e = c.Status(ctx, uuid)
+		return e
+	})
+	return st, err
+}
+
 // 確保 *NodeClient 滿足 StreamDialer(單機直接注入)。
 var _ StreamDialer = (*NodeClient)(nil)
+
+// 確保 registryStatusFetcher 滿足 StatusFetcher。
+var _ StatusFetcher = registryStatusFetcher{}
 
 // 確保 registryStreamDialer 滿足 StreamDialer。
 var _ StreamDialer = registryStreamDialer{}

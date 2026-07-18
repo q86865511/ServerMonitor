@@ -98,6 +98,19 @@ func (p monProber) Probe(context.Context, *protocol.GameTemplate, InstanceRecord
 	return p.err
 }
 
+// monFetcher 回傳預設的 runtime 狀態(供 R11 uptime 測試),並記錄最後查詢的 node/uuid。
+type monFetcher struct {
+	st       protocol.RuntimeStatus
+	err      error
+	lastNode string
+	lastUUID string
+}
+
+func (f *monFetcher) Status(_ context.Context, node, uuid string) (protocol.RuntimeStatus, error) {
+	f.lastNode, f.lastUUID = node, uuid
+	return f.st, f.err
+}
+
 // ---- stats / logs 經真 WS ----
 
 func TestMonitorHub_StatsOverWS(t *testing.T) {
@@ -119,7 +132,7 @@ func TestMonitorHub_StatsOverWS(t *testing.T) {
 	}
 
 	client := NewNodeClient(hs.URL, agentTestToken, nil)
-	hub := NewMonitorHub(client, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
+	hub := NewMonitorHub(client, nil, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
 
 	ch, id := hub.SubscribeStats(uuid)
 	hub.StartMonitoring(uuid)
@@ -159,7 +172,7 @@ func TestMonitorHub_StopClosesSubscribers(t *testing.T) {
 		t.Fatalf("seed create: %v", err)
 	}
 	client := NewNodeClient(hs.URL, agentTestToken, nil)
-	hub := NewMonitorHub(client, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
+	hub := NewMonitorHub(client, nil, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
 
 	ch, _ := hub.SubscribeStats(uuid)
 	hub.StartMonitoring(uuid)
@@ -201,7 +214,7 @@ func TestMonitorHub_LogsOverWS(t *testing.T) {
 		t.Fatalf("seed create: %v", err)
 	}
 	client := NewNodeClient(hs.URL, agentTestToken, nil)
-	hub := NewMonitorHub(client, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
+	hub := NewMonitorHub(client, nil, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond})
 
 	ch, _ := hub.SubscribeLogs(uuid)
 	hub.StartMonitoring(uuid)
@@ -226,7 +239,7 @@ func TestMonitorHub_LogsOverWS(t *testing.T) {
 
 // TestMonitorHub_LogFanoutNonBlocking:單一慢消費者(緩衝滿且不消費)不阻塞轉推迴圈。
 func TestMonitorHub_LogFanoutNonBlocking(t *testing.T) {
-	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
+	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
 	const uuid = "bp-uuid"
 	_, _ = hub.SubscribeLogs(uuid) // 慢消費者:永不排空
 	mi := hub.insts[uuid]
@@ -244,7 +257,7 @@ func TestMonitorHub_LogFanoutNonBlocking(t *testing.T) {
 
 // TestMonitorHub_LogDropOldestAndNotice:緩衝滿時丟最舊、留最新,並注入「已丟棄 N 行」提示行。
 func TestMonitorHub_LogDropOldestAndNotice(t *testing.T) {
-	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
+	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
 	const uuid = "drop-uuid"
 	ch, _ := hub.SubscribeLogs(uuid)
 	mi := hub.insts[uuid]
@@ -282,7 +295,7 @@ func TestMonitorHub_LogDropOldestAndNotice(t *testing.T) {
 
 // TestMonitorHub_SlowSubscriberDoesNotStarveOthers:一個卡住的慢訂閱者不妨礙健康訂閱者收到新行。
 func TestMonitorHub_SlowSubscriberDoesNotStarveOthers(t *testing.T) {
-	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
+	hub := NewMonitorHub(monNopDialer{}, nil, nil, nil, nil, MonitorConfig{LogBufferSize: 8})
 	const uuid = "fair-uuid"
 	_, _ = hub.SubscribeLogs(uuid)       // 慢訂閱者:永不排空(緩衝將卡滿)
 	fastCh, _ := hub.SubscribeLogs(uuid) // 健康訂閱者:每批排空
@@ -351,7 +364,7 @@ func TestMonitorHub_PlayerCount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			lookup := monLookup{rec: InstanceRecord{UUID: "p", ObservedState: protocol.InstanceStateRunning}, tmpl: tc.tmpl}
-			hub := NewMonitorHub(monNopDialer{}, tc.sender, nil, lookup, MonitorConfig{})
+			hub := NewMonitorHub(monNopDialer{}, tc.sender, nil, lookup, nil, MonitorConfig{})
 			const uuid = "p"
 			_, _ = hub.SubscribeStats(uuid) // 建立實例容器
 			hub.pollOnce(context.Background(), hub.insts[uuid])
@@ -382,13 +395,72 @@ func TestMonitorHub_OnlineProbe(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			lookup := monLookup{rec: InstanceRecord{UUID: "o"}, tmpl: tc.tmpl}
-			hub := NewMonitorHub(monNopDialer{}, nil, tc.prober, lookup, MonitorConfig{})
+			hub := NewMonitorHub(monNopDialer{}, nil, tc.prober, lookup, nil, MonitorConfig{})
 			const uuid = "o"
 			_, _ = hub.SubscribeStats(uuid)
 			hub.pollOnce(context.Background(), hub.insts[uuid])
 
 			snap, _ := hub.Snapshot(uuid)
 			monAssertBoolPtr(t, "Online", snap.Online, tc.want)
+		})
+	}
+}
+
+// ---- 運行時間(uptime;R11)----
+
+func TestMonitorHub_StartedAt(t *testing.T) {
+	started := time.Date(2026, 7, 17, 8, 30, 0, 0, time.UTC)
+
+	cases := []struct {
+		name    string
+		fetcher StatusFetcher
+		lookErr error // 非 nil 時模擬 lookup 失敗(ok=false)
+		want    *time.Time
+	}{
+		{
+			name:    "運行中 → 回啟動時刻",
+			fetcher: &monFetcher{st: protocol.RuntimeStatus{Running: true, StartedAt: &started}},
+			want:    &started,
+		},
+		{
+			name:    "非運行中(StartedAt 仍在)→ 不適用",
+			fetcher: &monFetcher{st: protocol.RuntimeStatus{Running: false, StartedAt: &started}},
+			want:    nil,
+		},
+		{
+			name:    "狀態查詢失敗 → 不適用",
+			fetcher: &monFetcher{err: context.DeadlineExceeded},
+			want:    nil,
+		},
+		{
+			name:    "無 fetcher → 不適用",
+			fetcher: nil,
+			want:    nil,
+		},
+		{
+			name:    "lookup 失敗 → 不適用",
+			fetcher: &monFetcher{st: protocol.RuntimeStatus{Running: true, StartedAt: &started}},
+			lookErr: context.DeadlineExceeded,
+			want:    nil,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lookup := monLookup{rec: InstanceRecord{UUID: "u", Node: "local", ObservedState: protocol.InstanceStateRunning}, err: tc.lookErr}
+			hub := NewMonitorHub(monNopDialer{}, nil, nil, lookup, tc.fetcher, MonitorConfig{})
+			const uuid = "u"
+			_, _ = hub.SubscribeStats(uuid) // 建立實例容器
+			hub.pollOnce(context.Background(), hub.insts[uuid])
+
+			snap, _ := hub.Snapshot(uuid)
+			switch {
+			case tc.want == nil && snap.StartedAt != nil:
+				t.Fatalf("StartedAt = %v,期望 nil(不適用)", *snap.StartedAt)
+			case tc.want != nil && snap.StartedAt == nil:
+				t.Fatalf("StartedAt = nil,期望 %v", *tc.want)
+			case tc.want != nil && !snap.StartedAt.Equal(*tc.want):
+				t.Fatalf("StartedAt = %v,期望 %v", *snap.StartedAt, *tc.want)
+			}
 		})
 	}
 }
@@ -437,7 +509,7 @@ func TestMonitorHub_ReconnectWithBackoff(t *testing.T) {
 	inner := NewNodeClient(hs.URL, agentTestToken, nil)
 	dialer := &monFlakyDialer{inner: inner, statsFails: 2} // 前兩次 stats 撥號失敗
 
-	hub := NewMonitorHub(dialer, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond, ReconnectMax: 50 * time.Millisecond})
+	hub := NewMonitorHub(dialer, nil, nil, nil, nil, MonitorConfig{ReconnectBase: 5 * time.Millisecond, ReconnectMax: 50 * time.Millisecond})
 	ch, _ := hub.SubscribeStats(uuid)
 	hub.StartMonitoring(uuid)
 	t.Cleanup(func() { hub.StopMonitoring(uuid) })
@@ -463,7 +535,7 @@ func TestMonitorHub_ReconnectWithBackoff(t *testing.T) {
 func TestMonitorHub_LifecycleStress(t *testing.T) {
 	baseGoroutines := runtime.NumGoroutine()
 
-	hub := NewMonitorHub(monErrDialer{}, nil, nil, nil, MonitorConfig{
+	hub := NewMonitorHub(monErrDialer{}, nil, nil, nil, nil, MonitorConfig{
 		ReconnectBase: time.Millisecond,
 		ReconnectMax:  2 * time.Millisecond,
 		PollInterval:  time.Millisecond,

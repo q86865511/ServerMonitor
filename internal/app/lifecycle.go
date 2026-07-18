@@ -89,6 +89,11 @@ func (r *Runtime) Shutdown() {
 		}
 		r.watched = make(map[string]bool)
 		r.watchedMu.Unlock()
+		// 3b) 指標記錄器:先於監控聚合關閉(它訂閱 monitor stats 流),收束所有聚合/Prune goroutine,
+		//     關閉後不再觸碰 Store。
+		if r.metrics != nil {
+			r.metrics.Close()
+		}
 		// 4) 監控聚合:關閉所有 stats/logs 串流。
 		if r.monitor != nil {
 			r.monitor.Close()
@@ -165,6 +170,7 @@ func strPtrLifecycle(s string) *string { return &s }
 func (r *Runtime) startMonitoring(uuid string) {
 	r.monitor.StartMonitoring(uuid)
 	r.threshold.Watch(uuid)
+	r.metrics.Watch(uuid)
 	r.watchedMu.Lock()
 	r.watched[uuid] = true
 	r.watchedMu.Unlock()
@@ -172,6 +178,7 @@ func (r *Runtime) startMonitoring(uuid string) {
 
 // stopMonitoring 停止一個實例的監控聚合與門檻評估。冪等。
 func (r *Runtime) stopMonitoring(uuid string) {
+	r.metrics.Stop(uuid)
 	r.threshold.Stop(uuid)
 	r.monitor.StopMonitoring(uuid)
 	r.watchedMu.Lock()

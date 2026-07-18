@@ -9,6 +9,7 @@ type PortReservation struct {
 	Protocol     string
 	HostPort     int
 	InstanceUUID string
+	Name         string // 埠角色名(R12,取自範本 PortSpec.Name);既有資料為空 → 顯示埠但不標角色
 }
 
 // ReservePort 於 DB 以唯一約束預留一個埠鍵。
@@ -19,9 +20,9 @@ type PortReservation struct {
 // SetMaxOpenConns(1) 使併發預留序列化,故兩個併發建立不會同時通過。
 func (s *Store) ReservePort(r PortReservation) error {
 	_, err := s.db.Exec(`
-		INSERT INTO port_reservations (bind_ip, protocol, host_port, instance_uuid)
-		VALUES (?, ?, ?, ?)`,
-		r.BindIP, r.Protocol, r.HostPort, r.InstanceUUID)
+		INSERT INTO port_reservations (bind_ip, protocol, host_port, instance_uuid, name)
+		VALUES (?, ?, ?, ?, ?)`,
+		r.BindIP, r.Protocol, r.HostPort, r.InstanceUUID, r.Name)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return fmt.Errorf("%w: %s/%s:%d", ErrPortReserved, r.BindIP, r.Protocol, r.HostPort)
@@ -54,7 +55,7 @@ func (s *Store) ReleasePortsForInstance(instanceUUID string) error {
 // ListPortReservations 回傳所有埠預留,依 (bind_ip, protocol, host_port) 排序。
 func (s *Store) ListPortReservations() ([]PortReservation, error) {
 	rows, err := s.db.Query(`
-		SELECT bind_ip, protocol, host_port, instance_uuid
+		SELECT bind_ip, protocol, host_port, instance_uuid, name
 		FROM port_reservations ORDER BY bind_ip, protocol, host_port`)
 	if err != nil {
 		return nil, fmt.Errorf("查詢埠預留清單失敗: %w", err)
@@ -64,7 +65,7 @@ func (s *Store) ListPortReservations() ([]PortReservation, error) {
 	var out []PortReservation
 	for rows.Next() {
 		var r PortReservation
-		if err := rows.Scan(&r.BindIP, &r.Protocol, &r.HostPort, &r.InstanceUUID); err != nil {
+		if err := rows.Scan(&r.BindIP, &r.Protocol, &r.HostPort, &r.InstanceUUID, &r.Name); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

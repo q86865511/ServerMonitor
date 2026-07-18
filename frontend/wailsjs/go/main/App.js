@@ -62,6 +62,14 @@ export function QueryEvents(arg1) {
   return window['go']['main']['App']['QueryEvents'](arg1);
 }
 
+export function QueryMetrics(arg1, arg2) {
+  return window['go']['main']['App']['QueryMetrics'](arg1, arg2);
+}
+
+export function QueryMetricsSummary(arg1) {
+  return window['go']['main']['App']['QueryMetricsSummary'](arg1);
+}
+
 export function RemoveInstance(arg1, arg2) {
   return window['go']['main']['App']['RemoveInstance'](arg1, arg2);
 }

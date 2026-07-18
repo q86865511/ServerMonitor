@@ -23,12 +23,77 @@
   --idle: #7c8794;
   --err: #f85149;
   --off: #a371f7;
+  /* 強調色/危險色實心底上的文字色(供 primary/danger 實心按鈕等使用,避免元件內硬編碼) */
+  --fg-on-accent: #fff;
 
   --radius: 8px;
   --radius-sm: 5px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
 
-  font-family: "Segoe UI", "Microsoft JhengHei", "Nunito", system-ui, sans-serif;
-  font-size: 14px;
+  /* 狀態色弱化背景(給 Badge/Toast/ProgressBar 等避免元件內硬編碼 rgba) */
+  --ok-bg: rgba(63, 185, 80, 0.15);
+  --busy-bg: rgba(210, 153, 34, 0.15);
+  --idle-bg: rgba(124, 135, 148, 0.15);
+  --err-bg: rgba(248, 81, 73, 0.15);
+  --off-bg: rgba(163, 113, 247, 0.15);
+  --accent-bg: rgba(76, 139, 245, 0.15);
+
+  /* 間距尺度 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+
+  /* 字階 */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 18px;
+  --text-xl: 22px;
+  --text-2xl: 28px;
+
+  /* 字型(既有值改以變數表示,供元件引用) */
+  --font-sans: "Segoe UI", "Microsoft JhengHei", "Nunito", system-ui, sans-serif;
+  --font-mono: "Cascadia Code", "Consolas", ui-monospace, monospace;
+
+  /* 陰影層級 */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.5);
+
+  /* 遮罩(modal overlay) */
+  --overlay: rgba(0, 0, 0, 0.6);
+
+  /* 動效時長與緩動 */
+  --dur-fast: 0.12s;
+  --dur-base: 0.18s;
+  --dur-slow: 0.28s;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Shell 尺寸(側欄/頂欄) */
+  --sidebar-w: 220px;
+  --sidebar-w-collapsed: 56px;
+  --topbar-h: 56px;
+
+  /* 疊層順序 */
+  --z-dropdown: 50;
+  --z-modal: 100;
+  --z-toast: 200;
+  --z-tooltip: 300;
+
+  /* 圖表色(手刻 SVG 趨勢圖用) */
+  --chart-cpu: #4c8bf5;
+  --chart-ram: #3fb950;
+  --chart-grid: rgba(255, 255, 255, 0.06);
+  --chart-gap: rgba(255, 255, 255, 0.03);
+
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
   line-height: 1.5;
   color: var(--fg-0);
   -webkit-font-smoothing: antialiased;

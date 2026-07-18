@@ -10,6 +10,7 @@
 schema_version = 1
 id = "palworld"
 name = "Palworld Dedicated Server"
+icon = "icons/palworld.png"            # R14:範本圖示(範本目錄相對路徑;選配)
 runtime = "docker"
 data_dirs = ["/palworld"]              # spike:資料/存檔目錄(容器內),對應 R9 備份根
 

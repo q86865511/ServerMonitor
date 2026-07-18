@@ -106,6 +106,7 @@ func (e *PortConflictError) Code() protocol.ErrorCode { return protocol.ErrPortC
 type CreateOptions struct {
 	TemplateID string            // 範本 ID(必填)
 	Variant    string            // 變體 ID(可空)
+	Name       string            // 使用者指定的顯示名稱(R10;可空,前端 fallback)
 	Params     map[string]string // 非機密參數值(key 即容器 env 變數名,itzg 慣例)
 	Secrets    map[string]string // 機密值(範本 [[secrets]].key → 明文);寫入金鑰庫,不落 DB
 	Node       string            // 目標節點(可空,預設本機節點)
@@ -311,6 +312,7 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 		UUID:          uuid,
 		TemplateID:    tmpl.ID,
 		Variant:       opts.Variant,
+		Name:          opts.Name,
 		ParamsJSON:    marshalParams(opts.Params),
 		Node:          node,
 		RuntimeID:     runtimeID,
@@ -840,6 +842,7 @@ func buildPortReservations(tmpl *protocol.GameTemplate, uuid string) []PortReser
 			Protocol:     normalizeProtocol(p.Protocol),
 			HostPort:     p.HostPort,
 			InstanceUUID: uuid,
+			Name:         p.Name, // R12:寫入範本 PortSpec.Name,供卡片/詳細頁標埠角色
 		})
 	}
 	return out
