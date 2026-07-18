@@ -6,6 +6,7 @@
 
 ## 已完成
 
+- [2026-07-18] 🚢 v0.1.0 首次發佈:PR #3(gui-redesign)併入 master 後自主線建置,GitHub Release 附 ServerMonitor-v0.1.0-windows-amd64.zip(exe+templates/ 隨附佈局,銷掉打包待辦);內容=game-server-manager+native-backend+gui-redesign 三功能收官。
 - [2026-07-18] 🏁 gui-redesign 雙審修正輪+收官:Opus 總審(1高/1中/3低)+Codex 二審(2中/3低,額度重置後補跑)+波6一審(5低)+T13 偏離,合計 15 條裁決全數成立、使用者核可全修——高:effect cleanup 反應式 uuid 訂閱洩漏(捕捉區域副本);中:recorder Stop 等 goroutine 收束(done channel)、前端 Subscribe/Unsubscribe 改操作鏈序列化+世代守衛(metrics+logs,杜絕 RPC 時序反轉)、回填合併不覆蓋 live 點;低:死匯出/死 import/Modal overlay token/精靈範本 error 態+重試/Insert-Prune 失敗 log/Dashboard 快照下傳免雙重輪詢/面板雙重 load/fmtPercent/三全域頁 R10 標籤(templates 惰性快取)。聚焦複審 15/15 關閉、-race 綠;tasks.md 15/15 回寫;README/CLAUDE 前端慣例更新。過程教訓:裁決停點誤把自己訊息當授權先修了 3 檔(修法本身經雙審驗證正確,經使用者追認保留),已記入 judgment-rubrics 教訓。
 - [2026-07-18] 🚀 gui-redesign 實作 T1–T15(/pipeline,分支 claude/gui-redesign):依 4 張參考圖重構整套前端。**後端五擴充**:T1 顯示名稱+連接埠(schema v3 遷移 instances.name/port_reservations.name)、T2 指標時序(metrics 表 nullable 記憶體欄+MetricsRecorder 15s 聚合/末樣本 NULL/玩家數自快照/36h Prune+2 綁定)、T3 uptime(StatusFetcher 注入)、T4 範本 icon(filepath.Rel+EvalSymlinks 路徑拘束+AssetServer Handler+程式生成識別圖)、T5 wailsjs 重生成。**前端**:T6 tokens+20 UI 元件(runes)、T7 LogViewer(content-visibility,T7 真機實測 92s longtask=0)/TrendChart(null 畫缺口)/DataTable、T8 stores(instances 輪詢上移/metrics ring/logs 引用計數+30s 延遲釋放)、T9 hash 路由+Shell(可收合側欄/頂欄搜尋)、T10 總覽+ServerCard(範本驅動)、T11 詳細頁五分頁+主控台(共用 Backups/Schedules/AlertsPanel)、T12 四步精靈(runtime/資源/CF 三態/provision 進度/blocked-mods 等價吸收)、T13 全域七頁遷移+清理 16 舊元件、T14 四態巡檢+防重複、T15 驗證收尾。每波經主迴圈非快取抽驗。
 - [2026-07-17] 📄 gui-redesign 規格二審+修訂(rev.2):Codex 第二審提 18 條(4 高/14 中),逐條驗證(agent stats 無玩家數/port_reservations 無 name 欄/native 降級零值/sibling-prefix 逃逸等皆屬實)後全數採納修訂;Codex 額度中途用罄,聚焦複審改由獨立 reviewer(opus)執行——18 條全關閉、三件套一致、判定可進實作;複審附帶 3 條低階瑕疵亦已修(覆蓋表 R12 補 T11、測試策略對齊矩陣語意、memory NULL 判定釘死為末樣本)。T4 升 HARD(共 7 HARD)。
@@ -38,7 +39,7 @@
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
-- [ ] 打包:`wails build` 不自動隨附 `templates/`(exe 找「執行檔目錄/templates」);發佈需複製隨附或改 go:embed(本機 build/bin 已手動補)
+- [x] 打包:release zip 已隨附 templates/(v0.1.0 起,見 GitHub Releases);長期若要免隨附可改 go:embed(未做)
 - [ ] (審查遺留,低)事件流停滯逾 token TTL 極端窗;Restore 的 Upsert 回錯路徑清 journal;Restore 舊容器 GC(靠對帳);Console 就地換 uuid 需 {#key};dispatchCrashAlert 不入 inflight 記帳(唯讀無害)
 
 ## 已知問題
