@@ -401,7 +401,15 @@ func (o *Orchestrator) HandleRuntimeEvent(ctx context.Context, node string, ev p
 }
 
 // handleDie 處理容器結束事件:於 per-instance lock 內比對 token 判別死因。
+// 抵達時刻必須在搶鎖之前取樣:發 token 的操作(備份/還原的停→做事→重啟)自己持有同一把
+// per-instance lock,die 會被擋到操作結束;若以「拿到鎖之後」的時刻判 TTL,持鎖超過 TTL 的
+// 備份必把計畫停機誤判成崩潰(Running→Crashed)。
 func (o *Orchestrator) handleDie(ev protocol.RuntimeEvent) {
+	o.handleDieAt(o.now(), ev)
+}
+
+// handleDieAt 是 handleDie 的實作,arrivedAt 為 die 事件抵達核心的時刻(TTL 判定基準)。
+func (o *Orchestrator) handleDieAt(arrivedAt time.Time, ev protocol.RuntimeEvent) {
 	uuid, ok := o.uuidForRuntime(ev.ID)
 	if !ok {
 		return // 非本核心管理的容器(或已移除)
@@ -414,8 +422,9 @@ func (o *Orchestrator) handleDie(ev protocol.RuntimeEvent) {
 	if err != nil {
 		return
 	}
-	// consume:有效 token→planned(delete 並回 true);無/過期→false(delete 過期者,不遮蔽後續)。
-	if o.tokens.consume(uuid) {
+	// consumeAt:抵達時刻落在 TTL 內→planned(delete 並回 true);無 token/過期→false
+	// (delete 過期者,不遮蔽後續)。以抵達時刻而非處理時刻判定,鎖等待時間不計入。
+	if o.tokens.consumeAt(uuid, arrivedAt) {
 		return // 計畫停止對應的 die:狀態已由 Stop 收斂為 Stopped,無需處理。
 	}
 	// 去重(第二道防線,配合 planned-stop token):已觀測為 Crashed/Error 表示此崩潰已被記錄
@@ -652,8 +661,8 @@ type plannedStop struct {
 	expiresAt  time.Time
 }
 
-// plannedStopTable 管理每實例的 planned-stop token:issue 遞增覆蓋、consume 判有效並移除、
-// clear 於操作失敗即時移除;過期 token 於 consume/issue 時被丟棄,確保不遮蔽後續真崩潰。
+// plannedStopTable 管理每實例的 planned-stop token:issue 遞增覆蓋、consumeAt 判有效並移除、
+// clear 於操作失敗即時移除;過期 token 於 consumeAt/issue 時被丟棄,確保不遮蔽後續真崩潰。
 type plannedStopTable struct {
 	mu  sync.Mutex
 	m   map[string]plannedStop
@@ -672,9 +681,11 @@ func (t *plannedStopTable) issue(uuid, token string, generation int64, ttl time.
 	t.m[uuid] = plannedStop{token: token, generation: generation, expiresAt: t.now().Add(ttl)}
 }
 
-// consume 取用某實例的標記:存在且未過期回 true(planned),並一律移除;
-// 不存在或已過期回 false(視為崩潰),過期者一併移除以免遮蔽後續。
-func (t *plannedStopTable) consume(uuid string) bool {
+// consumeAt 取用某實例的標記:存在且 at(die 事件抵達核心的時刻)未過期回 true(planned),
+// 並一律移除;不存在或已過期回 false(視為崩潰),過期者一併移除以免遮蔽後續。
+// 以抵達時刻判定使 TTL 不受 per-instance lock 等待時間影響:計畫停機的 die 抵達於停止當下
+// (必在 TTL 內),真崩潰的 die 抵達時刻必是當下,過期 token 照樣不遮蔽。
+func (t *plannedStopTable) consumeAt(uuid string, at time.Time) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	ps, ok := t.m[uuid]
@@ -682,7 +693,7 @@ func (t *plannedStopTable) consume(uuid string) bool {
 		return false
 	}
 	delete(t.m, uuid)
-	return t.now().Before(ps.expiresAt)
+	return at.Before(ps.expiresAt)
 }
 
 // clear 移除某實例的標記(操作失敗時呼叫)。
