@@ -332,6 +332,67 @@ func TestOrchestrator_ExpiredTokenDoesNotMaskCrash(t *testing.T) {
 	}
 }
 
+// ---- 持鎖操作期間延遲處理的 die:以抵達時刻判 TTL,不誤判崩潰(docker E2E 備份回歸)----
+
+func TestOrchestrator_DelayedDieAfterLongLockedBackupNotCrashed(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{useFakeClock: true})
+	rec := h.createInstance(t, "bk-1")
+	h.startInstance(t, "bk-1")
+
+	// 仿 BackupService.Backup:於 RunLocked 內 stopLocked → 封存(以推進時鐘模擬耗時
+	// 超過 token TTL=2*grace=60s)→ startLocked 回 Running。停機的 die 事件於停止當下
+	// 抵達,但 handleDie 需同一把 per-instance lock,被擋到備份結束後才處理。
+	var arrival time.Time
+	if err := h.orch.RunLocked("bk-1", func() error {
+		if err := h.orch.stopLocked(context.Background(), "bk-1"); err != nil {
+			return err
+		}
+		arrival = h.clock.Now()
+		h.clock.Advance(61 * time.Second)
+		return h.orch.startLocked(context.Background(), "bk-1")
+	}); err != nil {
+		t.Fatalf("模擬備份鏈: %v", err)
+	}
+
+	ec := 0
+	h.orch.handleDieAt(arrival, protocol.RuntimeEvent{
+		ID: rec.RuntimeID, Kind: protocol.RuntimeEventDie, ExitCode: &ec, TsUTC: arrival,
+	})
+
+	if got := h.state(t, "bk-1"); got != protocol.InstanceStateRunning {
+		t.Errorf("備份後延遲處理的 planned die 不應改變狀態, observed = %s, 期望 Running", got)
+	}
+	if n := h.countEvents(t, protocol.EventInstanceCrashed); n != 0 {
+		t.Errorf("planned die 不應記 INSTANCE_CRASHED, 得 %d", n)
+	}
+	if h.crashCount() != 0 {
+		t.Errorf("planned die 不應觸發 crashHook, 得 %d", h.crashCount())
+	}
+}
+
+func TestPlannedStopTable_ConsumeAtUsesArrivalTime(t *testing.T) {
+	clock := newFakeClock(time.Unix(1700000000, 0).UTC())
+	tbl := newPlannedStopTable(clock.Now)
+
+	// 抵達於 TTL 內、處理延後到 TTL 外:以抵達時刻判定 → planned。
+	tbl.issue("u-1", "tok", 1, 60*time.Second)
+	arrival := clock.Now()
+	clock.Advance(61 * time.Second)
+	if !tbl.consumeAt("u-1", arrival) {
+		t.Error("抵達時刻在 TTL 內的 die 應判 planned, 得 false")
+	}
+
+	// 抵達本身已逾 TTL:照樣過期,不遮蔽真崩潰。
+	tbl.issue("u-1", "tok2", 2, 60*time.Second)
+	clock.Advance(61 * time.Second)
+	if tbl.consumeAt("u-1", clock.Now()) {
+		t.Error("抵達時刻已逾 TTL 的 die 應判過期, 得 true")
+	}
+	if tbl.consumeAt("u-1", clock.Now()) {
+		t.Error("token 應於首次 consumeAt 移除, 二次呼叫得 true")
+	}
+}
+
 // ---- 卡死復原:先強制停止 running 容器再標 Crashed(R8)----
 
 func TestOrchestrator_RecoverStuckForceStops(t *testing.T) {
