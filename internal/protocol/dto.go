@@ -131,6 +131,8 @@ type NativeConfigMap struct {
 	// 寫檔時展開埠 token。用於 native 執行需要、但非使用者參數的設定(如 MC 的 enable-rcon/rcon.port/
 	// server-port,docker 由 itzg 注入、native 於此宣告)。與 Map 產出同鍵時 Set 優先。
 	Set map[string]string `json:"set,omitempty"`
+	// Quote 列出需以雙引號包裹值的 configKey(palworld-ini 字串值);見 template.go ConfigMapping.Quote。
+	Quote []string `json:"quote,omitempty"`
 }
 
 // ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,

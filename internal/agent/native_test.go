@@ -172,6 +172,37 @@ func TestWriteConfigFile_PalworldIni(t *testing.T) {
 	}
 }
 
+// TestWriteConfigFile_PalworldIni_QuotesStrings 驗證 B14:palworld-ini 對 quote 宣告的字串鍵
+// (ServerName/AdminPassword)加雙引號,set 來源的 bool/埠(RESTAPIEnabled=True/RCONEnabled=False/
+// RESTAPIPort=8212)不加引號——即 native Palworld REST 就緒所需的正確 ini 格式(先前缺 AdminPassword
+// /RESTAPIPort 致 REST 401/埠漂移→就緒逾時)。
+func TestWriteConfigFile_PalworldIni_QuotesStrings(t *testing.T) {
+	dir := t.TempDir()
+	cm := protocol.NativeConfigMap{
+		File:    "PalWorldSettings.ini",
+		Format:  "palworld-ini",
+		Section: "/Script/Pal.PalGameWorldSettings",
+		Map:     map[string]string{"SERVER_NAME": "ServerName", "ADMIN_PASSWORD": "AdminPassword"},
+		Set:     map[string]string{"RESTAPIEnabled": "True", "RCONEnabled": "False", "RESTAPIPort": "{port:rest}"},
+		Quote:   []string{"ServerName", "AdminPassword"},
+	}
+	env := map[string]string{"SERVER_NAME": "Palworld Server", "ADMIN_PASSWORD": "sekret-pass"}
+	ports := []protocol.PortBinding{{Name: "rest", HostPort: 8212}}
+	if err := writeConfigFile(dir, cm, env, ports); err != nil {
+		t.Fatalf("writeConfigFile: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "PalWorldSettings.ini"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// 依 configKey 排序:AdminPassword < RCONEnabled < RESTAPIEnabled < RESTAPIPort < ServerName。
+	want := "[/Script/Pal.PalGameWorldSettings]\n" +
+		`OptionSettings=(AdminPassword="sekret-pass",RCONEnabled=False,RESTAPIEnabled=True,RESTAPIPort=8212,ServerName="Palworld Server")` + "\n"
+	if string(got) != want {
+		t.Fatalf("palworld-ini=\n%q\nwant\n%q", string(got), want)
+	}
+}
+
 func TestWriteConfigFile_UnknownFormat(t *testing.T) {
 	dir := t.TempDir()
 	cm := protocol.NativeConfigMap{File: "x.cfg", Format: "yaml", Map: map[string]string{"a": "b"}}

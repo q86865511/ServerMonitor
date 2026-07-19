@@ -82,6 +82,9 @@ type ConfigMapping struct {
 	// Minecraft server.properties 的 enable-rcon/rcon.port/server-port(docker 由 itzg 代勞注入,
 	// native 無 itzg 故於此宣告)。configKey 與 Map 的產出鍵相同時,Set 優先(後寫覆蓋)。
 	Set map[string]string `toml:"set"`
+	// Quote 列出需以雙引號包裹值的 configKey(palworld-ini 的字串值如 ServerName/AdminPassword 需引號;
+	// enum/bool/數字不需)。編碼器不臆測型別,由範本明確宣告;properties 格式忽略此欄位。
+	Quote []string `toml:"quote"`
 }
 
 // NativeModsSpec 對應 [native.mods]:native 模式下模組/模組包的落位設定(native-backend R11)。
