@@ -2,13 +2,14 @@
 // navigate() 為切換路徑的 helper。零依賴,免 svelte-spa-router。
 import { readable, type Readable } from 'svelte/store';
 
-/** 全部可到達頁面(對齊側欄 9 項 + 伺服器詳細 + 未知路徑)。 */
+/** 全部可到達頁面(對齊側欄 10 項 + 伺服器詳細 + 未知路徑)。 */
 export type Page =
   | 'dashboard'
   | 'servers'
   | 'server-detail'
   | 'templates'
   | 'nodes'
+  | 'docker'
   | 'backups'
   | 'schedules'
   | 'alerts'
@@ -51,6 +52,8 @@ export function parseHash(hash: string): Route {
       return { page: 'templates', params: {} };
     case 'nodes':
       return { page: 'nodes', params: {} };
+    case 'docker':
+      return { page: 'docker', params: {} };
     case 'backups':
       return { page: 'backups', params: {} };
     case 'schedules':

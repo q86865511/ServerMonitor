@@ -614,6 +614,12 @@ func (a *App) RestoreBackup(uuid, backupID string) error {
 	return a.rt.RestoreBackup(a.bgCtx(), uuid, protocol.BackupID(backupID))
 }
 
+// DeleteBackup 刪除實例的一份備份(GUI 手動刪除;R9)。二次確認由前端負責,後端照令執行:
+// 經節點代理刪 agent 端備份、清 store 中繼並記 BACKUP_DELETED 事件。
+func (a *App) DeleteBackup(uuid, backupID string) error {
+	return a.rt.DeleteBackup(a.bgCtx(), uuid, protocol.BackupID(backupID))
+}
+
 // ---- 排程 ----
 
 // ListSchedules 回傳實例的排程(uuid 空回全部)(R8)。
@@ -810,6 +816,132 @@ func (a *App) ListNodes() []NodeInfoDTO {
 		})
 	}
 	return out
+}
+
+// ---- Docker 資源管理(階段 4)----
+
+// ImageDTO 是 Docker 映像的前端視圖。Created 為 RFC3339;Containers 為使用該映像的容器數
+// (docker 未計算時為 -1,前端顯「—」)。
+type ImageDTO struct {
+	ID         string   `json:"id"`
+	Tags       []string `json:"tags"`
+	SizeBytes  int64    `json:"size_bytes"`
+	Created    string   `json:"created"`
+	Containers int      `json:"containers"`
+}
+
+// ContainerDTO 是 Docker 容器的前端視圖。Name 取 Names[0] 去前導 "/";GSM 表本工具建立
+// (gsm.managed-by 標籤);UUID 取 gsm.uuid 標籤(孤兒/非本工具容器為空)。
+type ContainerDTO struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Image string `json:"image"`
+	State string `json:"state"`
+	GSM   bool   `json:"gsm"`
+	UUID  string `json:"uuid"`
+}
+
+// DiskUsageDTO 是實例宿主磁碟用量的前端視圖(資料/備份根位元組)。
+type DiskUsageDTO struct {
+	DataBytes   int64 `json:"data_bytes"`
+	BackupBytes int64 `json:"backup_bytes"`
+}
+
+// PruneResultDTO 是清除懸掛映像的結果視圖(回收量 + 被刪 ID)。
+type PruneResultDTO struct {
+	ReclaimedBytes int64    `json:"reclaimed_bytes"`
+	Deleted        []string `json:"deleted"`
+}
+
+// gsm.* 標籤鍵(對映 internal/agent docker.go 的 labelManagedBy/labelUUID/managedByValue;
+// 於綁定層以字面值辨識容器歸屬,不引入對 agent 內部常數的相依)。
+const (
+	labelGSMManagedBy = "gsm.managed-by"
+	labelGSMUUID      = "gsm.uuid"
+	gsmManagedByValue = "servermonitor"
+)
+
+// ListImages 列出本機節點的 Docker 映像(階段 4)。native-only 節點回不支援錯誤。
+func (a *App) ListImages() ([]ImageDTO, error) {
+	imgs, err := a.rt.ListImages(a.bgCtx())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ImageDTO, 0, len(imgs))
+	for _, im := range imgs {
+		out = append(out, toImageDTO(im))
+	}
+	return out, nil
+}
+
+// RemoveImage 刪除一份映像(精確 id;force 對映 docker `-f`)。使用中映像的錯誤由後端原樣透傳。
+func (a *App) RemoveImage(id string, force bool) error {
+	return a.rt.RemoveImage(a.bgCtx(), id, force)
+}
+
+// PruneImages 清除本機節點的懸掛映像,回傳回收量與被刪 ID。
+func (a *App) PruneImages() (PruneResultDTO, error) {
+	res, err := a.rt.PruneImages(a.bgCtx())
+	if err != nil {
+		return PruneResultDTO{}, err
+	}
+	deleted := res.Deleted
+	if deleted == nil {
+		deleted = []string{}
+	}
+	return PruneResultDTO{ReclaimedBytes: res.ReclaimedBytes, Deleted: deleted}, nil
+}
+
+// ListContainers 列出本機節點所有 Docker 容器(含孤兒/非本工具建立)。
+func (a *App) ListContainers() ([]ContainerDTO, error) {
+	cs, err := a.rt.ListContainers(a.bgCtx())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ContainerDTO, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, toContainerDTO(c))
+	}
+	return out, nil
+}
+
+// RemoveContainer 刪除一個容器(精確 id;force 亦刪執行中)。
+func (a *App) RemoveContainer(id string, force bool) error {
+	return a.rt.RemoveContainer(a.bgCtx(), id, force)
+}
+
+// InstanceDiskUsage 查詢某實例的宿主磁碟用量(資料/備份根)。
+func (a *App) InstanceDiskUsage(uuid string) (DiskUsageDTO, error) {
+	du, err := a.rt.InstanceDiskUsage(a.bgCtx(), uuid)
+	if err != nil {
+		return DiskUsageDTO{}, err
+	}
+	return DiskUsageDTO{DataBytes: du.DataBytes, BackupBytes: du.BackupBytes}, nil
+}
+
+// toImageDTO 轉換映像摘要;Tags 正規化為非 nil 切片(前端型別為 string[])。
+func toImageDTO(im protocol.ImageSummary) ImageDTO {
+	tags := im.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	return ImageDTO{
+		ID: im.ID, Tags: tags, SizeBytes: im.SizeBytes,
+		Created: im.CreatedUTC.Format(time.RFC3339), Containers: im.Containers,
+	}
+}
+
+// toContainerDTO 轉換容器摘要(名稱去前導 "/",辨識 gsm.* 標籤)。
+func toContainerDTO(c protocol.ContainerSummary) ContainerDTO {
+	name := ""
+	if len(c.Names) > 0 {
+		name = strings.TrimPrefix(c.Names[0], "/")
+	}
+	return ContainerDTO{
+		ID: c.ID, Name: name, Image: c.Image, State: c.State,
+		GSM:  c.Labels[labelGSMManagedBy] == gsmManagedByValue,
+		UUID: c.Labels[labelGSMUUID],
+	}
 }
 
 // ---- DTO 轉換 ----

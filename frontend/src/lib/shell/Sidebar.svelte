@@ -1,5 +1,5 @@
 <script lang="ts">
-  // 固定左側導覽(R2):9 項導覽,可收合為 56px icon 列(狀態存 localStorage)。
+  // 固定左側導覽(R2):10 項導覽,可收合為 56px icon 列(狀態存 localStorage)。
   import { route, navigate, type Page } from '../router';
 
   const STORAGE_KEY = 'gsm.sidebar.collapsed';
@@ -17,6 +17,7 @@
     { label: '伺服器', icon: '▦', path: '/servers', pages: ['servers', 'server-detail'] },
     { label: '遊戲範本', icon: '▧', path: '/templates', pages: ['templates'] },
     { label: '節點', icon: '◈', path: '/nodes', pages: ['nodes'] },
+    { label: 'Docker', icon: '⬡', path: '/docker', pages: ['docker'] },
     { label: '備份', icon: '⛁', path: '/backups', pages: ['backups'] },
     { label: '排程', icon: '◷', path: '/schedules', pages: ['schedules'] },
     { label: '警報', icon: '⚠', path: '/alerts', pages: ['alerts'] },

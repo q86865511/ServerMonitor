@@ -33,6 +33,9 @@ var (
 	ErrNodeUnauthorized = errors.New("core: 節點拒絕(未授權)")
 	// ErrNodeConflict 對應 ERR_CONFLICT。
 	ErrNodeConflict = errors.New("core: 節點回報衝突")
+	// ErrNodeUnsupported 對應 ERR_UNSUPPORTED(節點後端不支援此操作,如 native-only 節點無 Docker
+	// 映像/容器管理)。供上層 errors.Is 判別以顯「此節點不支援」而非泛用錯誤。
+	ErrNodeUnsupported = errors.New("core: 節點不支援此操作")
 )
 
 // NodeClient 是核心對「節點代理 HTTP/WS API」(T5 server)的客戶端(R5)。
@@ -186,6 +189,55 @@ func (c *NodeClient) Restore(ctx context.Context, uuid string, backupID protocol
 	return out.RuntimeID, err
 }
 
+// ---- 端點包裝(階段 4:Docker 資源管理)----
+
+// ListImages 列出節點上的 Docker 映像(GET /images)。native-only 節點回 ErrNodeUnsupported。
+func (c *NodeClient) ListImages(ctx context.Context) ([]protocol.ImageSummary, error) {
+	var out protocol.ListImagesResponse
+	err := c.do(ctx, http.MethodGet, "/images", "", nil, &out)
+	return out.Images, err
+}
+
+// RemoveImage 刪除一份映像(DELETE /images/{id};force 對映 ?force=true)。映像使用中時節點原樣
+// 透傳 docker 錯誤。冪等鍵由 do() 自動產生(端點未套冪等中介層,鍵被忽略,無害)。
+func (c *NodeClient) RemoveImage(ctx context.Context, id string, force bool) error {
+	path := "/images/" + url.PathEscape(id)
+	if force {
+		path += "?force=true"
+	}
+	return c.do(ctx, http.MethodDelete, path, "", nil, nil)
+}
+
+// PruneImages 清除節點上的懸掛映像(POST /images/prune),回收位元組與被刪 ID。
+func (c *NodeClient) PruneImages(ctx context.Context) (protocol.PruneImagesResult, error) {
+	var out protocol.PruneImagesResult
+	err := c.do(ctx, http.MethodPost, "/images/prune", "", nil, &out)
+	return out, err
+}
+
+// ListContainers 列出節點上所有 Docker 容器(GET /containers;含孤兒)。native-only 節點回 ErrNodeUnsupported。
+func (c *NodeClient) ListContainers(ctx context.Context) ([]protocol.ContainerSummary, error) {
+	var out protocol.ListContainersResponse
+	err := c.do(ctx, http.MethodGet, "/containers", "", nil, &out)
+	return out.Containers, err
+}
+
+// RemoveContainer 刪除一個容器(DELETE /containers/{id};force 對映 ?force=true 亦刪執行中)。
+func (c *NodeClient) RemoveContainer(ctx context.Context, id string, force bool) error {
+	path := "/containers/" + url.PathEscape(id)
+	if force {
+		path += "?force=true"
+	}
+	return c.do(ctx, http.MethodDelete, path, "", nil, nil)
+}
+
+// InstanceDiskUsage 查詢某實例的宿主磁碟用量(GET /instances/{id}/diskusage)。
+func (c *NodeClient) InstanceDiskUsage(ctx context.Context, uuid string) (protocol.InstanceDiskUsage, error) {
+	var out protocol.InstanceDiskUsage
+	err := c.do(ctx, http.MethodGet, "/instances/"+url.PathEscape(uuid)+"/diskusage", "", nil, &out)
+	return out, err
+}
+
 // ---- 端點包裝(WebSocket 串流)----
 //
 // WS 端點回傳已升級的連線,由消費端(T8 事件訂閱、T10 監控聚合)讀取與關閉。
@@ -332,6 +384,8 @@ func (c *NodeClient) mapError(resp *http.Response) error {
 		return fmt.Errorf("%w: %s", ErrNodeUnauthorized, ae.Message)
 	case protocol.ErrConflict:
 		return fmt.Errorf("%w: %s", ErrNodeConflict, ae.Message)
+	case protocol.ErrUnsupported:
+		return fmt.Errorf("%w: %s", ErrNodeUnsupported, ae.Message)
 	default:
 		return &ae
 	}

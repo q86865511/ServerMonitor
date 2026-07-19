@@ -13,6 +13,8 @@ export function CurseForgeEnabled():Promise<boolean>;
 
 export function CurseForgeKeyConfigured():Promise<boolean>;
 
+export function DeleteBackup(arg1:string,arg2:string):Promise<void>;
+
 export function DeleteSchedule(arg1:string):Promise<void>;
 
 export function DockerAvailable():Promise<boolean>;
@@ -23,7 +25,13 @@ export function GetCommandCapability(arg1:string):Promise<main.CommandCapability
 
 export function GetSnapshot(arg1:string):Promise<main.SnapshotDTO>;
 
+export function InstanceDiskUsage(arg1:string):Promise<main.DiskUsageDTO>;
+
 export function ListBackups(arg1:string):Promise<Array<protocol.BackupMeta>>;
+
+export function ListContainers():Promise<Array<main.ContainerDTO>>;
+
+export function ListImages():Promise<Array<main.ImageDTO>>;
 
 export function ListInstances():Promise<Array<main.InstanceDTO>>;
 
@@ -37,11 +45,17 @@ export function NodeStatus():Promise<Array<main.NodeStatusDTO>>;
 
 export function ProbeNode(arg1:string,arg2:string,arg3:boolean):Promise<main.ProbeNodeResultDTO>;
 
+export function PruneImages():Promise<main.PruneResultDTO>;
+
 export function QueryEvents(arg1:main.QueryEventsRequest):Promise<Array<main.EventDTO>>;
 
 export function QueryMetrics(arg1:string,arg2:number):Promise<Array<main.MetricPointDTO>>;
 
 export function QueryMetricsSummary(arg1:number):Promise<Array<main.MetricPointDTO>>;
+
+export function RemoveContainer(arg1:string,arg2:boolean):Promise<void>;
+
+export function RemoveImage(arg1:string,arg2:boolean):Promise<void>;
 
 export function RemoveInstance(arg1:string,arg2:boolean):Promise<void>;
 

@@ -370,6 +370,31 @@ func (bs *BackupService) applyRetention(ctx context.Context, node, uuid string) 
 	}
 }
 
+// EventBackupDeleted 標記使用者於 GUI 手動刪除一份備份(R9)。屬補充事件碼(不在
+// protocol.RequiredEventCodes),與 commandservice.go 的 EventHookFailed 同慣例。
+const EventBackupDeleted protocol.EventCode = "BACKUP_DELETED"
+
+// DeleteBackup 手動刪除某實例的一份備份(GUI 路徑;R9,有別於 applyRetention 的自動刪最舊):於
+// per-instance lock 內經節點代理刪 agent 端備份目錄、同步清 store 中繼列,並記 BACKUP_DELETED。以
+// 實例所屬節點定址(對齊 applyRetention/nodeDeleteBackup)。節點刪除失敗(含備份不存在 →
+// ErrNodeNotFound)原樣回傳且不清 store,避免 DB 與 agent 端不一致。與備份/還原共用同一把鎖,不與
+// 進行中的 Backup/Restore 互撞。
+func (bs *BackupService) DeleteBackup(ctx context.Context, uuid string, backupID protocol.BackupID) error {
+	return bs.orch.RunLocked(uuid, func() error {
+		rec, err := bs.store.GetInstance(uuid)
+		if err != nil {
+			return err
+		}
+		if derr := bs.nodeDeleteBackup(ctx, rec.Node, uuid, backupID); derr != nil {
+			return derr
+		}
+		_ = bs.store.DeleteBackup(backupID)
+		bs.record(uuid, EventBackupDeleted, protocol.SeverityInfo,
+			map[string]any{"backup_id": string(backupID)})
+		return nil
+	})
+}
+
 // record 追加一筆實例相關事件並回傳之(補 node/template 欄位)。
 func (bs *BackupService) record(uuid string, code protocol.EventCode, sev protocol.Severity, details map[string]any) protocol.Event {
 	ev := protocol.Event{Code: code, Severity: sev, InstanceUUID: strPtr(uuid)}

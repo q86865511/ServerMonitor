@@ -15,6 +15,7 @@
     'server-detail': '伺服器詳細',
     templates: '遊戲範本',
     nodes: '節點',
+    docker: 'Docker',
     backups: '備份',
     schedules: '排程',
     alerts: '警報',

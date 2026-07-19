@@ -2,8 +2,8 @@
   // 實例維度的備份面板(單一實作;T13 全域頁以實例選擇器複用本元件)。
   // 功能等價舊 lib/BackupsPanel.svelte:列表 / 立即備份 / 還原確認;UI 改用 ui/ 元件 + DataTable。
   import type { protocol } from '../../../../wailsjs/go/models';
-  import { ListBackups, BackupNow, RestoreBackup } from '../../../../wailsjs/go/main/App';
-  import { call } from '../../api';
+  import { ListBackups, BackupNow, RestoreBackup, DeleteBackup } from '../../../../wailsjs/go/main/App';
+  import { call, errMsg } from '../../api';
   import { pushToast } from '../../stores/toasts';
   import { trackOperation } from '../../stores/operations';
   import { fmtTime } from '../../format';
@@ -23,6 +23,8 @@
   let backingUp = $state(false);
   let restoreTarget = $state<protocol.BackupMeta | null>(null);
   let restoring = $state(false);
+  let deleteTarget = $state<protocol.BackupMeta | null>(null);
+  let deleting = $state(false);
 
   async function load(): Promise<void> {
     loading = true;
@@ -75,6 +77,22 @@
     }
   }
 
+  async function doDelete(): Promise<void> {
+    const target = deleteTarget;
+    if (!target) return;
+    deleting = true;
+    try {
+      await call(() => DeleteBackup(uuid, target.backup_id), { silent: true });
+      pushToast('success', `已刪除備份 ${target.backup_id}`);
+      deleteTarget = null;
+      await load();
+    } catch (e) {
+      pushToast('error', `刪除備份失敗:${errMsg(e)}`);
+    } finally {
+      deleting = false;
+    }
+  }
+
   // ts_utc 為 Go time,wailsjs 以 any 傳回;統一轉字串交 fmtTime。
   function tsText(b: protocol.BackupMeta): string {
     return fmtTime(typeof b.ts_utc === 'string' ? b.ts_utc : String(b.ts_utc));
@@ -84,7 +102,7 @@
     { key: 'ts', label: '時間', width: '30%', cell: tsCell },
     { key: 'backup_id', label: '備份 ID', cell: idCell },
     { key: 'checksum', label: 'Checksum', width: '20%', cell: checksumCell },
-    { key: 'actions', label: '', width: '110px', align: 'right', cell: actionsCell },
+    { key: 'actions', label: '', width: '170px', align: 'right', cell: actionsCell },
   ]);
 </script>
 
@@ -98,7 +116,10 @@
   <span class="mono muted" title={b.checksum}>{(b.checksum || '').slice(0, 12)}…</span>
 {/snippet}
 {#snippet actionsCell(b: protocol.BackupMeta)}
-  <Button size="sm" onclick={() => (restoreTarget = b)}>還原</Button>
+  <div class="row-actions">
+    <Button size="sm" onclick={() => (restoreTarget = b)}>還原</Button>
+    <Button size="sm" variant="danger" onclick={() => (deleteTarget = b)}>刪除</Button>
+  </div>
 {/snippet}
 
 <div class="panel">
@@ -139,6 +160,18 @@
   />
 {/if}
 
+{#if deleteTarget}
+  <ConfirmDialog
+    title="刪除備份"
+    message={`確定刪除備份 ${deleteTarget.backup_id}(${tsText(deleteTarget)})?此操作不可復原。`}
+    confirmLabel="刪除"
+    danger
+    busy={deleting}
+    onConfirm={doDelete}
+    onCancel={() => (deleteTarget = null)}
+  />
+{/if}
+
 <style>
   .panel {
     display: flex;
@@ -169,5 +202,10 @@
   }
   .muted {
     color: var(--fg-2);
+  }
+  .row-actions {
+    display: inline-flex;
+    gap: var(--space-2);
+    justify-content: flex-end;
   }
 </style>

@@ -16,6 +16,7 @@
   import ServerDetailPage from './lib/pages/server/ServerDetailPage.svelte';
   import TemplatesPage from './lib/pages/TemplatesPage.svelte';
   import NodesPage from './lib/pages/NodesPage.svelte';
+  import DockerPage from './lib/pages/DockerPage.svelte';
   import BackupsPage from './lib/pages/BackupsPage.svelte';
   import SchedulesPage from './lib/pages/SchedulesPage.svelte';
   import AlertsPage from './lib/pages/AlertsPage.svelte';
@@ -61,6 +62,8 @@
         <TemplatesPage />
       {:else if $route.page === 'nodes'}
         <NodesPage />
+      {:else if $route.page === 'docker'}
+        <DockerPage />
       {:else if $route.page === 'backups'}
         <BackupsPage />
       {:else if $route.page === 'schedules'}

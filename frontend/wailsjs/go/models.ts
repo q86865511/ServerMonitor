@@ -104,6 +104,28 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class ContainerDTO {
+	    id: string;
+	    name: string;
+	    image: string;
+	    state: string;
+	    gsm: boolean;
+	    uuid: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ContainerDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.image = source["image"];
+	        this.state = source["state"];
+	        this.gsm = source["gsm"];
+	        this.uuid = source["uuid"];
+	    }
+	}
 	export class ModpackRequest {
 	    type: string;
 	    ref: string;
@@ -166,6 +188,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class DiskUsageDTO {
+	    data_bytes: number;
+	    backup_bytes: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new DiskUsageDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.data_bytes = source["data_bytes"];
+	        this.backup_bytes = source["backup_bytes"];
+	    }
+	}
 	export class EventDTO {
 	    code: string;
 	    ts_utc: string;
@@ -188,6 +224,26 @@ export namespace main {
 	        this.node = source["node"];
 	        this.template_id = source["template_id"];
 	        this.details = source["details"];
+	    }
+	}
+	export class ImageDTO {
+	    id: string;
+	    tags: string[];
+	    size_bytes: number;
+	    created: string;
+	    containers: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ImageDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.tags = source["tags"];
+	        this.size_bytes = source["size_bytes"];
+	        this.created = source["created"];
+	        this.containers = source["containers"];
 	    }
 	}
 	export class InstancePortDTO {
@@ -380,6 +436,20 @@ export namespace main {
 	        this.fingerprint = source["fingerprint"];
 	        this.version = source["version"];
 	        this.error = source["error"];
+	    }
+	}
+	export class PruneResultDTO {
+	    reclaimed_bytes: number;
+	    deleted: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new PruneResultDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.reclaimed_bytes = source["reclaimed_bytes"];
+	        this.deleted = source["deleted"];
 	    }
 	}
 	export class QueryEventsRequest {

@@ -416,10 +416,13 @@ func closeSubBackend(b RuntimeBackend) error {
 // 該介面的子後端並合併/取首個處理結果——與子後端是否共用檔案系統根無關,皆正確。
 
 var (
-	_ BackupLister  = (*dispatchBackend)(nil)
-	_ BackupDeleter       = (*dispatchBackend)(nil)
-	_ MountWriter         = (*dispatchBackend)(nil)
-	_ instanceDataPurger  = (*dispatchBackend)(nil)
+	_ BackupLister       = (*dispatchBackend)(nil)
+	_ BackupDeleter      = (*dispatchBackend)(nil)
+	_ MountWriter        = (*dispatchBackend)(nil)
+	_ instanceDataPurger = (*dispatchBackend)(nil)
+	_ ImageManager       = (*dispatchBackend)(nil)
+	_ ContainerManager   = (*dispatchBackend)(nil)
+	_ instanceDiskUsager = (*dispatchBackend)(nil)
 )
 
 // subBackends 回傳目前存在的子後端(native 在前、docker 在後),供橫切能力轉發走訪。
@@ -516,4 +519,80 @@ func (d *dispatchBackend) WriteMountFile(ctx context.Context, instanceUUID, moun
 		return ErrNotFound
 	}
 	return ErrNotFound
+}
+
+// ---- 映像 / 容器管理 / 磁碟用量轉發(階段 4:Docker 資源管理)----
+//
+// 映像/容器管理只走 docker 子後端(native 無映像/容器概念);docker 不可用(native-only 節點)
+// → ErrUnsupported(server 映為 HTTP 501)。磁碟用量走首個實作 instanceDiskUsager 的子後端
+// (docker/native 共用資料/備份根,任一計得同值)。
+
+// dockerImageManager 取當前 docker 子後端的 ImageManager 能力(僅 docker 有;無 docker → false)。
+func (d *dispatchBackend) dockerImageManager() (ImageManager, bool) {
+	if docker := d.dockerBackend(); docker != nil {
+		if m, ok := docker.(ImageManager); ok {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// dockerContainerManager 取當前 docker 子後端的 ContainerManager 能力(僅 docker 有;無 docker → false)。
+func (d *dispatchBackend) dockerContainerManager() (ContainerManager, bool) {
+	if docker := d.dockerBackend(); docker != nil {
+		if m, ok := docker.(ContainerManager); ok {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+func (d *dispatchBackend) ListImages(ctx context.Context) ([]protocol.ImageSummary, error) {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return m.ListImages(ctx)
+}
+
+func (d *dispatchBackend) RemoveImage(ctx context.Context, id string, force bool) error {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return m.RemoveImage(ctx, id, force)
+}
+
+func (d *dispatchBackend) PruneImages(ctx context.Context) (protocol.PruneImagesResult, error) {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return protocol.PruneImagesResult{}, ErrUnsupported
+	}
+	return m.PruneImages(ctx)
+}
+
+func (d *dispatchBackend) ListContainers(ctx context.Context) ([]protocol.ContainerSummary, error) {
+	m, ok := d.dockerContainerManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return m.ListContainers(ctx)
+}
+
+func (d *dispatchBackend) RemoveContainer(ctx context.Context, id string, force bool) error {
+	m, ok := d.dockerContainerManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return m.RemoveContainer(ctx, id, force)
+}
+
+// InstanceDiskUsage 走首個實作 instanceDiskUsager 的子後端;皆無 → ErrUnsupported。
+func (d *dispatchBackend) InstanceDiskUsage(ctx context.Context, uuid string) (protocol.InstanceDiskUsage, error) {
+	for _, sub := range d.subBackends() {
+		if u, ok := sub.(instanceDiskUsager); ok {
+			return u.InstanceDiskUsage(ctx, uuid)
+		}
+	}
+	return protocol.InstanceDiskUsage{}, ErrUnsupported
 }

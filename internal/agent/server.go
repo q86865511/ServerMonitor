@@ -132,6 +132,14 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE "+base+"/instances/{id}/backups/{backupID}", s.idempotent(http.HandlerFunc(s.handleDeleteBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/backup", s.idempotent(http.HandlerFunc(s.handleBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/restore", s.idempotent(http.HandlerFunc(s.handleRestore)))
+	// 階段 4:Docker 資源管理。映像/容器為節點層(無 {id}→實例對映);刪除以精確 id、天然冪等
+	// (再刪回 404),故如 mount 上傳不套冪等中介層。磁碟用量以 uuid 定位、不需容器解析。
+	mux.HandleFunc("GET "+base+"/images", s.handleListImages)
+	mux.HandleFunc("DELETE "+base+"/images/{id}", s.handleRemoveImage)
+	mux.HandleFunc("POST "+base+"/images/prune", s.handlePruneImages)
+	mux.HandleFunc("GET "+base+"/containers", s.handleListContainers)
+	mux.HandleFunc("DELETE "+base+"/containers/{id}", s.handleRemoveContainer)
+	mux.HandleFunc("GET "+base+"/instances/{id}/diskusage", s.handleDiskUsage)
 
 	return mux
 }
@@ -249,6 +257,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err) // 路徑遍歷防禦:purge 以 uuid 直接清宿主資料/備份,先驗 uuid 格式
+		return
+	}
 	rid, err := s.resolve(r.Context(), uuid)
 	if err != nil {
 		// B7:容器已 out-of-band 移除。purge 時仍以 uuid 直接清宿主資料/備份——否則 resolve 短路使
@@ -396,7 +408,11 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("id")
 	backupID := protocol.BackupID(r.PathValue("backupID"))
-	// 路徑遍歷第一層防禦:URL 路徑段(已解碼,如 "..%5C"→"..\")進後端前先驗格式,拒絕 → 400。
+	// 路徑遍歷第一層防禦:URL 路徑段(已解碼,如 "..%5C"→"..\")進後端前先驗 uuid 與 backupID 格式,拒絕 → 400。
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := validateBackupID(backupID); err != nil {
 		writeErr(w, err)
 		return
@@ -465,6 +481,111 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.RestoreResponse{RuntimeID: newID})
 }
 
+// ---- 階段 4:Docker 資源管理 handlers ----
+//
+// 後端未實作對應能力(如 native-only 節點無 ImageManager/ContainerManager)→ ErrUnsupported
+// (HTTP 501)。生產頂層後端為 dispatchBackend,恆實作這些介面,能力缺失於其內部按有無 docker 子
+// 後端回 ErrUnsupported;非 dispatch 後端(測試 MockBackend)則於此型別斷言失敗回同一碼,兩路收斂。
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	imgs, err := mgr.ListImages(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListImagesResponse{Images: imgs})
+}
+
+func (s *Server) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: "image id required"})
+		return
+	}
+	if err := mgr.RemoveImage(r.Context(), id, r.URL.Query().Get("force") == "true"); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	res, err := mgr.PruneImages(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ContainerManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	cs, err := mgr.ListContainers(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListContainersResponse{Containers: cs})
+}
+
+func (s *Server) handleRemoveContainer(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ContainerManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: "container id required"})
+		return
+	}
+	if err := mgr.RemoveContainer(r.Context(), id, r.URL.Query().Get("force") == "true"); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDiskUsage 回報某實例的宿主磁碟用量(資料/備份根)。以 uuid 直接走 diskUsager,不做
+// resolve(磁碟用量以 uuid 定位、不需容器存在);後端不支援 → ErrUnsupported。
+func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err) // 路徑遍歷防禦:磁碟用量以 uuid 定位宿主目錄,先驗格式
+		return
+	}
+	usager, ok := s.backend.(instanceDiskUsager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	du, err := usager.InstanceDiskUsage(r.Context(), uuid)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, du)
+}
+
 // ---- 錯誤映射 / JSON 輔助 ----
 
 // apiErrorFor 把內部錯誤映射為 HTTP 狀態碼 + 統一 wire 錯誤碼。
@@ -479,10 +600,14 @@ func apiErrorFor(err error) (int, protocol.APIError) {
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrInvalidBackupID):
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrInvalidInstanceUUID):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrPortConflict):
 		return http.StatusConflict, protocol.APIError{Code: protocol.ErrPortConflict, Message: err.Error()}
 	case errors.Is(err, ErrLocked):
 		return http.StatusLocked, protocol.APIError{Code: protocol.ErrLocked, Message: err.Error()}
+	case errors.Is(err, ErrUnsupported):
+		return http.StatusNotImplemented, protocol.APIError{Code: protocol.ErrUnsupported, Message: err.Error()}
 	case errors.Is(err, ErrBackendClosed):
 		return http.StatusServiceUnavailable, protocol.APIError{Code: protocol.ErrInternal, Message: err.Error()}
 	default:
@@ -503,6 +628,8 @@ func statusForCode(c protocol.ErrorCode) int {
 		return http.StatusConflict
 	case protocol.ErrLocked:
 		return http.StatusLocked
+	case protocol.ErrUnsupported:
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}

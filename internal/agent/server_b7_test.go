@@ -8,6 +8,21 @@ import (
 	"servermonitor/internal/protocol"
 )
 
+// TestValidateInstanceUUID_RejectsTraversal 驗證階段 4 安全修正:以 uuid 定位宿主目錄的端點
+// (diskusage/delete backup/purge)先驗 uuid 格式,拒絕路徑遍歷(對稱 validateBackupID)。
+func TestValidateInstanceUUID_RejectsTraversal(t *testing.T) {
+	for _, u := range []string{"550e8400-e29b-41d4-a716-446655440000", "abc123", "local"} {
+		if err := validateInstanceUUID(u); err != nil {
+			t.Errorf("合法 uuid %q 不應被拒: %v", u, err)
+		}
+	}
+	for _, u := range []string{"", "..", "../x", "..\\x", "a/b", "a\\b", ".hidden", "x\x00y"} {
+		if err := validateInstanceUUID(u); err == nil {
+			t.Errorf("不安全 uuid %q 應被拒", u)
+		}
+	}
+}
+
 // purgeRecordingBackend 嵌入 MockBackend 並記錄 PurgeInstanceData 呼叫,供 B7 handler 測試。
 type purgeRecordingBackend struct {
 	*MockBackend

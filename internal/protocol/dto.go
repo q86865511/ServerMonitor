@@ -283,6 +283,9 @@ const (
 	ErrConflict     ErrorCode = "ERR_CONFLICT"
 	ErrBadRequest   ErrorCode = "ERR_BAD_REQUEST"
 	ErrInternal     ErrorCode = "ERR_INTERNAL"
+	// ErrUnsupported 表示本節點後端缺乏此能力(如 native-only 節點無 Docker 映像/容器管理)。
+	// 對映 HTTP 501 Not Implemented(見 agent.statusForCode)。
+	ErrUnsupported ErrorCode = "ERR_UNSUPPORTED"
 )
 
 // APIError 是代理 API 的統一錯誤回應主體。
@@ -409,4 +412,49 @@ type RestoreResponse struct {
 type HealthResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
+}
+
+// ---- Docker 資源管理契約 DTO(階段 4;映像/容器為節點層,不對映實例)----
+
+// ImageSummary 是節點上一份 Docker 映像的摘要(GET /images)。Containers 為使用該映像的容器數
+// (docker 提供;未計算時 docker 回 -1);SizeBytes 為映像總大小;Tags 為 repo:tag 清單(懸掛映像可空)。
+type ImageSummary struct {
+	ID         string    `json:"id"`
+	Tags       []string  `json:"tags"`
+	SizeBytes  int64     `json:"size_bytes"`
+	CreatedUTC time.Time `json:"created_utc"`
+	Containers int       `json:"containers"`
+}
+
+// ContainerSummary 是節點上一個 Docker 容器的摘要(GET /containers;含孤兒/非本工具建立)。
+// Labels 保留原樣供上層辨識 gsm.* 標記(gsm.managed-by/gsm.uuid);State 為 docker 容器狀態字串。
+type ContainerSummary struct {
+	ID     string            `json:"id"`
+	Names  []string          `json:"names"`
+	Image  string            `json:"image"`
+	State  string            `json:"state"`
+	Labels map[string]string `json:"labels"`
+}
+
+// PruneImagesResult 是 POST /images/prune 的回應:回收位元組與被刪映像 ID 清單。
+type PruneImagesResult struct {
+	ReclaimedBytes int64    `json:"reclaimed_bytes"`
+	Deleted        []string `json:"deleted"`
+}
+
+// InstanceDiskUsage 是一個實例的宿主磁碟用量(GET /instances/{id}/diskusage):資料根與備份根
+// 各自遞迴加總的檔案位元組。以 uuid 定位(不需容器);目錄不存在計 0。
+type InstanceDiskUsage struct {
+	DataBytes   int64 `json:"data_bytes"`
+	BackupBytes int64 `json:"backup_bytes"`
+}
+
+// ListImagesResponse 是 GET /images 的回應。
+type ListImagesResponse struct {
+	Images []ImageSummary `json:"images"`
+}
+
+// ListContainersResponse 是 GET /containers 的回應。
+type ListContainersResponse struct {
+	Containers []ContainerSummary `json:"containers"`
 }
