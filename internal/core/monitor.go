@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -314,24 +315,40 @@ func (h *MonitorHub) runStats(ctx context.Context, mi *monitoredInstance) {
 			}
 			continue
 		}
-		backoff = h.cfg.ReconnectBase // 連上即重置退避
-		h.pumpStats(ctx, mi, conn)
+		// B5:不在撥號成功即重置退避——WS 升級早於 agent 端 backend.Stats 執行,升級成功不代表串流健康。
+		// 改由 pumpStats 收到「真實資料 frame」才回報 gotData 並重置,避免「升級成功但串流立即失敗」時
+		// 退避永不成長→每約 500ms 猛烈重連。
+		if h.pumpStats(ctx, mi, conn) {
+			backoff = h.cfg.ReconnectBase
+		}
 		if !h.backoffSleep(ctx, &backoff) {
 			return
 		}
 	}
 }
 
-// pumpStats 讀取一個 stats 連線的取樣 frame 並轉推,直到斷線或 ctx 取消。
-func (h *MonitorHub) pumpStats(ctx context.Context, mi *monitoredInstance, conn *websocket.Conn) {
+// pumpStats 讀取一個 stats 連線的取樣 frame 並轉推,直到斷線或 ctx 取消。回傳是否收到過真實資料
+// frame(供 runStats 決定是否重置退避,B5)。
+func (h *MonitorHub) pumpStats(ctx context.Context, mi *monitoredInstance, conn *websocket.Conn) (gotData bool) {
 	stop := closeOnCancel(ctx, conn)
 	defer stop()
 	defer conn.Close()
 	for {
-		var s protocol.ResourceStats
-		if err := conn.ReadJSON(&s); err != nil {
-			return
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return gotData
 		}
+		// B4:agent 於 backend 錯誤時先送 APIError frame 再送 close(server_ws writeWSError);其欄位與
+		// ResourceStats 無重疊,若直接反序列化為 ResourceStats 會得全零值並 fanout 假 0(污染趨勢/卡片)。
+		// 偵測到錯誤 frame 即跳過不轉推(隨後的 close 會結束迴圈)。
+		if isWSErrorFrame(msg) {
+			continue
+		}
+		var s protocol.ResourceStats
+		if json.Unmarshal(msg, &s) != nil {
+			continue
+		}
+		gotData = true
 		mi.fanoutStats(s)
 	}
 }
@@ -348,26 +365,46 @@ func (h *MonitorHub) runLogs(ctx context.Context, mi *monitoredInstance) {
 			}
 			continue
 		}
-		backoff = h.cfg.ReconnectBase
-		h.pumpLogs(ctx, mi, conn)
+		// B5:同 runStats——收到真實 log frame 才重置退避。
+		if h.pumpLogs(ctx, mi, conn) {
+			backoff = h.cfg.ReconnectBase
+		}
 		if !h.backoffSleep(ctx, &backoff) {
 			return
 		}
 	}
 }
 
-// pumpLogs 讀取一個 logs 連線的行 frame 並轉推,直到斷線或 ctx 取消。
-func (h *MonitorHub) pumpLogs(ctx context.Context, mi *monitoredInstance, conn *websocket.Conn) {
+// pumpLogs 讀取一個 logs 連線的行 frame 並轉推,直到斷線或 ctx 取消。回傳是否收到過真實 log frame(B5)。
+func (h *MonitorHub) pumpLogs(ctx context.Context, mi *monitoredInstance, conn *websocket.Conn) (gotData bool) {
 	stop := closeOnCancel(ctx, conn)
 	defer stop()
 	defer conn.Close()
 	for {
-		var ln LogLine
-		if err := conn.ReadJSON(&ln); err != nil {
-			return
+		_, msg, err := conn.ReadMessage()
+		if err != nil {
+			return gotData
 		}
+		// B4:跳過 agent 錯誤 frame,避免 fanout 空白 log 行(同 pumpStats)。
+		if isWSErrorFrame(msg) {
+			continue
+		}
+		var ln LogLine
+		if json.Unmarshal(msg, &ln) != nil {
+			continue
+		}
+		gotData = true
 		mi.fanoutLog(ln, h.now())
 	}
+}
+
+// isWSErrorFrame 判斷一則 WS text frame 是否為 agent 的 APIError 錯誤 frame(具非空 "code" 欄位)。
+// ResourceStats/LogLine 皆無 code 欄位,故可據以與正常資料 frame 區分(B4)。
+func isWSErrorFrame(msg []byte) bool {
+	var probe struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(msg, &probe) == nil && probe.Code != ""
 }
 
 // runPoll 週期查詢玩家數與線上狀態並更新快照,直到 ctx 取消。啟動時立即先跑一次。

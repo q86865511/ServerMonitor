@@ -71,6 +71,25 @@ func (a *App) OnStartup(ctx context.Context) {
 	a.rt = rt
 	a.rt.Start()
 
+	// 階段 3:drain 核心啟動階段進度(starting/awaiting-ready/ready),以 provision:<uuid> 事件推送給
+	// 前端(伺服器主控台顯示啟動進度、全域操作面板彙整)。a.ctx 取消(關閉)時 goroutine 收束。
+	go func() {
+		ch := a.rt.StartupProgress()
+		for {
+			select {
+			case p, ok := <-ch:
+				if !ok {
+					return
+				}
+				if p.InstanceUUID != "" {
+					wailsruntime.EventsEmit(a.ctx, "provision:"+p.InstanceUUID, p)
+				}
+			case <-a.ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// 系統匣圖示與單一實例喚醒監聽(僅 Windows 有實作,其他平台為 no-op 存根)。
 	a.tray = newTray()
 	a.tray.start(ctx, a.showWindow, a.quitApp)
@@ -311,7 +330,12 @@ func (a *App) CreateInstance(req CreateInstanceRequest) (string, error) {
 		defer stop()
 		go func() {
 			for p := range ch {
+				// 全域 provision(建立精靈)+ per-uuid(伺服器主控台/全域操作面板);建立進度由後端
+				// emitter 蓋 InstanceUUID(階段 3)。
 				wailsruntime.EventsEmit(a.ctx, "provision", p)
+				if p.InstanceUUID != "" {
+					wailsruntime.EventsEmit(a.ctx, "provision:"+p.InstanceUUID, p)
+				}
 			}
 		}()
 	}
@@ -471,6 +495,13 @@ func (a *App) SubscribeLogs(uuid string) error {
 		for ln := range ch {
 			wailsruntime.EventsEmit(a.ctx, "logs:"+uuid, ln)
 		}
+		// B10:channel 關閉(核心 StopMonitoring)後清除 map 項,使停止再啟動同實例後 SubscribeLogs 能
+		// 重新訂閱(否則冪等守衛因殘留項永久 no-op、即時 log 靜默)。僅當仍是本訂閱時清除(避免清掉新訂閱)。
+		a.subMu.Lock()
+		if cur, ok := a.logSubs[uuid]; ok && cur == id {
+			delete(a.logSubs, uuid)
+		}
+		a.subMu.Unlock()
 	}()
 	return nil
 }
@@ -503,6 +534,12 @@ func (a *App) SubscribeStats(uuid string) error {
 		for s := range ch {
 			wailsruntime.EventsEmit(a.ctx, "stats:"+uuid, s)
 		}
+		// B10:同 SubscribeLogs——channel 關閉後清除 map 項,使停止再啟動同實例後可重新訂閱 stats。
+		a.subMu.Lock()
+		if cur, ok := a.statsSubs[uuid]; ok && cur == id {
+			delete(a.statsSubs, uuid)
+		}
+		a.subMu.Unlock()
 	}()
 	return nil
 }

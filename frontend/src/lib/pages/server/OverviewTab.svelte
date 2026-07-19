@@ -6,12 +6,14 @@
     metricSamples,
     acquireMetrics,
     releaseMetrics,
+    resubscribeMetrics,
     cpuTrend,
     ramPercentTrend,
     type MetricSample,
   } from '../../stores/metrics';
   import { call } from '../../api';
   import { pushToast } from '../../stores/toasts';
+  import { trackOperation } from '../../stores/operations';
   import { navigate } from '../../router';
   import { fmtBytes } from '../../format';
   import type { TrendSeries } from '../../ui/types';
@@ -60,6 +62,22 @@
     };
   });
 
+  // B10:停止再啟動同實例(不離頁)後即時 stats 靜默——後端 fanout 隨 channel 關閉結束,前端訂閱狀態
+  // 殘留(上方 effect 僅隨 uuid 重跑)。於「非 Running→Running」轉態時重建訂閱使即時指標恢復。
+  let reSubUuid = '';
+  let prevRunning = false;
+  $effect(() => {
+    const id = uuid;
+    const isRunning = inst.observed_state === 'Running';
+    if (id !== reSubUuid) {
+      reSubUuid = id;
+      prevRunning = isRunning;
+      return;
+    }
+    if (isRunning && !prevRunning) resubscribeMetrics(id);
+    prevRunning = isRunning;
+  });
+
   const cpuSeries = $derived<TrendSeries[]>([
     { label: 'CPU', colorVar: '--chart-cpu', points: cpuTrend(samples), unit: '%' },
   ]);
@@ -76,7 +94,8 @@
   async function backupNow(): Promise<void> {
     backingUp = true;
     try {
-      const meta = await call(() => BackupNow(uuid));
+      // 全域操作面板登記一筆「備份」(name 由 uuid 於 instances store 解析)。
+      const meta = await trackOperation({ uuid, kind: 'backup' }, () => call(() => BackupNow(uuid)));
       pushToast('success', `已建立備份 ${meta.backup_id}`);
     } catch {
       /* toast 已呈現 */

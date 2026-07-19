@@ -14,6 +14,7 @@
   } from '../../../../wailsjs/go/main/App';
   import { route, navigate } from '../../router';
   import { instances, refresh } from '../../stores/instances';
+  import { trackOperation, type OpKind } from '../../stores/operations';
   import { call } from '../../api';
   import { pushToast } from '../../stores/toasts';
   import { fmtPlayers } from '../../format';
@@ -113,11 +114,12 @@
 
   // ---- 頁首操作(in-flight 鎖 + toast)----
   let busyAction = $state('');
-  async function act(name: string, fn: () => Promise<void>, ok: string): Promise<void> {
+  async function act(name: OpKind, fn: () => Promise<void>, ok: string): Promise<void> {
     if (busyAction) return;
     busyAction = name;
     try {
-      await call(fn);
+      // 全域操作面板登記一筆(進度由 provision:<uuid> 事件豐富);call() 仍負責失敗 toast。
+      await trackOperation({ uuid, name: displayName, kind: name }, () => call(fn));
       pushToast('success', ok);
       await refresh();
     } catch {
@@ -248,7 +250,7 @@
       {#if tab === 'overview'}
         <OverviewTab {uuid} {inst} {snapshot} />
       {:else if tab === 'console'}
-        <ConsoleTab {uuid} {snapshot} />
+        <ConsoleTab {uuid} {snapshot} {running} />
       {:else if tab === 'backups'}
         <Card><BackupsPanel {uuid} /></Card>
       {:else if tab === 'schedules'}

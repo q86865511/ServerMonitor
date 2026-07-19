@@ -13,10 +13,11 @@
     CurseForgeEnabled,
     RetryDocker,
   } from '../../../../wailsjs/go/main/App';
-  import { EventsOn, EventsOff, BrowserOpenURL } from '../../../../wailsjs/runtime/runtime';
+  import { EventsOn, BrowserOpenURL } from '../../../../wailsjs/runtime/runtime';
   import { call, errMsg } from '../../api';
   import { pushToast } from '../../stores';
   import { nodeStatuses } from '../../stores/instances';
+  import { trackOperation } from '../../stores/operations';
   import Modal from '../../ui/Modal.svelte';
   import Button from '../../ui/Button.svelte';
   import ConfirmDialog from '../../ui/ConfirmDialog.svelte';
@@ -230,10 +231,13 @@
   }
 
   onDestroy(() => {
-    // 精靈關閉(任何路徑,含成功 navigate 後卸載)一律解除 provision 訂閱。
-    if (unlistenProv) unlistenProv();
-    EventsOff('provision');
-    unlistenProv = null;
+    // 精靈關閉(任何路徑,含成功 navigate 後卸載)解除本精靈自己的 provision 訂閱。
+    // 只用 EventsOn 回傳的 canceller,不用 EventsOff('provision')——全域 provision 事件另有
+    // stores/operations 的監聽者,EventsOff 依事件名會連帶移除他人監聽。
+    if (unlistenProv) {
+      unlistenProv();
+      unlistenProv = null;
+    }
   });
 
   // 切換範本:重置範本相關欄位(等價舊版 onTemplateChange);同一範本重選不重置(保留輸入)。
@@ -353,7 +357,10 @@
     });
 
     try {
-      const uuid = await call(() => CreateInstance(req), { silent: true });
+      // 全域操作面板登記一筆「建立」(進度由全域 provision 事件豐富);call(silent) 保持精靈接管錯誤呈現。
+      const uuid = await trackOperation({ name: form.name.trim() || '新伺服器', kind: 'create' }, () =>
+        call(() => CreateInstance(req), { silent: true }),
+      );
       pushToast('success', `已建立實例 ${uuid}`);
       onCreated(uuid); // 父層負責關閉精靈 + navigate + refresh
     } catch (e) {
@@ -362,9 +369,10 @@
       error = provStage ? `${base}(供應階段:${provStage})` : base;
     } finally {
       submitting = false;
-      if (unlistenProv) unlistenProv();
-      EventsOff('provision');
-      unlistenProv = null;
+      if (unlistenProv) {
+        unlistenProv();
+        unlistenProv = null;
+      }
     }
   }
 </script>

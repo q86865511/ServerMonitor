@@ -73,6 +73,10 @@ type Orchestrator struct {
 	// best-effort:回錯誤僅記 HOOK_FAILED、不阻擋停止流程;預設 nil(no-op)。
 	stopHook func(ctx context.Context, uuid string) error
 
+	// progressHook 於啟動階段回報進度(stage: starting/awaiting-ready/ready),供 GUI 顯示於伺服器
+	// 主控台與全域操作面板(階段 3)。非阻塞、可丟失(進度僅供顯示);預設 nil(no-op)。
+	progressHook func(uuid string, p protocol.ProvisionProgress)
+
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex // per-instance 序列化鎖
 }
@@ -92,6 +96,9 @@ type OrchestratorConfig struct {
 	// StopHook 於計畫停止前 best-effort 執行 hooks.stop(見 Orchestrator.stopHook);nil 則不執行。
 	// 通常以 CommandService.RunStopHook 注入。
 	StopHook func(ctx context.Context, uuid string) error
+	// ProgressHook 於啟動階段回報進度(見 Orchestrator.progressHook);nil 則不回報。通常由 app 層
+	// 注入為「推入 Runtime 進度 channel → Wails EventsEmit provision:<uuid>」(階段 3)。
+	ProgressHook func(uuid string, p protocol.ProvisionProgress)
 }
 
 // NewOrchestrator 建立 Orchestrator。
@@ -129,7 +136,15 @@ func NewOrchestrator(cfg OrchestratorConfig) *Orchestrator {
 		readyPoll:    poll,
 		crashHook:    cfg.CrashHook,
 		stopHook:     cfg.StopHook,
+		progressHook: cfg.ProgressHook,
 		locks:        make(map[string]*sync.Mutex),
+	}
+}
+
+// emitProgress 於啟動階段 best-effort 回報一格進度(progressHook 為 nil 則 no-op)。
+func (o *Orchestrator) emitProgress(uuid, stage string, percent float64, detail string) {
+	if o.progressHook != nil {
+		o.progressHook(uuid, protocol.ProvisionProgress{Stage: stage, Percent: percent, Detail: detail, InstanceUUID: uuid})
 	}
 }
 
@@ -172,15 +187,18 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	if terr := o.transition(&rec, protocol.InstanceStateStarting); terr != nil {
 		return terr
 	}
+	o.emitProgress(uuid, "starting", -1, "啟動中") // percent<0=不確定態(前端顯示流動動畫,無總量可估)
 
 	if aerr := o.registry.Call(rec.Node, func(c *NodeClient) error {
 		return c.Start(ctx, uuid)
 	}); aerr != nil {
+		o.emitProgress(uuid, "failed", -1, "啟動失敗") // 失敗終態:使主控台進度橫幅收束而非卡在啟動中
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
 		return fmt.Errorf("代理啟動失敗: %w", aerr)
 	}
 
 	if rerr := o.awaitReady(ctx, rec.Node, uuid); rerr != nil {
+		o.emitProgress(uuid, "failed", -1, "啟動失敗") // 逾時/崩潰/取消終態:主控台進度橫幅收束
 		var se *startupExitError
 		if errors.As(rerr, &se) {
 			// B2a:啟動途中容器崩潰退出→標 Crashed、記 INSTANCE_CRASHED(不空等就緒逾時、不吞成 Error);
@@ -191,6 +209,7 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
 		return rerr
 	}
+	o.emitProgress(uuid, "ready", 100, "已就緒")
 
 	if terr := o.transition(&rec, protocol.InstanceStateRunning); terr != nil {
 		return terr
@@ -209,7 +228,10 @@ func (o *Orchestrator) awaitReady(ctx context.Context, node, uuid string) error 
 	defer cancel()
 	ticker := time.NewTicker(o.readyPoll)
 	defer ticker.Stop()
+	attempt := 0
 	for {
+		attempt++
+		o.emitProgress(uuid, "awaiting-ready", -1, fmt.Sprintf("等待就緒(第 %d 次探測)", attempt))
 		ready, perr := o.prober.Ready(pctx, node, uuid)
 		if perr == nil && ready {
 			return nil

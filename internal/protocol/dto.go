@@ -211,9 +211,12 @@ const (
 // ProvisionProgress 是 native 供應階段的進度明細(native-backend R12),隨
 // RuntimeEventProvision 事件回報供 GUI 顯示進度條。
 type ProvisionProgress struct {
-	Stage   string  `json:"stage"`            // 供應階段(如 "jre" / "server-jar" / "steamcmd")
+	Stage   string  `json:"stage"`            // 供應/啟動階段(如 "jre" / "server-jar" / "steamcmd" / "pull-image" / "starting" / "awaiting-ready" / "ready")
 	Percent float64 `json:"percent"`          // 完成百分比(0-100);總量不可知時為 0
-	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名)
+	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名、第 N 次就緒探測)
+	// InstanceUUID 為進度所屬實例 uuid(建立進度由後端 emitter 蓋章、啟動進度由核心 progressHook 帶入),
+	// 供 GUI 以 provision:<uuid> 事件分派至該伺服器主控台與全域操作面板。
+	InstanceUUID string `json:"instance_uuid,omitempty"`
 }
 
 // RuntimeEvent 是 RuntimeBackend.Events 串流上的一則執行事件,亦為節點代理 WS /events 的

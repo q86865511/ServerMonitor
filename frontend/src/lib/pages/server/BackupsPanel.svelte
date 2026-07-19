@@ -5,6 +5,7 @@
   import { ListBackups, BackupNow, RestoreBackup } from '../../../../wailsjs/go/main/App';
   import { call } from '../../api';
   import { pushToast } from '../../stores/toasts';
+  import { trackOperation } from '../../stores/operations';
   import { fmtTime } from '../../format';
   import Button from '../../ui/Button.svelte';
   import DataTable from '../../ui/DataTable.svelte';
@@ -47,7 +48,8 @@
   async function backupNow(): Promise<void> {
     backingUp = true;
     try {
-      const meta = await call(() => BackupNow(uuid));
+      // 全域操作面板登記一筆「備份」(name 由 uuid 於 instances store 解析)。
+      const meta = await trackOperation({ uuid, kind: 'backup' }, () => call(() => BackupNow(uuid)));
       pushToast('success', `已建立備份 ${meta.backup_id}`);
       await load();
     } catch {

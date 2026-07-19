@@ -1502,6 +1502,7 @@ func (b *NativeBackend) progressEmitter(uuid string) func(protocol.ProvisionProg
 	id := nativeID(uuid)
 	return func(p protocol.ProvisionProgress) {
 		pp := p
+		pp.InstanceUUID = uuid // 供 GUI 以 provision:<uuid> 分派至該伺服器主控台
 		b.hub.emit(RuntimeEvent{ID: id, Kind: protocol.RuntimeEventProvision, TsUTC: time.Now().UTC(), Progress: &pp})
 	}
 }
