@@ -181,6 +181,13 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	}
 
 	if rerr := o.awaitReady(ctx, rec.Node, uuid); rerr != nil {
+		var se *startupExitError
+		if errors.As(rerr, &se) {
+			// B2a:啟動途中容器崩潰退出→標 Crashed、記 INSTANCE_CRASHED(不空等就緒逾時、不吞成 Error);
+			// 不自動重啟(見 markStartupCrashed)。後續 HOL 阻塞的 die 事件抵達時見 observed==Crashed 去重。
+			o.markStartupCrashed(&rec, se.code)
+			return fmt.Errorf("啟動途中崩潰: %s: %w", uuid, rerr)
+		}
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
 		return rerr
 	}
@@ -194,7 +201,8 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	return nil
 }
 
-// awaitReady 輪詢就緒探針至就緒或逾時。逾時回 ErrStartTimeout;ctx 取消回 ctx.Err()。
+// awaitReady 輪詢就緒探針至就緒或逾時。逾時回 ErrStartTimeout;ctx 取消回 ctx.Err();
+// 啟動途中容器已退出(崩潰)回 *startupExitError(B2a,快速失敗不空等)。
 // 探針暫時性錯誤(如節點瞬斷)不立即放棄,持續輪詢至逾時。
 func (o *Orchestrator) awaitReady(ctx context.Context, node, uuid string) error {
 	pctx, cancel := context.WithTimeout(ctx, o.readyTimeout)
@@ -206,6 +214,11 @@ func (o *Orchestrator) awaitReady(ctx context.Context, node, uuid string) error 
 		if perr == nil && ready {
 			return nil
 		}
+		// B2a:偵測啟動途中容器已終態退出(崩潰)→快速失敗帶退出碼,不空等到就緒逾時(生產 10 分鐘)。
+		// 就緒探針(tcp/rcon/rest)不查退出、docker/預設 kind 的 running 探針只回 Running 布林,故另查 Status。
+		if exited, code := o.exitedDuringStartup(pctx, node, uuid); exited {
+			return &startupExitError{code: code}
+		}
 		select {
 		case <-pctx.Done():
 			if errors.Is(pctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
@@ -215,6 +228,37 @@ func (o *Orchestrator) awaitReady(ctx context.Context, node, uuid string) error 
 		case <-ticker.C:
 		}
 	}
+}
+
+// startupExitError 表示啟動途中容器已終態退出(崩潰),供 awaitReady 快速失敗、startLocked 據以標
+// Crashed 而非空等就緒逾時(B2a)。code 為退出碼(可為 nil)。
+type startupExitError struct{ code *int }
+
+func (e *startupExitError) Error() string {
+	if e.code != nil {
+		return fmt.Sprintf("啟動途中容器已退出(退出碼 %d)", *e.code)
+	}
+	return "啟動途中容器已退出"
+}
+
+// exitedDuringStartup 查 runtime 狀態判斷容器是否已終態退出(exited/dead,或已有 FinishedAt),
+// 而非「尚未就緒」(created/starting)。查詢失敗(節點瞬斷等)一律回 false——不因暫時查不到而誤判退出。
+func (o *Orchestrator) exitedDuringStartup(ctx context.Context, node, uuid string) (bool, *int) {
+	var st protocol.RuntimeStatus
+	err := o.registry.Call(node, func(c *NodeClient) error {
+		var e error
+		st, e = c.Status(ctx, uuid)
+		return e
+	})
+	if err != nil {
+		return false, nil
+	}
+	// 僅崩潰終態(exited/dead)判為啟動途中退出;不含 stopped(計畫停止,awaitReady 持鎖期間不會發生,
+	// 但避免語意混淆)或 created/starting(尚未就緒,續輪詢)。docker/native 的崩潰皆映為 exited/dead。
+	if st.State == protocol.RuntimeStateExited || st.State == protocol.RuntimeStateDead {
+		return true, st.ExitCode
+	}
+	return false, nil
 }
 
 // Stop 計畫性停止實例(R3):序列化 → 產生 planned-stop token(遞增 operation generation、
@@ -401,14 +445,21 @@ func (o *Orchestrator) HandleRuntimeEvent(ctx context.Context, node string, ev p
 }
 
 // handleDie 處理容器結束事件:於 per-instance lock 內比對 token 判別死因。
-// 抵達時刻必須在搶鎖之前取樣:發 token 的操作(備份/還原的停→做事→重啟)自己持有同一把
-// per-instance lock,die 會被擋到操作結束;若以「拿到鎖之後」的時刻判 TTL,持鎖超過 TTL 的
-// 備份必把計畫停機誤判成崩潰(Running→Crashed)。
+// TTL 判定基準用 ev.TsUTC(die 實際發生時刻,由 agent 蓋章),而非 o.now()(派工時刻):B6——
+// 事件迴圈是單 goroutine 同步派工,被長持鎖操作(如備份全程持同一實例鎖數分鐘)HOL 阻塞時,後續
+// 事件連「讀取時刻」都被延遲,唯 ev.TsUTC 反映真實發生時間。以派工時刻判 TTL 時,另一實例的計畫停機
+// die 會因延遲派工使 token 過期而被誤判崩潰、自動重啟被刻意停止的伺服器(跨實例 head-of-line;近期
+// 搶鎖前取樣的修法只解同實例)。前提為 localhost 同時鐘;遠端節點的時鐘偏差遠小於 TTL(2×grace)。
+// TsUTC 缺失(理論上不會,die 事件皆蓋章)退回 o.now()。
 func (o *Orchestrator) handleDie(ev protocol.RuntimeEvent) {
-	o.handleDieAt(o.now(), ev)
+	occurredAt := ev.TsUTC
+	if occurredAt.IsZero() {
+		occurredAt = o.now()
+	}
+	o.handleDieAt(occurredAt, ev)
 }
 
-// handleDieAt 是 handleDie 的實作,arrivedAt 為 die 事件抵達核心的時刻(TTL 判定基準)。
+// handleDieAt 是 handleDie 的實作,arrivedAt 為 die 事件發生時刻(TTL 判定基準,見 handleDie)。
 func (o *Orchestrator) handleDieAt(arrivedAt time.Time, ev protocol.RuntimeEvent) {
 	uuid, ok := o.uuidForRuntime(ev.ID)
 	if !ok {
@@ -442,6 +493,20 @@ func (o *Orchestrator) handleDieAt(arrivedAt time.Time, ev protocol.RuntimeEvent
 	if o.crashHook != nil {
 		o.crashHook(uuid, ev.ExitCode)
 	}
+}
+
+// markStartupCrashed 於啟動途中偵測到崩潰退出時,標 Crashed、記 INSTANCE_CRASHED(呼叫端須已持
+// per-instance lock)。刻意**不**交棒 crashHook 自動重啟:啟動崩潰多為設定/環境問題,自動重啟通常徒勞
+// (同設定會再崩),此維持修復前「啟動崩潰不自動重啟」的行為,僅把「卡 Starting 至就緒逾時再吞成 Error」
+// 改為快速失敗+如實記 Crashed。另一關鍵:若此處交棒 crashHook 觸發非同步重啟,同一崩潰的 die 事件被跨
+// 實例 HOL 阻塞超過重啟 backoff 才抵達時,實例已被重啟翻回 Running,handleDie 的 observed==Crashed 去重
+// 失效→二次記錄/重啟一台剛恢復的伺服器;不交棒則 observed 穩定為 Crashed,延遲 die 可靠去重。runtime
+// 崩潰(就緒後才死)的自動重啟不受影響,仍走 die 事件的正常 crashHook 路徑。
+func (o *Orchestrator) markStartupCrashed(rec *InstanceRecord, exitCode *int) {
+	if terr := o.transition(rec, protocol.InstanceStateCrashed); terr != nil {
+		_ = o.forceObserved(rec, protocol.InstanceStateCrashed)
+	}
+	o.record(protocol.EventInstanceCrashed, protocol.SeverityError, *rec, crashDetails(exitCode))
 }
 
 // handleExternalStart 處理「非經本編排」的容器啟動:把停止/崩潰/離線/錯誤中的實例更新為 Running。

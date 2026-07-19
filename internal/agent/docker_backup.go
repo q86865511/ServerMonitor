@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/container"
 
 	"servermonitor/internal/protocol"
 )
@@ -106,6 +107,8 @@ func (b *DockerBackend) Restore(ctx context.Context, id protocol.RuntimeID, bid 
 	}
 
 	root := b.instanceDataRoot(uuid)
+	_, rootStatErr := os.Stat(root)
+	rootPreexisted := rootStatErr == nil
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("建立實例資料根失敗: %w", err)
 	}
@@ -129,10 +132,23 @@ func (b *DockerBackend) Restore(ctx context.Context, id protocol.RuntimeID, bid 
 	newID, err := b.Create(ctx, rec.Spec)
 	if err != nil {
 		rollback()
+		// 全新根還原(資料根本次才由還原建立)途中 Create 失敗:清除含明文機密的 instance.json 與空根——
+		// 此路徑下 Create 內的 B1 清理因資料根已由本函式先建(rootPreexisted=true)而豁免,故於此補清。
+		// 常規還原(根已存在)不清,保全既有資料(rollback 已換回原資料)。
+		if !rootPreexisted {
+			_ = os.RemoveAll(root)
+		}
 		return "", fmt.Errorf("還原後建立新容器失敗: %w", err)
 	}
 	// Create 成功後才永久刪除換出的舊資料(trash),確保刪除前新容器已就緒。
 	commit()
+	// B9:還原切換到新容器後,移除舊容器——其 bind 資料已於 swap 換出,是帶相同 gsm.uuid 的無用停止殼;
+	// 不清除則每次還原累積一個孤兒(對帳以 uuid 是否在 DB 判定,同 uuid 仍在 DB 故偵測不到)。以精確舊
+	// RuntimeID 移除(非 uuid 解析,避免誤刪剛建的新容器);不 Purge 以保留共享的實例資料;best-effort:
+	// 資料已切換、新容器已就緒,舊容器清理失敗不影響已成功的還原。
+	if id != "" && id != newID {
+		_ = b.cli.ContainerRemove(ctx, string(id), container.RemoveOptions{Force: true})
+	}
 	return newID, nil
 }
 

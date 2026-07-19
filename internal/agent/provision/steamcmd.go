@@ -25,6 +25,17 @@ const defaultSteamCMDBaseURL = "https://steamcdn-a.akamaihd.net/client/installer
 // steamCMDErrorMarker 是 SteamCMD 輸出中表示安裝/更新失敗的標記字串(大小寫不敏感比對)。
 const steamCMDErrorMarker = "error!"
 
+// steamCMDFirstRunMarker 是「全新下載的 SteamCMD 尚未自我更新即跑 app_update」的失敗特徵
+// (輸出含 "Missing configuration"、exit 7)。SteamCMD 於此失敗後才在同次行程自我更新,故重試同
+// 一命令即成功——屬 SteamCMD 已知首次行為,非設定錯誤。實機重現:首台/清快取後首跑 app_update
+// 2394010 得此錯、隨即自我更新,重試即順利下載。以此特徵限定重試一次,不影響 No subscription 等
+// 真實永久錯誤(不重試)。
+const steamCMDFirstRunMarker = "missing configuration"
+
+// steamCMDInstallAttempts 是 InstallApp 的最大嘗試次數:僅在首次自我更新特徵(見
+// steamCMDFirstRunMarker)下用到第 2 次;其餘錯誤第 1 次即返回。
+const steamCMDInstallAttempts = 2
+
 // steamProgressRe 解析 SteamCMD 輸出中的下載/驗證進度行,如:
 // "Update state (0x61) downloading, progress: 32.15 (1234 / 5678)"。
 var steamProgressRe = regexp.MustCompile(`progress:\s*([0-9]+(?:\.[0-9]+)?)`)
@@ -186,26 +197,46 @@ func (s *SteamCMDProvisioner) InstallApp(ctx context.Context, appID string, inst
 	}
 
 	stage := fmt.Sprintf("安裝 Steam App %s", appID)
-	var lastErrorLine string
-	onLine := func(line string) {
-		if strings.Contains(strings.ToLower(line), steamCMDErrorMarker) {
-			lastErrorLine = line
-		}
-		pct, detail := parseSteamCMDLine(line)
-		progress.report(ProvisionProgress{Stage: stage, Percent: pct, Detail: detail})
-	}
 
-	runErr := s.exec(ctx, exe, args, onLine)
-	if lastErrorLine != "" {
-		if runErr != nil {
-			return fmt.Errorf("provision: SteamCMD 安裝 App %s 失敗(%s): %w", appID, lastErrorLine, runErr)
+	// 首次自我更新特徵下重試一次(見 steamCMDFirstRunMarker):首跑 app_update 於 SteamCMD 自我
+	// 更新完成前失敗,重試即成功。重試前 lastErrorLine 重置;失敗一次不下載任何內容,故無重複下載。
+	var lastErr error
+	for attempt := 1; attempt <= steamCMDInstallAttempts; attempt++ {
+		var lastErrorLine string
+		onLine := func(line string) {
+			if strings.Contains(strings.ToLower(line), steamCMDErrorMarker) {
+				lastErrorLine = line
+			}
+			pct, detail := parseSteamCMDLine(line)
+			progress.report(ProvisionProgress{Stage: stage, Percent: pct, Detail: detail})
 		}
-		return fmt.Errorf("provision: SteamCMD 安裝 App %s 回報錯誤: %s", appID, lastErrorLine)
+
+		runErr := s.exec(ctx, exe, args, onLine)
+		if lastErrorLine == "" && runErr == nil {
+			return nil
+		}
+		if lastErrorLine != "" {
+			if runErr != nil {
+				lastErr = fmt.Errorf("provision: SteamCMD 安裝 App %s 失敗(%s): %w", appID, lastErrorLine, runErr)
+			} else {
+				lastErr = fmt.Errorf("provision: SteamCMD 安裝 App %s 回報錯誤: %s", appID, lastErrorLine)
+			}
+		} else {
+			lastErr = fmt.Errorf("provision: SteamCMD 安裝 App %s 失敗: %w", appID, runErr)
+		}
+
+		// 僅對首次自我更新特徵重試;真實錯誤(No subscription 等)與 ctx 取消不重試。
+		if attempt < steamCMDInstallAttempts && isSteamCMDFirstRunError(lastErrorLine) && ctx.Err() == nil {
+			continue
+		}
+		return lastErr
 	}
-	if runErr != nil {
-		return fmt.Errorf("provision: SteamCMD 安裝 App %s 失敗: %w", appID, runErr)
-	}
-	return nil
+	return lastErr
+}
+
+// isSteamCMDFirstRunError 判斷錯誤行是否為 SteamCMD 首次自我更新未就緒特徵(見 steamCMDFirstRunMarker)。
+func isSteamCMDFirstRunError(errorLine string) bool {
+	return strings.Contains(strings.ToLower(errorLine), steamCMDFirstRunMarker)
 }
 
 // parseSteamCMDLine 從 SteamCMD 輸出行嘗試解析百分比進度;解析不到時 percent 回 -1

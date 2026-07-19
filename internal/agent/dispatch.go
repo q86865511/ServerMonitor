@@ -417,8 +417,9 @@ func closeSubBackend(b RuntimeBackend) error {
 
 var (
 	_ BackupLister  = (*dispatchBackend)(nil)
-	_ BackupDeleter = (*dispatchBackend)(nil)
-	_ MountWriter   = (*dispatchBackend)(nil)
+	_ BackupDeleter       = (*dispatchBackend)(nil)
+	_ MountWriter         = (*dispatchBackend)(nil)
+	_ instanceDataPurger  = (*dispatchBackend)(nil)
 )
 
 // subBackends 回傳目前存在的子後端(native 在前、docker 在後),供橫切能力轉發走訪。
@@ -477,6 +478,23 @@ func (d *dispatchBackend) DeleteBackup(ctx context.Context, instanceUUID string,
 		return ErrNotFound // 無任何子後端支援刪除:視為找不到(對齊端點語意)
 	}
 	return ErrNotFound
+}
+
+// PurgeInstanceData 逐一嘗試各實作 instanceDataPurger 的子後端清除實例宿主資料/備份(B7:容器已
+// out-of-band 移除時的 purge 路徑)。子後端可能共用資料/備份根,首個清除後其餘為 no-op;回首個錯誤,
+// 無支援子後端則回 nil(無可清)。
+func (d *dispatchBackend) PurgeInstanceData(ctx context.Context, uuid string) error {
+	var firstErr error
+	for _, sub := range d.subBackends() {
+		purger, ok := sub.(instanceDataPurger)
+		if !ok {
+			continue
+		}
+		if err := purger.PurgeInstanceData(ctx, uuid); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // WriteMountFile 逐一嘗試各實作 MountWriter 的子後端:回首個非 ErrNotFound 結果;全數 ErrNotFound

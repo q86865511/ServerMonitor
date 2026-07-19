@@ -173,9 +173,20 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	}
 
 	root := b.instanceDataRoot(spec.UUID)
+	_, statErr := os.Stat(root)
+	rootPreexisted := statErr == nil
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("建立實例資料根失敗: %w", err)
 	}
+	// B1:全新建立途中任一步失敗時,清除本次建立的資料根,避免留下含明文機密的孤兒 instance.json
+	// ——上層回滾/對帳靠容器標籤定位,ContainerCreate 前失敗即無容器可定位、永不回收。僅在資料根本次
+	// 才建(rootPreexisted=false)時清理;Restore 走 Create 時資料根已存在,交由其 rollback 保全還原資料。
+	created := false
+	defer func() {
+		if !created && !rootPreexisted {
+			_ = os.RemoveAll(root)
+		}
+	}()
 
 	mounts := make([]mount.Mount, 0, len(spec.DataDirs)+len(spec.Mounts))
 	for _, d := range spec.DataDirs {
@@ -222,6 +233,7 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	if err != nil {
 		return "", fmt.Errorf("建立容器失敗: %w", err)
 	}
+	created = true // 容器已建立:資料根自此由容器標籤可定位回收,取消 B1 的資料根清理。
 	return protocol.RuntimeID(resp.ID), nil
 }
 
@@ -326,6 +338,21 @@ func (b *DockerBackend) Remove(ctx context.Context, id protocol.RuntimeID, opts 
 	if opts.Purge && uuid != "" {
 		_ = os.RemoveAll(b.instanceDataRoot(uuid))
 		_ = os.RemoveAll(b.backupInstanceRoot(uuid))
+	}
+	return nil
+}
+
+// PurgeInstanceData 以 uuid 直接清除實例宿主資料與備份(不依賴容器;B7:容器已 out-of-band 移除時
+// 的 purge 路徑,resolve 短路使 Remove(Purge) 的磁碟清理被跳過)。等同 Remove(Purge) 的清磁碟部分。
+func (b *DockerBackend) PurgeInstanceData(ctx context.Context, uuid string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(b.instanceDataRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例資料失敗: %w", err)
+	}
+	if err := os.RemoveAll(b.backupInstanceRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例備份失敗: %w", err)
 	}
 	return nil
 }

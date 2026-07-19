@@ -236,14 +236,32 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+// instanceDataPurger 由能「不依賴容器、直接以 uuid 清除實例宿主資料/備份」的後端實作(B7)。
+// docker/native 皆以其資料根/備份根實作;dispatchBackend 轉發至各子後端。
+type instanceDataPurger interface {
+	PurgeInstanceData(ctx context.Context, uuid string) error
+}
+
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	rid, err := s.resolve(r.Context(), r.PathValue("id"))
-	if err != nil {
+	var req protocol.RemoveInstanceRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
 		writeErr(w, err)
 		return
 	}
-	var req protocol.RemoveInstanceRequest
-	if err := decodeOptionalJSON(r, &req); err != nil {
+	uuid := r.PathValue("id")
+	rid, err := s.resolve(r.Context(), uuid)
+	if err != nil {
+		// B7:容器已 out-of-band 移除。purge 時仍以 uuid 直接清宿主資料/備份——否則 resolve 短路使
+		// backend.Remove(Purge) 的磁碟清理被跳過,而 core 把 ErrNodeNotFound 視為已移除續刪 DB,造成
+		// 資料+備份永久孤兒卻回報成功。清理後仍回原 ErrNotFound(container 確實不存在,core 據此收斂)。
+		if errors.Is(err, ErrNotFound) && req.Purge {
+			if purger, ok := s.backend.(instanceDataPurger); ok {
+				if perr := purger.PurgeInstanceData(r.Context(), uuid); perr != nil {
+					writeErr(w, perr)
+					return
+				}
+			}
+		}
 		writeErr(w, err)
 		return
 	}

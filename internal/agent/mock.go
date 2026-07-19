@@ -157,6 +157,24 @@ func (m *MockBackend) Stop(ctx context.Context, id protocol.RuntimeID, _ StopOpt
 	return nil
 }
 
+// ForceExit 是測試支援:把實例設為崩潰終態(exited + 退出碼),供核心測試模擬「啟動途中容器崩潰
+// 退出」(B2a)。有別於 Stop(計畫停止→stopped),此設 State=exited 對映真實崩潰;不發 die 事件,
+// 由呼叫端視需要另行驅動。
+func (m *MockBackend) ForceExit(id protocol.RuntimeID, code int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	inst, ok := m.insts[id]
+	if !ok {
+		return ErrNotFound
+	}
+	now := time.Now().UTC()
+	inst.state = protocol.RuntimeStateExited
+	inst.finishedAt = &now
+	inst.exitCode = &code
+	inst.health = "none"
+	return nil
+}
+
 // Status 回傳 runtime 層即時狀態。
 func (m *MockBackend) Status(ctx context.Context, id protocol.RuntimeID) (protocol.RuntimeStatus, error) {
 	m.mu.Lock()
