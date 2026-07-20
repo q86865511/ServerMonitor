@@ -238,6 +238,45 @@ func (c *NodeClient) InstanceDiskUsage(ctx context.Context, uuid string) (protoc
 	return out, err
 }
 
+// ---- 端點包裝(階段 5:伺服器檔案管理)----
+//
+// rel 為相對實例資料根的路徑(以 "/" 分隔;空=根),一律經 url.QueryEscape 帶在 ?path=。
+// 下載/上傳皆為串流(io.Reader/io.Writer 直通),不把檔案整份讀進記憶體——伺服器世界檔可達 GB 級。
+
+// ListFiles 列出某實例資料目錄下 rel 的直接子項(GET /instances/{id}/files)。
+func (c *NodeClient) ListFiles(ctx context.Context, uuid, rel string) (protocol.ListFilesResponse, error) {
+	var out protocol.ListFilesResponse
+	err := c.do(ctx, http.MethodGet, filesPath(uuid, "", rel), "", nil, &out)
+	return out, err
+}
+
+// DownloadFile 串流下載某實例的一個檔案到 w(GET /instances/{id}/files/content),回傳已寫入位元組。
+// 用較長預設逾時(同備份/上傳):大檔傳輸不宜以短逾時截斷,但仍需上界避免無限 hang。
+func (c *NodeClient) DownloadFile(ctx context.Context, uuid, rel string, w io.Writer) (int64, error) {
+	return c.doDownload(ctx, filesPath(uuid, "/content", rel), w)
+}
+
+// UploadFile 串流上傳 r 的內容覆寫/建立某實例的一個檔案(PUT /instances/{id}/files)。
+// 上傳採覆寫、天然冪等,故不帶冪等鍵(同 UploadMount)。
+func (c *NodeClient) UploadFile(ctx context.Context, uuid, rel string, r io.Reader) error {
+	return c.doUpload(ctx, filesPath(uuid, "", rel), r)
+}
+
+// DeleteFile 刪除某實例資料目錄下的 rel(DELETE /instances/{id}/files);目錄需 recursive=true。
+// 冪等鍵由 do() 自動產生(端點未套冪等中介層,鍵被忽略,無害);不存在回 ErrNodeNotFound。
+func (c *NodeClient) DeleteFile(ctx context.Context, uuid, rel string, recursive bool) error {
+	p := filesPath(uuid, "", rel)
+	if recursive {
+		p += "&recursive=true"
+	}
+	return c.do(ctx, http.MethodDelete, p, "", nil, nil)
+}
+
+// filesPath 組出檔案管理端點路徑(?path= 恆存在,空字串即資料根)。
+func filesPath(uuid, suffix, rel string) string {
+	return "/instances/" + url.PathEscape(uuid) + "/files" + suffix + "?path=" + url.QueryEscape(rel)
+}
+
 // ---- 端點包裝(WebSocket 串流)----
 //
 // WS 端點回傳已升級的連線,由消費端(T8 事件訂閱、T10 監控聚合)讀取與關閉。
@@ -361,6 +400,36 @@ func (c *NodeClient) doUpload(ctx context.Context, path string, r io.Reader) err
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	return nil
+}
+
+// doDownload 以 GET 取得 application/octet-stream 原始位元組並串流寫入 w(不經 JSON 解碼、
+// 不整檔進記憶體)。逾時策略同 doUpload:呼叫端未帶 deadline 時補一層較長預設上界。
+// 代理回 4xx/5xx 依統一碼表映射(見 mapError);傳輸層失敗回 ErrNodeUnreachable 包裝。
+func (c *NodeClient) doDownload(ctx context.Context, path string, w io.Writer) (int64, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultNodeLongTimeout)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(path), nil)
+	if err != nil {
+		return 0, fmt.Errorf("建立請求失敗: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %w", ErrNodeUnreachable, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return 0, c.mapError(resp)
+	}
+	n, err := io.Copy(w, resp.Body)
+	if err != nil {
+		return n, fmt.Errorf("下載檔案失敗: %w", err)
+	}
+	return n, nil
 }
 
 // mapError 解析代理的統一錯誤主體並映射為節點層哨符;無法解析時回泛用 APIError。

@@ -58,15 +58,20 @@ func (r *Runtime) RemoveContainer(ctx context.Context, id string, force bool) er
 	})
 }
 
-// InstanceDiskUsage 查詢某實例的宿主磁碟用量(資料/備份根)。
+// InstanceDiskUsage 查詢某實例的宿主磁碟用量(資料/備份根)。路由到該實例所屬節點(含遠端),
+// 而非固定本機——磁碟用量以 uuid 定位宿主目錄,查錯節點會回錯值/404。
 func (r *Runtime) InstanceDiskUsage(ctx context.Context, uuid string) (protocol.InstanceDiskUsage, error) {
+	node, err := r.instanceNode(uuid)
+	if err != nil {
+		return protocol.InstanceDiskUsage{}, err
+	}
 	var out protocol.InstanceDiskUsage
-	err := r.registry.Call(r.node, func(c *core.NodeClient) error {
+	cerr := r.registry.Call(node, func(c *core.NodeClient) error {
 		var e error
 		out, e = c.InstanceDiskUsage(ctx, uuid)
 		return e
 	})
-	return out, err
+	return out, cerr
 }
 
 // DeleteBackup 手動刪除某實例的一份備份(GUI 路徑;R9)。委派 BackupService(節點刪 agent 備份 +

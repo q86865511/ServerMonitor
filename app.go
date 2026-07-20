@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	gopath "path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -942,6 +945,104 @@ func toContainerDTO(c protocol.ContainerSummary) ContainerDTO {
 		GSM:  c.Labels[labelGSMManagedBy] == gsmManagedByValue,
 		UUID: c.Labels[labelGSMUUID],
 	}
+}
+
+// ---- 伺服器檔案管理(階段 5)----
+
+// FileEntryDTO 是實例資料目錄下一個檔案/子目錄的前端視圖。Path 相對實例資料根、以 "/" 分隔
+// (根為 ""),可直接回傳給 ListFiles/DownloadFile/DeleteFile 當參數。Modified 為 RFC3339。
+// IsSymlink 為真時前端應標示:節點端拒絕刪除符號連結本身(不跟隨),避免誤刪到連結指向的目標。
+type FileEntryDTO struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	IsDir     bool   `json:"is_dir"`
+	SizeBytes int64  `json:"size_bytes"`
+	Modified  string `json:"modified"`
+	IsSymlink bool   `json:"is_symlink"`
+}
+
+// ListFiles 列出某實例資料目錄下 path 的直接子項(path 空字串=資料根;不遞迴)。
+func (a *App) ListFiles(uuid, path string) ([]FileEntryDTO, error) {
+	entries, err := a.rt.ListFiles(a.bgCtx(), uuid, path)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]FileEntryDTO, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, FileEntryDTO{
+			Name: e.Name, Path: e.Path, IsDir: e.IsDir, SizeBytes: e.SizeBytes,
+			Modified: e.ModifiedUTC.Format(time.RFC3339), IsSymlink: e.IsSymlink,
+		})
+	}
+	return out, nil
+}
+
+// DownloadFile 讓使用者選擇本機儲存位置後,把某實例的一個檔案串流寫入該位置。
+//
+// 刻意「不」回傳 []byte:Wails 綁定的回傳值會經 JSON/base64 編碼跨橋,GB 級世界檔會整份進記憶體
+// 再膨脹約 4/3 倍。改由 Go 端 io.Copy 直接落地,記憶體恆為一個小緩衝。使用者取消對話框回 nil
+// (非錯誤)。
+//
+// 原子落地:先下載到目的同目錄的暫存檔,完整寫入後才 os.Rename 覆蓋 dest;失敗刪暫存、絕不動 dest。
+// 若直接 os.Create(dest),使用者在對話框選了既有檔時會先被截斷,下載再失敗即毀了使用者的既有檔。
+func (a *App) DownloadFile(uuid, filePath string) error {
+	dest, err := wailsruntime.SaveFileDialog(a.ctx, wailsruntime.SaveDialogOptions{
+		Title:                "另存伺服器檔案",
+		DefaultFilename:      gopath.Base(filePath),
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		return err
+	}
+	if dest == "" {
+		return nil // 使用者取消
+	}
+	f, err := os.CreateTemp(filepath.Dir(dest), "."+filepath.Base(dest)+".part-*")
+	if err != nil {
+		return err
+	}
+	tmpName := f.Name()
+	if _, err := a.rt.DownloadFile(a.bgCtx(), uuid, filePath, f); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, dest); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
+}
+
+// UploadFile 讓使用者選擇本機檔案後,串流上傳到某實例資料目錄下的 destDir(空字串=資料根),
+// 檔名沿用來源檔名。目的目錄須已存在(節點端不自動建目錄)。使用者取消對話框回 nil(非錯誤)。
+func (a *App) UploadFile(uuid, destDir string) error {
+	src, err := wailsruntime.OpenFileDialog(a.ctx, wailsruntime.OpenDialogOptions{
+		Title: "選擇要上傳的檔案",
+	})
+	if err != nil {
+		return err
+	}
+	if src == "" {
+		return nil // 使用者取消
+	}
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	// 目的路徑以 "/" 組(節點端契約),來源檔名取本機路徑的 base(不帶目錄成分)。
+	return a.rt.UploadFile(a.bgCtx(), uuid, gopath.Join(destDir, filepath.Base(src)), f)
+}
+
+// DeleteFile 刪除某實例資料目錄下的 path;path 為目錄時須 recursive=true。
+// 符號連結本身與實例中繼檔由節點端拒絕(見 internal/agent/files.go)。
+func (a *App) DeleteFile(uuid, path string, recursive bool) error {
+	return a.rt.DeleteFile(a.bgCtx(), uuid, path, recursive)
 }
 
 // ---- DTO 轉換 ----

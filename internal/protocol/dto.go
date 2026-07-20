@@ -458,3 +458,26 @@ type ListImagesResponse struct {
 type ListContainersResponse struct {
 	Containers []ContainerSummary `json:"containers"`
 }
+
+// ---- 階段 5:伺服器檔案管理 ----
+
+// FileEntry 是實例資料目錄下的一個檔案/子目錄項目(GET /instances/{id}/files)。
+//
+// Path 為相對「實例資料根」的路徑,一律以 "/" 分隔(跨平台穩定,前端可直接串接);根本身為 ""。
+// 屬性一律以 lstat 語意取得(不跟隨符號連結):指向目錄的 symlink 回 IsDir=false + IsSymlink=true,
+// SizeBytes 為連結本身大小。前端據 IsSymlink 標示並警示(節點端拒絕刪除 symlink 本身)。
+type FileEntry struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	IsDir       bool      `json:"is_dir"`
+	SizeBytes   int64     `json:"size_bytes"`
+	ModifiedUTC time.Time `json:"modified_utc"`
+	IsSymlink   bool      `json:"is_symlink"`
+}
+
+// ListFilesResponse 是 GET /instances/{id}/files 的回應。Path 為正規化後的請求目錄(相對實例
+// 資料根,"/" 分隔;根為 ""),Entries 為該目錄的直接子項(不遞迴,目錄在前、再依名稱排序)。
+type ListFilesResponse struct {
+	Path    string      `json:"path"`
+	Entries []FileEntry `json:"entries"`
+}

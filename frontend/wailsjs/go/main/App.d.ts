@@ -15,9 +15,13 @@ export function CurseForgeKeyConfigured():Promise<boolean>;
 
 export function DeleteBackup(arg1:string,arg2:string):Promise<void>;
 
+export function DeleteFile(arg1:string,arg2:string,arg3:boolean):Promise<void>;
+
 export function DeleteSchedule(arg1:string):Promise<void>;
 
 export function DockerAvailable():Promise<boolean>;
+
+export function DownloadFile(arg1:string,arg2:string):Promise<void>;
 
 export function GetAlertSettings(arg1:string):Promise<main.AlertSettingsDTO>;
 
@@ -30,6 +34,8 @@ export function InstanceDiskUsage(arg1:string):Promise<main.DiskUsageDTO>;
 export function ListBackups(arg1:string):Promise<Array<protocol.BackupMeta>>;
 
 export function ListContainers():Promise<Array<main.ContainerDTO>>;
+
+export function ListFiles(arg1:string,arg2:string):Promise<Array<main.FileEntryDTO>>;
 
 export function ListImages():Promise<Array<main.ImageDTO>>;
 
@@ -84,5 +90,7 @@ export function SubscribeStats(arg1:string):Promise<void>;
 export function UnsubscribeLogs(arg1:string):Promise<void>;
 
 export function UnsubscribeStats(arg1:string):Promise<void>;
+
+export function UploadFile(arg1:string,arg2:string):Promise<void>;
 
 export function UpsertSchedule(arg1:main.UpsertScheduleRequest):Promise<string>;

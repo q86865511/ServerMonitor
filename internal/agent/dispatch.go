@@ -423,6 +423,7 @@ var (
 	_ ImageManager       = (*dispatchBackend)(nil)
 	_ ContainerManager   = (*dispatchBackend)(nil)
 	_ instanceDiskUsager = (*dispatchBackend)(nil)
+	_ FileManager        = (*dispatchBackend)(nil)
 )
 
 // subBackends 回傳目前存在的子後端(native 在前、docker 在後),供橫切能力轉發走訪。
@@ -595,4 +596,52 @@ func (d *dispatchBackend) InstanceDiskUsage(ctx context.Context, uuid string) (p
 		}
 	}
 	return protocol.InstanceDiskUsage{}, ErrUnsupported
+}
+
+// ---- 檔案管理轉發(階段 5)----
+//
+// 走首個實作 FileManager 的子後端:docker 與 native 的實例資料落在宿主端同一位置
+// (instanceDataRoot(uuid),各自的 dataRoot 由 BackendOptions.InstancesRoot 共同注入),故任一
+// 子後端看到同一份檔案樹,不需依 uuid 反推所有權。皆無 → ErrUnsupported。
+
+// fileManager 取首個實作 FileManager 的子後端。
+func (d *dispatchBackend) fileManager() (FileManager, bool) {
+	for _, sub := range d.subBackends() {
+		if fm, ok := sub.(FileManager); ok {
+			return fm, true
+		}
+	}
+	return nil, false
+}
+
+func (d *dispatchBackend) ListFiles(ctx context.Context, uuid, rel string) ([]protocol.FileEntry, error) {
+	fm, ok := d.fileManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return fm.ListFiles(ctx, uuid, rel)
+}
+
+func (d *dispatchBackend) ReadFile(ctx context.Context, uuid, rel string) (io.ReadCloser, protocol.FileEntry, error) {
+	fm, ok := d.fileManager()
+	if !ok {
+		return nil, protocol.FileEntry{}, ErrUnsupported
+	}
+	return fm.ReadFile(ctx, uuid, rel)
+}
+
+func (d *dispatchBackend) WriteFile(ctx context.Context, uuid, rel string, r io.Reader) error {
+	fm, ok := d.fileManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return fm.WriteFile(ctx, uuid, rel, r)
+}
+
+func (d *dispatchBackend) DeleteFile(ctx context.Context, uuid, rel string, recursive bool) error {
+	fm, ok := d.fileManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return fm.DeleteFile(ctx, uuid, rel, recursive)
 }

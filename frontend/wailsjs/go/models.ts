@@ -226,6 +226,28 @@ export namespace main {
 	        this.details = source["details"];
 	    }
 	}
+	export class FileEntryDTO {
+	    name: string;
+	    path: string;
+	    is_dir: boolean;
+	    size_bytes: number;
+	    modified: string;
+	    is_symlink: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileEntryDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.path = source["path"];
+	        this.is_dir = source["is_dir"];
+	        this.size_bytes = source["size_bytes"];
+	        this.modified = source["modified"];
+	        this.is_symlink = source["is_symlink"];
+	    }
+	}
 	export class ImageDTO {
 	    id: string;
 	    tags: string[];

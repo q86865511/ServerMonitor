@@ -26,12 +26,20 @@ export function DeleteBackup(arg1, arg2) {
   return window['go']['main']['App']['DeleteBackup'](arg1, arg2);
 }
 
+export function DeleteFile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DeleteFile'](arg1, arg2, arg3);
+}
+
 export function DeleteSchedule(arg1) {
   return window['go']['main']['App']['DeleteSchedule'](arg1);
 }
 
 export function DockerAvailable() {
   return window['go']['main']['App']['DockerAvailable']();
+}
+
+export function DownloadFile(arg1, arg2) {
+  return window['go']['main']['App']['DownloadFile'](arg1, arg2);
 }
 
 export function GetAlertSettings(arg1) {
@@ -56,6 +64,10 @@ export function ListBackups(arg1) {
 
 export function ListContainers() {
   return window['go']['main']['App']['ListContainers']();
+}
+
+export function ListFiles(arg1, arg2) {
+  return window['go']['main']['App']['ListFiles'](arg1, arg2);
 }
 
 export function ListImages() {
@@ -164,6 +176,10 @@ export function UnsubscribeLogs(arg1) {
 
 export function UnsubscribeStats(arg1) {
   return window['go']['main']['App']['UnsubscribeStats'](arg1);
+}
+
+export function UploadFile(arg1, arg2) {
+  return window['go']['main']['App']['UploadFile'](arg1, arg2);
 }
 
 export function UpsertSchedule(arg1) {

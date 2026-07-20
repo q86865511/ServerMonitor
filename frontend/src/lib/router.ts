@@ -18,9 +18,16 @@ export type Page =
   | 'not-found';
 
 /** 伺服器詳細頁分頁;非法值一律視為 overview。 */
-export type ServerTab = 'overview' | 'console' | 'backups' | 'schedules' | 'settings';
+export type ServerTab = 'overview' | 'console' | 'backups' | 'files' | 'schedules' | 'settings';
 
-const SERVER_TABS: readonly ServerTab[] = ['overview', 'console', 'backups', 'schedules', 'settings'];
+const SERVER_TABS: readonly ServerTab[] = [
+  'overview',
+  'console',
+  'backups',
+  'files',
+  'schedules',
+  'settings',
+];
 
 export interface Route {
   page: Page;

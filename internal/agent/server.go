@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,6 +142,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET "+base+"/containers", s.handleListContainers)
 	mux.HandleFunc("DELETE "+base+"/containers/{id}", s.handleRemoveContainer)
 	mux.HandleFunc("GET "+base+"/instances/{id}/diskusage", s.handleDiskUsage)
+	// 階段 5:伺服器檔案管理。以 ?path= 帶相對實例資料根的路徑(空=根);上傳/刪除以精確路徑
+	// 作用、天然冪等(重上傳=覆寫、再刪回 404),故如 mount 上傳不套冪等中介層。
+	mux.HandleFunc("GET "+base+"/instances/{id}/files", s.handleListFiles)
+	mux.HandleFunc("GET "+base+"/instances/{id}/files/content", s.handleDownloadFile)
+	mux.HandleFunc("PUT "+base+"/instances/{id}/files", s.handleUploadFile)
+	mux.HandleFunc("DELETE "+base+"/instances/{id}/files", s.handleDeleteFile)
 
 	return mux
 }
@@ -586,6 +594,116 @@ func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, du)
 }
 
+// ---- 階段 5:伺服器檔案管理 handlers ----
+//
+// 與 diskusage 同樣以 uuid 直接定位宿主目錄、不做 resolve:檔案管理須在容器停止(甚至已 out-of-band
+// 移除)時仍可用,resolve 會把這些情境誤判為 404。信任邊界的第一道防禦在此:uuid 與 rel 皆先於
+// 進後端前驗格式(拒 → 400),後端內再由 resolveWithinRoot 做第二、三層拘束(見 files.go)。
+
+// fileManagerFor 取後端的檔案管理能力並先驗 uuid 與 rel path;任一不合即已寫出錯誤回應(回 false)。
+func (s *Server) fileManagerFor(w http.ResponseWriter, r *http.Request) (FileManager, string, bool) {
+	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err)
+		return nil, "", false
+	}
+	rel, err := cleanRelPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return nil, "", false
+	}
+	fm, ok := s.backend.(FileManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return nil, "", false
+	}
+	return fm, rel, true
+}
+
+// handleListFiles 列出 ?path= 目錄的直接子項(不遞迴)。
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	entries, err := fm.ListFiles(r.Context(), r.PathValue("id"), rel)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []protocol.FileEntry{}
+	}
+	writeJSON(w, http.StatusOK, protocol.ListFilesResponse{Path: rel, Entries: entries})
+}
+
+// handleDownloadFile 串流回檔案位元組(application/octet-stream + Content-Length)。刻意不緩衝
+// 整檔:伺服器世界檔可達 GB 級,io.Copy 直接對 ResponseWriter 寫出,記憶體恆為一個 32KB 緩衝。
+// 標頭於開檔成功後才寫,故錯誤(404/400)仍能以 JSON 錯誤主體回覆。
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	rc, entry, err := fm.ReadFile(r.Context(), r.PathValue("id"), rel)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(entry.SizeBytes, 10))
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(entry.Name))
+	w.WriteHeader(http.StatusOK)
+	// 以 CopyN 上界為已宣告的 Content-Length:執行中的伺服器可能正在寫同一個檔,若它在 Stat 之後
+	// 變長,無界 Copy 會寫超過宣告長度而由 net/http 截斷+記錯。已開始寫主體後無法改回錯誤狀態碼,
+	// 中途失敗只能斷連,由呼叫端的短讀偵測(NodeClient 的 io.Copy 會回錯)。
+	_, _ = io.CopyN(w, rc, entry.SizeBytes)
+}
+
+// maxUploadBytes 是單次檔案上傳的 body 大小上界(16 GiB:足夠 native Palworld 世界/大型模組包,
+// 又非無界以免惡意請求塞爆磁碟)。以 var 而非 const 便於單元測試注入小值驗證上限機制。
+var maxUploadBytes int64 = 16 << 30
+
+// handleUploadFile 以 body(application/octet-stream)覆寫/建立 ?path= 檔案 → 204。
+// body 以 http.MaxBytesReader 設上界(DoS 防禦):超限時 WriteFile 的 io.Copy 讀到
+// *http.MaxBytesError,映為 413(原子寫的暫存檔已於錯誤路徑刪除,不留半成品、不動既有目標)。
+func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	defer body.Close()
+	if err := fm.WriteFile(r.Context(), r.PathValue("id"), rel, body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, protocol.APIError{
+				Code:    protocol.ErrBadRequest,
+				Message: fmt.Sprintf("上傳超過大小上限 %d bytes", maxUploadBytes),
+			})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteFile 刪除 ?path=(目錄需 ?recursive=true)→ 204。
+func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	recursive := r.URL.Query().Get("recursive") == "true"
+	if err := fm.DeleteFile(r.Context(), r.PathValue("id"), rel, recursive); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ---- 錯誤映射 / JSON 輔助 ----
 
 // apiErrorFor 把內部錯誤映射為 HTTP 狀態碼 + 統一 wire 錯誤碼。
@@ -602,6 +720,10 @@ func apiErrorFor(err error) (int, protocol.APIError) {
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrInvalidInstanceUUID):
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrInvalidFilePath):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrProtectedFile):
+		return http.StatusConflict, protocol.APIError{Code: protocol.ErrConflict, Message: err.Error()}
 	case errors.Is(err, ErrPortConflict):
 		return http.StatusConflict, protocol.APIError{Code: protocol.ErrPortConflict, Message: err.Error()}
 	case errors.Is(err, ErrLocked):
