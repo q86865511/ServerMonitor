@@ -2,13 +2,14 @@
 // navigate() 為切換路徑的 helper。零依賴,免 svelte-spa-router。
 import { readable, type Readable } from 'svelte/store';
 
-/** 全部可到達頁面(對齊側欄 9 項 + 伺服器詳細 + 未知路徑)。 */
+/** 全部可到達頁面(對齊側欄 10 項 + 伺服器詳細 + 未知路徑)。 */
 export type Page =
   | 'dashboard'
   | 'servers'
   | 'server-detail'
   | 'templates'
   | 'nodes'
+  | 'docker'
   | 'backups'
   | 'schedules'
   | 'alerts'
@@ -17,9 +18,16 @@ export type Page =
   | 'not-found';
 
 /** 伺服器詳細頁分頁;非法值一律視為 overview。 */
-export type ServerTab = 'overview' | 'console' | 'backups' | 'schedules' | 'settings';
+export type ServerTab = 'overview' | 'console' | 'backups' | 'files' | 'schedules' | 'settings';
 
-const SERVER_TABS: readonly ServerTab[] = ['overview', 'console', 'backups', 'schedules', 'settings'];
+const SERVER_TABS: readonly ServerTab[] = [
+  'overview',
+  'console',
+  'backups',
+  'files',
+  'schedules',
+  'settings',
+];
 
 export interface Route {
   page: Page;
@@ -51,6 +59,8 @@ export function parseHash(hash: string): Route {
       return { page: 'templates', params: {} };
     case 'nodes':
       return { page: 'nodes', params: {} };
+    case 'docker':
+      return { page: 'docker', params: {} };
     case 'backups':
       return { page: 'backups', params: {} };
     case 'schedules':

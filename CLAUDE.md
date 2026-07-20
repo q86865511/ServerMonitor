@@ -43,6 +43,8 @@ Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 
 - 核心↔代理經 `NodeClient`(HTTP),即使單機亦然(預留多節點)。
 - 敏感值(RCON 密碼、webhook URL)存 OS 金鑰庫(go-keyring),不明文落檔。
 - 新增遊戲=加範本檔;新增執行後端=實作 `RuntimeBackend` 介面。
+- `RuntimeBackend` 之外的可選能力(備份刪除、映像/容器管理、磁碟用量、檔案管理、資料清理)一律以**橫切介面**表達(如 `BackupDeleter`/`ImageManager`/`FileManager`/`instanceDataPurger`),於 agent 套件定義、docker/native 各自實作、`dispatchBackend` 型別斷言轉發、`server.go` 端點型別斷言啟用(缺失回 `ErrUnsupported`);**勿擴張核心 `RuntimeBackend` 介面**。
+- 節點端**任何以 uuid/rel 拼接宿主路徑的操作,必經路徑拘束**:uuid 用 `validateInstanceUUID`、備份 id 用 `validateBackupID`、檔案相對路徑用 `resolveWithinRoot`(三層:cleanRelPath→withinRoot(filepath.Rel 擋 sibling-prefix)→assertNoLinkComponents 逐段 Lstat 拒穿越連結;Windows junction 為 ModeIrregular、EvalSymlinks 不解析,故以逐段 Lstat 為主力)。含明文機密的中繼檔(instance.json 等)不開放檔案管理存取。實例層操作(檔案/磁碟/備份)經 `rec.Node` 路由到該實例所屬節點,勿固定本機。
 - 內建範本以 `//go:embed all:templates`(main.go)打進執行檔,啟動抽出到 `<dataRoot>\templates-builtin\`;使用者自訂範本放 `<dataRoot>\templates\`。
 - 多節點:遠端節點跑 `cmd/agent`(TLS 自簽+SHA-256 指紋 pinning(TOFU)或自備憑證);節點 token 一律入 OS 金鑰庫(`NodeTokenRef`),config.json 只存非敏感連線設定且必經 `SaveAppConfig` 原子寫。
 

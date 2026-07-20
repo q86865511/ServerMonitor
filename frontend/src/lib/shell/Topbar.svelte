@@ -5,6 +5,7 @@
   import Button from '../ui/Button.svelte';
   import Badge from '../ui/Badge.svelte';
   import SearchInput from '../ui/SearchInput.svelte';
+  import OperationsPanel from './OperationsPanel.svelte';
 
   let { onCreate }: { onCreate: () => void } = $props();
 
@@ -14,6 +15,7 @@
     'server-detail': '伺服器詳細',
     templates: '遊戲範本',
     nodes: '節點',
+    docker: 'Docker',
     backups: '備份',
     schedules: '排程',
     alerts: '警報',
@@ -68,6 +70,8 @@
   <div class="status" title={`節點在線 ${onlineCount}/${totalCount}`}>
     <Badge tone={statusTone}>節點 {onlineCount}/{totalCount}</Badge>
   </div>
+
+  <OperationsPanel />
 
   <Button variant="primary" onclick={onCreate}>＋ 新增伺服器</Button>
 </header>

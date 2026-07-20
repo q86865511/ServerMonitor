@@ -1,17 +1,19 @@
 <script lang="ts">
   // 概覽分頁(R6):CPU/RAM 歷史趨勢(回填+即時)、連接埠清單、磁碟用量、快速操作。
   import type { main } from '../../../../wailsjs/go/models';
-  import { BackupNow } from '../../../../wailsjs/go/main/App';
+  import { BackupNow, InstanceDiskUsage } from '../../../../wailsjs/go/main/App';
   import {
     metricSamples,
     acquireMetrics,
     releaseMetrics,
+    resubscribeMetrics,
     cpuTrend,
     ramPercentTrend,
     type MetricSample,
   } from '../../stores/metrics';
   import { call } from '../../api';
   import { pushToast } from '../../stores/toasts';
+  import { trackOperation } from '../../stores/operations';
   import { navigate } from '../../router';
   import { fmtBytes } from '../../format';
   import type { TrendSeries } from '../../ui/types';
@@ -60,6 +62,22 @@
     };
   });
 
+  // B10:停止再啟動同實例(不離頁)後即時 stats 靜默——後端 fanout 隨 channel 關閉結束,前端訂閱狀態
+  // 殘留(上方 effect 僅隨 uuid 重跑)。於「非 Running→Running」轉態時重建訂閱使即時指標恢復。
+  let reSubUuid = '';
+  let prevRunning = false;
+  $effect(() => {
+    const id = uuid;
+    const isRunning = inst.observed_state === 'Running';
+    if (id !== reSubUuid) {
+      reSubUuid = id;
+      prevRunning = isRunning;
+      return;
+    }
+    if (isRunning && !prevRunning) resubscribeMetrics(id);
+    prevRunning = isRunning;
+  });
+
   const cpuSeries = $derived<TrendSeries[]>([
     { label: 'CPU', colorVar: '--chart-cpu', points: cpuTrend(samples), unit: '%' },
   ]);
@@ -67,8 +85,27 @@
     { label: 'RAM', colorVar: '--chart-ram', points: ramPercentTrend(samples), unit: '%' },
   ]);
 
-  // 磁碟用量:SnapshotDTO.stats.data_disk_bytes;無法採集 → fmtBytes 顯示「不適用」。
-  const diskBytes = $derived(snapshot?.stats?.data_disk_bytes ?? null);
+  // 磁碟用量(資料 + 備份):以 InstanceDiskUsage(uuid) 查詢宿主佔用;uuid 變動時重載。
+  // 查詢失敗(native-only 回不支援/無法採集)→ 保持 null,由 fmtBytes 顯「不適用」,不捏造。
+  // 資料維度另以輪詢快照 data_disk_bytes 兜底(查詢尚未回或失敗時仍有近似值可顯)。
+  let diskUsage = $state<main.DiskUsageDTO | null>(null);
+  $effect(() => {
+    const id = uuid;
+    diskUsage = null;
+    let cancelled = false;
+    call(() => InstanceDiskUsage(id), { silent: true })
+      .then((du) => {
+        if (!cancelled) diskUsage = du;
+      })
+      .catch(() => {
+        /* 保持 null;顯「不適用」/兜底快照 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+  const dataBytes = $derived(diskUsage ? diskUsage.data_bytes : (snapshot?.stats?.data_disk_bytes ?? null));
+  const backupBytes = $derived(diskUsage ? diskUsage.backup_bytes : null);
 
   const ports = $derived(inst.ports ?? []);
 
@@ -76,7 +113,8 @@
   async function backupNow(): Promise<void> {
     backingUp = true;
     try {
-      const meta = await call(() => BackupNow(uuid));
+      // 全域操作面板登記一筆「備份」(name 由 uuid 於 instances store 解析)。
+      const meta = await trackOperation({ uuid, kind: 'backup' }, () => call(() => BackupNow(uuid)));
       pushToast('success', `已建立備份 ${meta.backup_id}`);
     } catch {
       /* toast 已呈現 */
@@ -130,8 +168,16 @@
 
     <Card>
       <div class="sec-head">磁碟用量</div>
-      <div class="disk-val">{fmtBytes(diskBytes)}</div>
-      <div class="disk-sub">資料目錄佔用</div>
+      <div class="disk-rows">
+        <div class="disk-row">
+          <span class="disk-label">資料</span>
+          <span class="disk-val">{fmtBytes(dataBytes)}</span>
+        </div>
+        <div class="disk-row">
+          <span class="disk-label">備份</span>
+          <span class="disk-val">{fmtBytes(backupBytes)}</span>
+        </div>
+      </div>
     </Card>
 
     <Card>
@@ -210,15 +256,25 @@
     color: var(--fg-2);
     font-size: var(--text-sm);
   }
+  .disk-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .disk-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .disk-label {
+    font-size: var(--text-sm);
+    color: var(--fg-2);
+  }
   .disk-val {
-    font-size: var(--text-xl);
+    font-size: var(--text-lg);
     font-weight: 700;
     color: var(--fg-0);
-  }
-  .disk-sub {
-    font-size: var(--text-xs);
-    color: var(--fg-2);
-    margin-top: var(--space-1);
   }
   .quick {
     display: flex;

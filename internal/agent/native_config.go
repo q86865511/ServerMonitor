@@ -23,7 +23,7 @@ import (
 // 展開 {port:<name>} token)寫入實例根下的 cm.File。ports 供 Set 的埠 token 展開(native 無 docker
 // 埠映射,伺服器須自 server.properties/ini 綁到與探針一致的埠)。
 func writeConfigFile(instanceRoot string, cm protocol.NativeConfigMap, env map[string]string, ports []protocol.PortBinding) error {
-	pairs, err := resolveConfigPairs(cm.Map, cm.Set, env, ports)
+	pairs, err := resolveConfigPairs(cm.Map, cm.Set, cm.Quote, env, ports)
 	if err != nil {
 		return err
 	}
@@ -46,10 +46,12 @@ func writeConfigFile(instanceRoot string, cm protocol.NativeConfigMap, env map[s
 	return nil
 }
 
-// configPair 是一組已解析的設定鍵值(configKey=value)。
+// configPair 是一組已解析的設定鍵值(configKey=value)。quote 為真時,palworld-ini 編碼器以雙引號
+// 包裹值(Palworld 字串值需引號;properties 編碼器忽略此旗標)。
 type configPair struct {
 	key   string
 	value string
+	quote bool
 }
 
 // resolveConfigPairs 合併兩個來源為 (configKey,value) 清單並依 configKey 排序:
@@ -57,7 +59,7 @@ type configPair struct {
 //   - set(configKey→字面值/{port:<name>} token):固定/衍生值,埠 token 以 ports 展開。
 //
 // 同一 configKey 同時來自 m 與 set 時,set 覆蓋(native 執行必需值優先於使用者參數,如埠)。
-func resolveConfigPairs(m, set map[string]string, env map[string]string, ports []protocol.PortBinding) ([]configPair, error) {
+func resolveConfigPairs(m, set map[string]string, quote []string, env map[string]string, ports []protocol.PortBinding) ([]configPair, error) {
 	byKey := make(map[string]string, len(m)+len(set))
 	for paramKey, configKey := range m {
 		if v, ok := env[paramKey]; ok {
@@ -81,9 +83,14 @@ func resolveConfigPairs(m, set map[string]string, env map[string]string, ports [
 			byKey[configKey] = v
 		}
 	}
+	quoteSet := make(map[string]struct{}, len(quote))
+	for _, k := range quote {
+		quoteSet[k] = struct{}{}
+	}
 	pairs := make([]configPair, 0, len(byKey))
 	for k, v := range byKey {
-		pairs = append(pairs, configPair{key: k, value: v})
+		_, q := quoteSet[k]
+		pairs = append(pairs, configPair{key: k, value: v, quote: q})
 	}
 	sort.Slice(pairs, func(i, j int) bool { return pairs[i].key < pairs[j].key })
 	return pairs, nil
@@ -102,10 +109,16 @@ func encodeProperties(pairs []configPair) string {
 }
 
 // encodePalworldIni 編碼為 Palworld PalWorldSettings.ini:section 下單行 OptionSettings=(K=V,...)。
+// quote 為真的鍵(範本 [[native.config]].quote 宣告)以雙引號包裹值(Palworld 字串值如 ServerName/
+// AdminPassword 需引號;enum/bool/數字不需)。
 func encodePalworldIni(section string, pairs []configPair) string {
 	inner := make([]string, 0, len(pairs))
 	for _, p := range pairs {
-		inner = append(inner, p.key+"="+p.value)
+		v := p.value
+		if p.quote {
+			v = `"` + v + `"`
+		}
+		inner = append(inner, p.key+"="+v)
 	}
 	var b strings.Builder
 	b.WriteByte('[')

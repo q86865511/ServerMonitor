@@ -144,20 +144,26 @@ update_on_start = true                 # R6:啟動前重跑 app_update 檢查更
 # Pal/Binaries/Win64/PalServer-Win64-Shipping.exe);native 後端僅 Windows 執行(非 Windows 自動
 # skip),故用 .exe 而非 .sh。埠參數格式為 -port=NNNN(官方 arguments 文件)。
 # 查證來源:docs.palworldgame.com deploy 指南(啟動檔 PalServer.exe)+ SteamCMD 社群安裝指南
-# (-port=NNNN 參數;信心:高)。RCON/REST 埠與 ADMIN_PASSWORD 由 NativeBackend 執行時注入,
-# 非啟動參數;公開列表(-publiclobby)刻意不預設開啟(對齊 REST 不暴露公網的隱私取向)。
+# (-port=NNNN 參數;信心:高)。REST 啟用/埠、RCON 關閉、ADMIN_PASSWORD 皆由下方 [native.config]
+# 寫入 PalWorldSettings.ini(非啟動參數);公開列表(-publiclobby)刻意不預設開啟(對齊 REST 不暴露公網)。
 command = ["{instance_dir}/PalServer.exe", "-port={port:game}"]
 
 [[native.config]]
-# palworld-ini 編碼器:把 map 後的鍵值打包成單行 OptionSettings=(K=V,...) 寫入指定 section。
-# REST/RCON 埠與 ADMIN_PASSWORD(機密)屬 NativeBackend 執行時注入,非 param 直映;其餘 Palworld
-# 設定(難度、掉落率等)本範本未宣告為 param,待 T13 E2E 依實跑補齊。
-# file 為 Windows 伺服器實際讀取路徑(相對工作目錄=實例根;雙審後追加修正 #18):Palworld 不讀
-# 安裝根的 ini,只讀 Pal/Saved/Config/WindowsServer/ 下的設定;writeConfigFile 會自建父目錄。
+# palworld-ini 編碼器:把 map/set 後的鍵值打包成單行 OptionSettings=(K=V,...) 寫入指定 section。
+# native 無 docker 映像 entrypoint 代勞,故 REST 啟用/埠、RCON 關閉、admin 密碼皆須於此寫入 ini
+# (B14:先前缺 AdminPassword/RESTAPIPort → REST 認證 401 或埠漂移 → 就緒逾時)。ServerName/AdminPassword
+# 為字串值,以 quote 加雙引號(Palworld ini 慣例);RESTAPIEnabled/RCONEnabled 為 bool 需大寫 True/False,
+# 以 set 字面值直落(不引號)。其餘 Palworld 設定(難度、掉落率等)本範本未宣告為 param,待依實跑補齊。
+# file 為 Windows 伺服器實際讀取路徑(相對工作目錄=實例根):Palworld 只讀 Pal/Saved/Config/WindowsServer/
+# 下的設定(不讀安裝根的 ini);writeConfigFile 會自建父目錄。
 file = "Pal/Saved/Config/WindowsServer/PalWorldSettings.ini"
 format = "palworld-ini"
 section = "/Script/Pal.PalGameWorldSettings"
+quote = ["ServerName", "AdminPassword"]   # Palworld 字串值需雙引號;enum/bool/數字不加
 [native.config.map]
 SERVER_NAME = "ServerName"
-REST_API_ENABLED = "RESTAPIEnabled"
-RCON_ENABLED = "RCONEnabled"
+ADMIN_PASSWORD = "AdminPassword"          # 機密→REST/RCON 認證密碼,由 quote 加引號
+[native.config.set]
+RESTAPIEnabled = "True"                    # native 固定啟用 REST(核心 stop/健康探針依賴);bool 大寫、不引號
+RCONEnabled = "False"                      # legacy,固定關閉
+RESTAPIPort = "{port:rest}"               # 顯式釘住 REST 埠與探測埠一致(避免用預設 8212 漂移)

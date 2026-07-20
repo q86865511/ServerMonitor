@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -132,6 +134,20 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("DELETE "+base+"/instances/{id}/backups/{backupID}", s.idempotent(http.HandlerFunc(s.handleDeleteBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/backup", s.idempotent(http.HandlerFunc(s.handleBackup)))
 	mux.Handle("POST "+base+"/instances/{id}/restore", s.idempotent(http.HandlerFunc(s.handleRestore)))
+	// 階段 4:Docker 資源管理。映像/容器為節點層(無 {id}→實例對映);刪除以精確 id、天然冪等
+	// (再刪回 404),故如 mount 上傳不套冪等中介層。磁碟用量以 uuid 定位、不需容器解析。
+	mux.HandleFunc("GET "+base+"/images", s.handleListImages)
+	mux.HandleFunc("DELETE "+base+"/images/{id}", s.handleRemoveImage)
+	mux.HandleFunc("POST "+base+"/images/prune", s.handlePruneImages)
+	mux.HandleFunc("GET "+base+"/containers", s.handleListContainers)
+	mux.HandleFunc("DELETE "+base+"/containers/{id}", s.handleRemoveContainer)
+	mux.HandleFunc("GET "+base+"/instances/{id}/diskusage", s.handleDiskUsage)
+	// 階段 5:伺服器檔案管理。以 ?path= 帶相對實例資料根的路徑(空=根);上傳/刪除以精確路徑
+	// 作用、天然冪等(重上傳=覆寫、再刪回 404),故如 mount 上傳不套冪等中介層。
+	mux.HandleFunc("GET "+base+"/instances/{id}/files", s.handleListFiles)
+	mux.HandleFunc("GET "+base+"/instances/{id}/files/content", s.handleDownloadFile)
+	mux.HandleFunc("PUT "+base+"/instances/{id}/files", s.handleUploadFile)
+	mux.HandleFunc("DELETE "+base+"/instances/{id}/files", s.handleDeleteFile)
 
 	return mux
 }
@@ -236,14 +252,36 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, info)
 }
 
+// instanceDataPurger 由能「不依賴容器、直接以 uuid 清除實例宿主資料/備份」的後端實作(B7)。
+// docker/native 皆以其資料根/備份根實作;dispatchBackend 轉發至各子後端。
+type instanceDataPurger interface {
+	PurgeInstanceData(ctx context.Context, uuid string) error
+}
+
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	rid, err := s.resolve(r.Context(), r.PathValue("id"))
-	if err != nil {
+	var req protocol.RemoveInstanceRequest
+	if err := decodeOptionalJSON(r, &req); err != nil {
 		writeErr(w, err)
 		return
 	}
-	var req protocol.RemoveInstanceRequest
-	if err := decodeOptionalJSON(r, &req); err != nil {
+	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err) // 路徑遍歷防禦:purge 以 uuid 直接清宿主資料/備份,先驗 uuid 格式
+		return
+	}
+	rid, err := s.resolve(r.Context(), uuid)
+	if err != nil {
+		// B7:容器已 out-of-band 移除。purge 時仍以 uuid 直接清宿主資料/備份——否則 resolve 短路使
+		// backend.Remove(Purge) 的磁碟清理被跳過,而 core 把 ErrNodeNotFound 視為已移除續刪 DB,造成
+		// 資料+備份永久孤兒卻回報成功。清理後仍回原 ErrNotFound(container 確實不存在,core 據此收斂)。
+		if errors.Is(err, ErrNotFound) && req.Purge {
+			if purger, ok := s.backend.(instanceDataPurger); ok {
+				if perr := purger.PurgeInstanceData(r.Context(), uuid); perr != nil {
+					writeErr(w, perr)
+					return
+				}
+			}
+		}
 		writeErr(w, err)
 		return
 	}
@@ -378,7 +416,11 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("id")
 	backupID := protocol.BackupID(r.PathValue("backupID"))
-	// 路徑遍歷第一層防禦:URL 路徑段(已解碼,如 "..%5C"→"..\")進後端前先驗格式,拒絕 → 400。
+	// 路徑遍歷第一層防禦:URL 路徑段(已解碼,如 "..%5C"→"..\")進後端前先驗 uuid 與 backupID 格式,拒絕 → 400。
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err)
+		return
+	}
 	if err := validateBackupID(backupID); err != nil {
 		writeErr(w, err)
 		return
@@ -447,6 +489,221 @@ func (s *Server) handleRestore(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, protocol.RestoreResponse{RuntimeID: newID})
 }
 
+// ---- 階段 4:Docker 資源管理 handlers ----
+//
+// 後端未實作對應能力(如 native-only 節點無 ImageManager/ContainerManager)→ ErrUnsupported
+// (HTTP 501)。生產頂層後端為 dispatchBackend,恆實作這些介面,能力缺失於其內部按有無 docker 子
+// 後端回 ErrUnsupported;非 dispatch 後端(測試 MockBackend)則於此型別斷言失敗回同一碼,兩路收斂。
+
+func (s *Server) handleListImages(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	imgs, err := mgr.ListImages(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListImagesResponse{Images: imgs})
+}
+
+func (s *Server) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: "image id required"})
+		return
+	}
+	if err := mgr.RemoveImage(r.Context(), id, r.URL.Query().Get("force") == "true"); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ImageManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	res, err := mgr.PruneImages(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleListContainers(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ContainerManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	cs, err := mgr.ListContainers(r.Context())
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListContainersResponse{Containers: cs})
+}
+
+func (s *Server) handleRemoveContainer(w http.ResponseWriter, r *http.Request) {
+	mgr, ok := s.backend.(ContainerManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: "container id required"})
+		return
+	}
+	if err := mgr.RemoveContainer(r.Context(), id, r.URL.Query().Get("force") == "true"); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDiskUsage 回報某實例的宿主磁碟用量(資料/備份根)。以 uuid 直接走 diskUsager,不做
+// resolve(磁碟用量以 uuid 定位、不需容器存在);後端不支援 → ErrUnsupported。
+func (s *Server) handleDiskUsage(w http.ResponseWriter, r *http.Request) {
+	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err) // 路徑遍歷防禦:磁碟用量以 uuid 定位宿主目錄,先驗格式
+		return
+	}
+	usager, ok := s.backend.(instanceDiskUsager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return
+	}
+	du, err := usager.InstanceDiskUsage(r.Context(), uuid)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, du)
+}
+
+// ---- 階段 5:伺服器檔案管理 handlers ----
+//
+// 與 diskusage 同樣以 uuid 直接定位宿主目錄、不做 resolve:檔案管理須在容器停止(甚至已 out-of-band
+// 移除)時仍可用,resolve 會把這些情境誤判為 404。信任邊界的第一道防禦在此:uuid 與 rel 皆先於
+// 進後端前驗格式(拒 → 400),後端內再由 resolveWithinRoot 做第二、三層拘束(見 files.go)。
+
+// fileManagerFor 取後端的檔案管理能力並先驗 uuid 與 rel path;任一不合即已寫出錯誤回應(回 false)。
+func (s *Server) fileManagerFor(w http.ResponseWriter, r *http.Request) (FileManager, string, bool) {
+	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err)
+		return nil, "", false
+	}
+	rel, err := cleanRelPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, err)
+		return nil, "", false
+	}
+	fm, ok := s.backend.(FileManager)
+	if !ok {
+		writeErr(w, ErrUnsupported)
+		return nil, "", false
+	}
+	return fm, rel, true
+}
+
+// handleListFiles 列出 ?path= 目錄的直接子項(不遞迴)。
+func (s *Server) handleListFiles(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	entries, err := fm.ListFiles(r.Context(), r.PathValue("id"), rel)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if entries == nil {
+		entries = []protocol.FileEntry{}
+	}
+	writeJSON(w, http.StatusOK, protocol.ListFilesResponse{Path: rel, Entries: entries})
+}
+
+// handleDownloadFile 串流回檔案位元組(application/octet-stream + Content-Length)。刻意不緩衝
+// 整檔:伺服器世界檔可達 GB 級,io.Copy 直接對 ResponseWriter 寫出,記憶體恆為一個 32KB 緩衝。
+// 標頭於開檔成功後才寫,故錯誤(404/400)仍能以 JSON 錯誤主體回覆。
+func (s *Server) handleDownloadFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	rc, entry, err := fm.ReadFile(r.Context(), r.PathValue("id"), rel)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(entry.SizeBytes, 10))
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(entry.Name))
+	w.WriteHeader(http.StatusOK)
+	// 以 CopyN 上界為已宣告的 Content-Length:執行中的伺服器可能正在寫同一個檔,若它在 Stat 之後
+	// 變長,無界 Copy 會寫超過宣告長度而由 net/http 截斷+記錯。已開始寫主體後無法改回錯誤狀態碼,
+	// 中途失敗只能斷連,由呼叫端的短讀偵測(NodeClient 的 io.Copy 會回錯)。
+	_, _ = io.CopyN(w, rc, entry.SizeBytes)
+}
+
+// maxUploadBytes 是單次檔案上傳的 body 大小上界(16 GiB:足夠 native Palworld 世界/大型模組包,
+// 又非無界以免惡意請求塞爆磁碟)。以 var 而非 const 便於單元測試注入小值驗證上限機制。
+var maxUploadBytes int64 = 16 << 30
+
+// handleUploadFile 以 body(application/octet-stream)覆寫/建立 ?path= 檔案 → 204。
+// body 以 http.MaxBytesReader 設上界(DoS 防禦):超限時 WriteFile 的 io.Copy 讀到
+// *http.MaxBytesError,映為 413(原子寫的暫存檔已於錯誤路徑刪除,不留半成品、不動既有目標)。
+func (s *Server) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	defer body.Close()
+	if err := fm.WriteFile(r.Context(), r.PathValue("id"), rel, body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, protocol.APIError{
+				Code:    protocol.ErrBadRequest,
+				Message: fmt.Sprintf("上傳超過大小上限 %d bytes", maxUploadBytes),
+			})
+			return
+		}
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteFile 刪除 ?path=(目錄需 ?recursive=true)→ 204。
+func (s *Server) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	fm, rel, ok := s.fileManagerFor(w, r)
+	if !ok {
+		return
+	}
+	recursive := r.URL.Query().Get("recursive") == "true"
+	if err := fm.DeleteFile(r.Context(), r.PathValue("id"), rel, recursive); err != nil {
+		writeErr(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ---- 錯誤映射 / JSON 輔助 ----
 
 // apiErrorFor 把內部錯誤映射為 HTTP 狀態碼 + 統一 wire 錯誤碼。
@@ -461,10 +718,18 @@ func apiErrorFor(err error) (int, protocol.APIError) {
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
 	case errors.Is(err, ErrInvalidBackupID):
 		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrInvalidInstanceUUID):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrInvalidFilePath):
+		return http.StatusBadRequest, protocol.APIError{Code: protocol.ErrBadRequest, Message: err.Error()}
+	case errors.Is(err, ErrProtectedFile):
+		return http.StatusConflict, protocol.APIError{Code: protocol.ErrConflict, Message: err.Error()}
 	case errors.Is(err, ErrPortConflict):
 		return http.StatusConflict, protocol.APIError{Code: protocol.ErrPortConflict, Message: err.Error()}
 	case errors.Is(err, ErrLocked):
 		return http.StatusLocked, protocol.APIError{Code: protocol.ErrLocked, Message: err.Error()}
+	case errors.Is(err, ErrUnsupported):
+		return http.StatusNotImplemented, protocol.APIError{Code: protocol.ErrUnsupported, Message: err.Error()}
 	case errors.Is(err, ErrBackendClosed):
 		return http.StatusServiceUnavailable, protocol.APIError{Code: protocol.ErrInternal, Message: err.Error()}
 	default:
@@ -485,6 +750,8 @@ func statusForCode(c protocol.ErrorCode) int {
 		return http.StatusConflict
 	case protocol.ErrLocked:
 		return http.StatusLocked
+	case protocol.ErrUnsupported:
+		return http.StatusNotImplemented
 	default:
 		return http.StatusInternalServerError
 	}

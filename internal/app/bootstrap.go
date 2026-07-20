@@ -180,6 +180,10 @@ type Runtime struct {
 	monitor   *core.MonitorHub
 	metrics   *core.MetricsRecorder
 
+	// startupProgress 承載核心啟動階段進度(Orchestrator.ProgressHook 推入),由 Wails 綁定層 drain
+	// 後以 provision:<uuid> 事件推送給 GUI(階段 3)。緩衝、非阻塞、可丟失(進度僅供顯示)。
+	startupProgress chan protocol.ProvisionProgress
+
 	backendOpts    agent.BackendOptions // 供 RetryDocker 重建後端用的固定參數
 	backendFactory BackendFactory       // 建立頂層後端的工廠(RetryDocker 於非 dispatch 頂層沿用;測試可注入)
 	dockerFactory  DockerFactory        // 只建 docker 子後端(RetryDocker 於 dispatch 頂層熱替換用)
@@ -207,6 +211,9 @@ type Runtime struct {
 
 // Node 回傳本機節點識別。
 func (r *Runtime) Node() string { return r.node }
+
+// StartupProgress 回傳核心啟動階段進度 channel(Wails 綁定層 drain 後以 provision:<uuid> 推送;階段 3)。
+func (r *Runtime) StartupProgress() <-chan protocol.ProvisionProgress { return r.startupProgress }
 
 // ErrAppLocked 由 Bootstrap 回傳(包裹 core.ErrAppLocked),供綁定層以 dialog 提示後退出(R13)。
 var ErrAppLocked = core.ErrAppLocked
@@ -279,11 +286,12 @@ func Bootstrap(opts Options) (*Runtime, error) {
 
 	// 從此點起若中途失敗,須釋放已取得的資源。
 	r := &Runtime{
-		node:       node,
-		dataRoot:   dataRoot,
-		configPath: filepath.Join(baseRoot, appConfigFileName),
-		lock:       lock,
-		watched:    make(map[string]bool),
+		node:            node,
+		dataRoot:        dataRoot,
+		configPath:      filepath.Join(baseRoot, appConfigFileName),
+		lock:            lock,
+		watched:         make(map[string]bool),
+		startupProgress: make(chan protocol.ProvisionProgress, 64),
 	}
 	fail := func(e error) (*Runtime, error) {
 		r.releasePartial()
@@ -406,6 +414,12 @@ func Bootstrap(opts Options) (*Runtime, error) {
 		Store: store, Events: events, Registry: r.registry, Reconciler: r.recon,
 		Prober: r.prober, Now: now, CrashHook: crashHook, StopHook: r.commands.RunStopHook,
 		ReadyTimeout: opts.ReadyTimeout, // <=0 → NewOrchestrator 用預設 60s
+		ProgressHook: func(_ string, p protocol.ProvisionProgress) {
+			select {
+			case r.startupProgress <- p:
+			default: // 緩衝滿時丟棄(進度僅供顯示,丟一格僅使進度較不連續)
+			}
+		},
 	})
 	r.restart.SetRestart(r.orch.Start, r.orch.MarkGiveup)
 

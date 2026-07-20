@@ -131,6 +131,8 @@ type NativeConfigMap struct {
 	// 寫檔時展開埠 token。用於 native 執行需要、但非使用者參數的設定(如 MC 的 enable-rcon/rcon.port/
 	// server-port,docker 由 itzg 注入、native 於此宣告)。與 Map 產出同鍵時 Set 優先。
 	Set map[string]string `json:"set,omitempty"`
+	// Quote 列出需以雙引號包裹值的 configKey(palworld-ini 字串值);見 template.go ConfigMapping.Quote。
+	Quote []string `json:"quote,omitempty"`
 }
 
 // ModpackRef 描述一個遠端模組包來源(native-backend R11/R14)。Type 判別解析器,
@@ -209,9 +211,12 @@ const (
 // ProvisionProgress 是 native 供應階段的進度明細(native-backend R12),隨
 // RuntimeEventProvision 事件回報供 GUI 顯示進度條。
 type ProvisionProgress struct {
-	Stage   string  `json:"stage"`            // 供應階段(如 "jre" / "server-jar" / "steamcmd")
+	Stage   string  `json:"stage"`            // 供應/啟動階段(如 "jre" / "server-jar" / "steamcmd" / "pull-image" / "starting" / "awaiting-ready" / "ready")
 	Percent float64 `json:"percent"`          // 完成百分比(0-100);總量不可知時為 0
-	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名)
+	Detail  string  `json:"detail,omitempty"` // 人類可讀補充(如目前下載的檔名、第 N 次就緒探測)
+	// InstanceUUID 為進度所屬實例 uuid(建立進度由後端 emitter 蓋章、啟動進度由核心 progressHook 帶入),
+	// 供 GUI 以 provision:<uuid> 事件分派至該伺服器主控台與全域操作面板。
+	InstanceUUID string `json:"instance_uuid,omitempty"`
 }
 
 // RuntimeEvent 是 RuntimeBackend.Events 串流上的一則執行事件,亦為節點代理 WS /events 的
@@ -278,6 +283,9 @@ const (
 	ErrConflict     ErrorCode = "ERR_CONFLICT"
 	ErrBadRequest   ErrorCode = "ERR_BAD_REQUEST"
 	ErrInternal     ErrorCode = "ERR_INTERNAL"
+	// ErrUnsupported 表示本節點後端缺乏此能力(如 native-only 節點無 Docker 映像/容器管理)。
+	// 對映 HTTP 501 Not Implemented(見 agent.statusForCode)。
+	ErrUnsupported ErrorCode = "ERR_UNSUPPORTED"
 )
 
 // APIError 是代理 API 的統一錯誤回應主體。
@@ -404,4 +412,72 @@ type RestoreResponse struct {
 type HealthResponse struct {
 	Status  string `json:"status"`
 	Version string `json:"version"`
+}
+
+// ---- Docker 資源管理契約 DTO(階段 4;映像/容器為節點層,不對映實例)----
+
+// ImageSummary 是節點上一份 Docker 映像的摘要(GET /images)。Containers 為使用該映像的容器數
+// (docker 提供;未計算時 docker 回 -1);SizeBytes 為映像總大小;Tags 為 repo:tag 清單(懸掛映像可空)。
+type ImageSummary struct {
+	ID         string    `json:"id"`
+	Tags       []string  `json:"tags"`
+	SizeBytes  int64     `json:"size_bytes"`
+	CreatedUTC time.Time `json:"created_utc"`
+	Containers int       `json:"containers"`
+}
+
+// ContainerSummary 是節點上一個 Docker 容器的摘要(GET /containers;含孤兒/非本工具建立)。
+// Labels 保留原樣供上層辨識 gsm.* 標記(gsm.managed-by/gsm.uuid);State 為 docker 容器狀態字串。
+type ContainerSummary struct {
+	ID     string            `json:"id"`
+	Names  []string          `json:"names"`
+	Image  string            `json:"image"`
+	State  string            `json:"state"`
+	Labels map[string]string `json:"labels"`
+}
+
+// PruneImagesResult 是 POST /images/prune 的回應:回收位元組與被刪映像 ID 清單。
+type PruneImagesResult struct {
+	ReclaimedBytes int64    `json:"reclaimed_bytes"`
+	Deleted        []string `json:"deleted"`
+}
+
+// InstanceDiskUsage 是一個實例的宿主磁碟用量(GET /instances/{id}/diskusage):資料根與備份根
+// 各自遞迴加總的檔案位元組。以 uuid 定位(不需容器);目錄不存在計 0。
+type InstanceDiskUsage struct {
+	DataBytes   int64 `json:"data_bytes"`
+	BackupBytes int64 `json:"backup_bytes"`
+}
+
+// ListImagesResponse 是 GET /images 的回應。
+type ListImagesResponse struct {
+	Images []ImageSummary `json:"images"`
+}
+
+// ListContainersResponse 是 GET /containers 的回應。
+type ListContainersResponse struct {
+	Containers []ContainerSummary `json:"containers"`
+}
+
+// ---- 階段 5:伺服器檔案管理 ----
+
+// FileEntry 是實例資料目錄下的一個檔案/子目錄項目(GET /instances/{id}/files)。
+//
+// Path 為相對「實例資料根」的路徑,一律以 "/" 分隔(跨平台穩定,前端可直接串接);根本身為 ""。
+// 屬性一律以 lstat 語意取得(不跟隨符號連結):指向目錄的 symlink 回 IsDir=false + IsSymlink=true,
+// SizeBytes 為連結本身大小。前端據 IsSymlink 標示並警示(節點端拒絕刪除 symlink 本身)。
+type FileEntry struct {
+	Name        string    `json:"name"`
+	Path        string    `json:"path"`
+	IsDir       bool      `json:"is_dir"`
+	SizeBytes   int64     `json:"size_bytes"`
+	ModifiedUTC time.Time `json:"modified_utc"`
+	IsSymlink   bool      `json:"is_symlink"`
+}
+
+// ListFilesResponse 是 GET /instances/{id}/files 的回應。Path 為正規化後的請求目錄(相對實例
+// 資料根,"/" 分隔;根為 ""),Entries 為該目錄的直接子項(不遞迴,目錄在前、再依名稱排序)。
+type ListFilesResponse struct {
+	Path    string      `json:"path"`
+	Entries []FileEntry `json:"entries"`
 }

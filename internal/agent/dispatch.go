@@ -416,9 +416,14 @@ func closeSubBackend(b RuntimeBackend) error {
 // 該介面的子後端並合併/取首個處理結果——與子後端是否共用檔案系統根無關,皆正確。
 
 var (
-	_ BackupLister  = (*dispatchBackend)(nil)
-	_ BackupDeleter = (*dispatchBackend)(nil)
-	_ MountWriter   = (*dispatchBackend)(nil)
+	_ BackupLister       = (*dispatchBackend)(nil)
+	_ BackupDeleter      = (*dispatchBackend)(nil)
+	_ MountWriter        = (*dispatchBackend)(nil)
+	_ instanceDataPurger = (*dispatchBackend)(nil)
+	_ ImageManager       = (*dispatchBackend)(nil)
+	_ ContainerManager   = (*dispatchBackend)(nil)
+	_ instanceDiskUsager = (*dispatchBackend)(nil)
+	_ FileManager        = (*dispatchBackend)(nil)
 )
 
 // subBackends 回傳目前存在的子後端(native 在前、docker 在後),供橫切能力轉發走訪。
@@ -479,6 +484,23 @@ func (d *dispatchBackend) DeleteBackup(ctx context.Context, instanceUUID string,
 	return ErrNotFound
 }
 
+// PurgeInstanceData 逐一嘗試各實作 instanceDataPurger 的子後端清除實例宿主資料/備份(B7:容器已
+// out-of-band 移除時的 purge 路徑)。子後端可能共用資料/備份根,首個清除後其餘為 no-op;回首個錯誤,
+// 無支援子後端則回 nil(無可清)。
+func (d *dispatchBackend) PurgeInstanceData(ctx context.Context, uuid string) error {
+	var firstErr error
+	for _, sub := range d.subBackends() {
+		purger, ok := sub.(instanceDataPurger)
+		if !ok {
+			continue
+		}
+		if err := purger.PurgeInstanceData(ctx, uuid); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 // WriteMountFile 逐一嘗試各實作 MountWriter 的子後端:回首個非 ErrNotFound 結果;全數 ErrNotFound
 // (該 mount 未於任一子後端的實例 spec 宣告)則回 ErrNotFound。
 func (d *dispatchBackend) WriteMountFile(ctx context.Context, instanceUUID, mountName, filename string, r io.Reader) error {
@@ -498,4 +520,128 @@ func (d *dispatchBackend) WriteMountFile(ctx context.Context, instanceUUID, moun
 		return ErrNotFound
 	}
 	return ErrNotFound
+}
+
+// ---- 映像 / 容器管理 / 磁碟用量轉發(階段 4:Docker 資源管理)----
+//
+// 映像/容器管理只走 docker 子後端(native 無映像/容器概念);docker 不可用(native-only 節點)
+// → ErrUnsupported(server 映為 HTTP 501)。磁碟用量走首個實作 instanceDiskUsager 的子後端
+// (docker/native 共用資料/備份根,任一計得同值)。
+
+// dockerImageManager 取當前 docker 子後端的 ImageManager 能力(僅 docker 有;無 docker → false)。
+func (d *dispatchBackend) dockerImageManager() (ImageManager, bool) {
+	if docker := d.dockerBackend(); docker != nil {
+		if m, ok := docker.(ImageManager); ok {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+// dockerContainerManager 取當前 docker 子後端的 ContainerManager 能力(僅 docker 有;無 docker → false)。
+func (d *dispatchBackend) dockerContainerManager() (ContainerManager, bool) {
+	if docker := d.dockerBackend(); docker != nil {
+		if m, ok := docker.(ContainerManager); ok {
+			return m, true
+		}
+	}
+	return nil, false
+}
+
+func (d *dispatchBackend) ListImages(ctx context.Context) ([]protocol.ImageSummary, error) {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return m.ListImages(ctx)
+}
+
+func (d *dispatchBackend) RemoveImage(ctx context.Context, id string, force bool) error {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return m.RemoveImage(ctx, id, force)
+}
+
+func (d *dispatchBackend) PruneImages(ctx context.Context) (protocol.PruneImagesResult, error) {
+	m, ok := d.dockerImageManager()
+	if !ok {
+		return protocol.PruneImagesResult{}, ErrUnsupported
+	}
+	return m.PruneImages(ctx)
+}
+
+func (d *dispatchBackend) ListContainers(ctx context.Context) ([]protocol.ContainerSummary, error) {
+	m, ok := d.dockerContainerManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return m.ListContainers(ctx)
+}
+
+func (d *dispatchBackend) RemoveContainer(ctx context.Context, id string, force bool) error {
+	m, ok := d.dockerContainerManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return m.RemoveContainer(ctx, id, force)
+}
+
+// InstanceDiskUsage 走首個實作 instanceDiskUsager 的子後端;皆無 → ErrUnsupported。
+func (d *dispatchBackend) InstanceDiskUsage(ctx context.Context, uuid string) (protocol.InstanceDiskUsage, error) {
+	for _, sub := range d.subBackends() {
+		if u, ok := sub.(instanceDiskUsager); ok {
+			return u.InstanceDiskUsage(ctx, uuid)
+		}
+	}
+	return protocol.InstanceDiskUsage{}, ErrUnsupported
+}
+
+// ---- 檔案管理轉發(階段 5)----
+//
+// 走首個實作 FileManager 的子後端:docker 與 native 的實例資料落在宿主端同一位置
+// (instanceDataRoot(uuid),各自的 dataRoot 由 BackendOptions.InstancesRoot 共同注入),故任一
+// 子後端看到同一份檔案樹,不需依 uuid 反推所有權。皆無 → ErrUnsupported。
+
+// fileManager 取首個實作 FileManager 的子後端。
+func (d *dispatchBackend) fileManager() (FileManager, bool) {
+	for _, sub := range d.subBackends() {
+		if fm, ok := sub.(FileManager); ok {
+			return fm, true
+		}
+	}
+	return nil, false
+}
+
+func (d *dispatchBackend) ListFiles(ctx context.Context, uuid, rel string) ([]protocol.FileEntry, error) {
+	fm, ok := d.fileManager()
+	if !ok {
+		return nil, ErrUnsupported
+	}
+	return fm.ListFiles(ctx, uuid, rel)
+}
+
+func (d *dispatchBackend) ReadFile(ctx context.Context, uuid, rel string) (io.ReadCloser, protocol.FileEntry, error) {
+	fm, ok := d.fileManager()
+	if !ok {
+		return nil, protocol.FileEntry{}, ErrUnsupported
+	}
+	return fm.ReadFile(ctx, uuid, rel)
+}
+
+func (d *dispatchBackend) WriteFile(ctx context.Context, uuid, rel string, r io.Reader) error {
+	fm, ok := d.fileManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return fm.WriteFile(ctx, uuid, rel, r)
+}
+
+func (d *dispatchBackend) DeleteFile(ctx context.Context, uuid, rel string, recursive bool) error {
+	fm, ok := d.fileManager()
+	if !ok {
+		return ErrUnsupported
+	}
+	return fm.DeleteFile(ctx, uuid, rel, recursive)
 }

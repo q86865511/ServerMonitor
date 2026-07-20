@@ -22,12 +22,24 @@ export function CurseForgeKeyConfigured() {
   return window['go']['main']['App']['CurseForgeKeyConfigured']();
 }
 
+export function DeleteBackup(arg1, arg2) {
+  return window['go']['main']['App']['DeleteBackup'](arg1, arg2);
+}
+
+export function DeleteFile(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DeleteFile'](arg1, arg2, arg3);
+}
+
 export function DeleteSchedule(arg1) {
   return window['go']['main']['App']['DeleteSchedule'](arg1);
 }
 
 export function DockerAvailable() {
   return window['go']['main']['App']['DockerAvailable']();
+}
+
+export function DownloadFile(arg1, arg2) {
+  return window['go']['main']['App']['DownloadFile'](arg1, arg2);
 }
 
 export function GetAlertSettings(arg1) {
@@ -42,8 +54,24 @@ export function GetSnapshot(arg1) {
   return window['go']['main']['App']['GetSnapshot'](arg1);
 }
 
+export function InstanceDiskUsage(arg1) {
+  return window['go']['main']['App']['InstanceDiskUsage'](arg1);
+}
+
 export function ListBackups(arg1) {
   return window['go']['main']['App']['ListBackups'](arg1);
+}
+
+export function ListContainers() {
+  return window['go']['main']['App']['ListContainers']();
+}
+
+export function ListFiles(arg1, arg2) {
+  return window['go']['main']['App']['ListFiles'](arg1, arg2);
+}
+
+export function ListImages() {
+  return window['go']['main']['App']['ListImages']();
 }
 
 export function ListInstances() {
@@ -70,6 +98,10 @@ export function ProbeNode(arg1, arg2, arg3) {
   return window['go']['main']['App']['ProbeNode'](arg1, arg2, arg3);
 }
 
+export function PruneImages() {
+  return window['go']['main']['App']['PruneImages']();
+}
+
 export function QueryEvents(arg1) {
   return window['go']['main']['App']['QueryEvents'](arg1);
 }
@@ -80,6 +112,14 @@ export function QueryMetrics(arg1, arg2) {
 
 export function QueryMetricsSummary(arg1) {
   return window['go']['main']['App']['QueryMetricsSummary'](arg1);
+}
+
+export function RemoveContainer(arg1, arg2) {
+  return window['go']['main']['App']['RemoveContainer'](arg1, arg2);
+}
+
+export function RemoveImage(arg1, arg2) {
+  return window['go']['main']['App']['RemoveImage'](arg1, arg2);
 }
 
 export function RemoveInstance(arg1, arg2) {
@@ -136,6 +176,10 @@ export function UnsubscribeLogs(arg1) {
 
 export function UnsubscribeStats(arg1) {
   return window['go']['main']['App']['UnsubscribeStats'](arg1);
+}
+
+export function UploadFile(arg1, arg2) {
+  return window['go']['main']['App']['UploadFile'](arg1, arg2);
 }
 
 export function UpsertSchedule(arg1) {

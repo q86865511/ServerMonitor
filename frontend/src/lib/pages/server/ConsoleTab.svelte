@@ -14,16 +14,29 @@
     acquireLogs,
     releaseLogs,
     clearLogs,
+    resubscribeLogs,
     type LogConn,
   } from '../../stores/logs';
+  import {
+    provisionProgress,
+    acquireProvision,
+    releaseProvision,
+    stageLabel,
+    type Progress,
+  } from '../../stores/provision';
   import { call, errMsg } from '../../api';
   import { fmtCPU, fmtPlayers, memRatio } from '../../format';
   import type { LogRow } from '../../ui/types';
   import LogViewer from '../../ui/LogViewer.svelte';
+  import ProgressBar from '../../ui/ProgressBar.svelte';
   import Button from '../../ui/Button.svelte';
   import Select from '../../ui/Select.svelte';
 
-  let { uuid, snapshot }: { uuid: string; snapshot: main.SnapshotDTO | null } = $props();
+  let {
+    uuid,
+    snapshot,
+    running,
+  }: { uuid: string; snapshot: main.SnapshotDTO | null; running: boolean } = $props();
 
   // ---- 日誌訂閱(引用計數;uuid 變動接手,unmount 釋放;buffer 不清)----
   let rows = $state<LogRow[]>([]);
@@ -40,6 +53,35 @@
       u2();
       releaseLogs(id);
     };
+  });
+
+  // ---- 供應/啟動進度(引用計數;LogViewer 上方橫幅顯示,stage="ready" 後自動消失)----
+  let prog = $state<Progress | null>(null);
+  $effect(() => {
+    const id = uuid; // 區域副本:cleanup 讀反應式 uuid 會拿到已前進的新值(同 logs effect)。
+    acquireProvision(id);
+    const u = provisionProgress(id).subscribe((v) => (prog = v));
+    return () => {
+      u();
+      releaseProvision(id);
+    };
+  });
+
+  // ---- B10:停止再啟動同實例(不離頁)後即時 log 靜默——後端 fanout 隨 channel 關閉結束,前端
+  // 訂閱狀態殘留(logs effect 僅隨 uuid 重跑)。於「非 Running→Running」轉態時重建訂閱使其恢復。
+  let reSubUuid = '';
+  let prevRunning = false;
+  $effect(() => {
+    const id = uuid;
+    const isRunning = running;
+    if (id !== reSubUuid) {
+      // 換頁/首次:設轉態基準,不重訂(logs effect 會處理新 uuid 的首次訂閱)。
+      reSubUuid = id;
+      prevRunning = isRunning;
+      return;
+    }
+    if (isRunning && !prevRunning) resubscribeLogs(id);
+    prevRunning = isRunning;
   });
 
   // ---- 指令能力(rcon 自由輸入 / rest 具名動作 / none 停用)----
@@ -240,7 +282,22 @@
 
 <div class="console-tab">
   <div class="log-col">
-    <LogViewer {rows} connected={conn.state === 'connected'} onClear={() => clearLogs(uuid)}>
+    {#if prog}
+      <div class="prov-banner">
+        <div class="pb-head">
+          <span class="pb-stage">{stageLabel(prog.stage) || '處理中'}</span>
+          {#if prog.percent >= 0}<span class="pb-pct mono">{Math.round(prog.percent)}%</span>{/if}
+        </div>
+        {#if prog.percent >= 0}
+          <ProgressBar value={Math.min(100, prog.percent)} tone="busy" />
+        {:else}
+          <div class="indet-track"><div class="indet-fill"></div></div>
+        {/if}
+        {#if prog.detail}<div class="pb-detail">{prog.detail}</div>{/if}
+      </div>
+    {/if}
+    <div class="log-fill">
+      <LogViewer {rows} connected={conn.state === 'connected'} onClear={() => clearLogs(uuid)}>
       {#snippet commandBar()}
         <div class="cmd">
           {#if feedback.length > 0}
@@ -299,7 +356,8 @@
           {/if}
         </div>
       {/snippet}
-    </LogViewer>
+      </LogViewer>
+    </div>
   </div>
 
   <aside class="info-col">
@@ -352,6 +410,11 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    gap: var(--space-2);
+  }
+  .log-fill {
+    flex: 1;
+    min-height: 0;
   }
   @media (max-width: 1000px) {
     .console-tab {
@@ -360,6 +423,59 @@
     }
     .log-col {
       height: 60vh;
+    }
+  }
+
+  /* 供應/啟動進度橫幅:以 busy 色調與 stdout 日誌視覺區隔。 */
+  .prov-banner {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background-color: var(--busy-bg);
+    border: 1px solid var(--busy);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+  }
+  .pb-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+  }
+  .pb-stage {
+    color: var(--fg-0);
+    font-weight: 600;
+  }
+  .pb-pct {
+    color: var(--busy);
+    font-variant-numeric: tabular-nums;
+  }
+  .pb-detail {
+    font-size: var(--text-xs);
+    color: var(--fg-2);
+    word-break: break-all;
+  }
+  .indet-track {
+    height: 6px;
+    background-color: var(--bg-3);
+    border-radius: var(--radius-full);
+    overflow: hidden;
+  }
+  .indet-fill {
+    height: 100%;
+    width: 40%;
+    background-color: var(--busy);
+    border-radius: var(--radius-full);
+    animation: pb-indet 1.1s ease-in-out infinite;
+  }
+  @keyframes pb-indet {
+    0% {
+      margin-left: -40%;
+    }
+    100% {
+      margin-left: 100%;
     }
   }
 

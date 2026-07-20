@@ -792,6 +792,21 @@ func (b *NativeBackend) Remove(ctx context.Context, id protocol.RuntimeID, opts 
 	return nil
 }
 
+// PurgeInstanceData 以 uuid 直接清除實例宿主資料與備份(不依賴行程;B7:行程/容器已消失時的 purge
+// 路徑,resolve 短路使 Remove(Purge) 的磁碟清理被跳過)。等同 Remove(Purge) 的清磁碟部分。
+func (b *NativeBackend) PurgeInstanceData(ctx context.Context, uuid string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(b.instanceDataRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例資料失敗: %w", err)
+	}
+	if err := os.RemoveAll(b.backupInstanceRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例備份失敗: %w", err)
+	}
+	return nil
+}
+
 // Logs 由日誌檔 tail 提供串流;follow 且行程在執行時續接即時扇出(跨滾動不中斷,R7)。
 func (b *NativeBackend) Logs(ctx context.Context, id protocol.RuntimeID, opts LogOpts) (LogStream, error) {
 	if ctx == nil {
@@ -1487,6 +1502,7 @@ func (b *NativeBackend) progressEmitter(uuid string) func(protocol.ProvisionProg
 	id := nativeID(uuid)
 	return func(p protocol.ProvisionProgress) {
 		pp := p
+		pp.InstanceUUID = uuid // 供 GUI 以 provision:<uuid> 分派至該伺服器主控台
 		b.hub.emit(RuntimeEvent{ID: id, Kind: protocol.RuntimeEventProvision, TsUTC: time.Now().UTC(), Progress: &pp})
 	}
 }

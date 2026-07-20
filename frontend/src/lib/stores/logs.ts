@@ -192,3 +192,16 @@ export function clearLogs(uuid: string): void {
   e.pending = [];
   e.rows.set([]);
 }
+
+/**
+ * 強制重建訂閱(B10:停止再啟動同一實例後,後端 fanout 隨 channel 關閉結束、前端訂閱狀態殘留而靜默)。
+ * 僅在目前仍有引用且已訂閱時作用:teardown(移除舊 EventsOn 監聽;鏈上舊 Unsubscribe 因世代前進被放棄)
+ * 後立即 subscribe,重發 SubscribeLogs,使後端(channel 關閉後已清除訂閱 map)開新 fanout。
+ * 由 ConsoleTab 於實例「非 Running→Running」轉態時呼叫。
+ */
+export function resubscribeLogs(uuid: string): void {
+  const e = entries.get(uuid);
+  if (!e || !e.subscribed || e.refCount === 0) return;
+  teardown(e, uuid);
+  subscribe(e, uuid);
+}

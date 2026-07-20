@@ -57,6 +57,9 @@ type dockerAPI interface {
 	ContainerInspect(ctx context.Context, containerID string) (types.ContainerJSON, error)
 	ContainerList(ctx context.Context, options container.ListOptions) ([]types.Container, error)
 	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+	ImageList(ctx context.Context, options image.ListOptions) ([]image.Summary, error)
+	ImageRemove(ctx context.Context, imageID string, options image.RemoveOptions) ([]image.DeleteResponse, error)
+	ImagesPrune(ctx context.Context, pruneFilter filters.Args) (image.PruneReport, error)
 	ContainerLogs(ctx context.Context, containerID string, options container.LogsOptions) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, containerID string, stream bool) (container.StatsResponseReader, error)
 	ContainerExecCreate(ctx context.Context, containerID string, options container.ExecOptions) (types.IDResponse, error)
@@ -173,9 +176,20 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	}
 
 	root := b.instanceDataRoot(spec.UUID)
+	_, statErr := os.Stat(root)
+	rootPreexisted := statErr == nil
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", fmt.Errorf("建立實例資料根失敗: %w", err)
 	}
+	// B1:全新建立途中任一步失敗時,清除本次建立的資料根,避免留下含明文機密的孤兒 instance.json
+	// ——上層回滾/對帳靠容器標籤定位,ContainerCreate 前失敗即無容器可定位、永不回收。僅在資料根本次
+	// 才建(rootPreexisted=false)時清理;Restore 走 Create 時資料根已存在,交由其 rollback 保全還原資料。
+	created := false
+	defer func() {
+		if !created && !rootPreexisted {
+			_ = os.RemoveAll(root)
+		}
+	}()
 
 	mounts := make([]mount.Mount, 0, len(spec.DataDirs)+len(spec.Mounts))
 	for _, d := range spec.DataDirs {
@@ -209,7 +223,7 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		RestartPolicy: container.RestartPolicy{Name: container.RestartPolicyDisabled}, // restart 由 core 編排
 	}
 
-	if err := b.ensureImage(ctx, spec.Image); err != nil {
+	if err := b.ensureImage(ctx, spec.UUID, spec.Image); err != nil {
 		return "", err
 	}
 	// 持久化 spec 快照(在 bind mount 之外),供 Archive/Restore 自包含重建。
@@ -222,6 +236,7 @@ func (b *DockerBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 	if err != nil {
 		return "", fmt.Errorf("建立容器失敗: %w", err)
 	}
+	created = true // 容器已建立:資料根自此由容器標籤可定位回收,取消 B1 的資料根清理。
 	return protocol.RuntimeID(resp.ID), nil
 }
 
@@ -326,6 +341,21 @@ func (b *DockerBackend) Remove(ctx context.Context, id protocol.RuntimeID, opts 
 	if opts.Purge && uuid != "" {
 		_ = os.RemoveAll(b.instanceDataRoot(uuid))
 		_ = os.RemoveAll(b.backupInstanceRoot(uuid))
+	}
+	return nil
+}
+
+// PurgeInstanceData 以 uuid 直接清除實例宿主資料與備份(不依賴容器;B7:容器已 out-of-band 移除時
+// 的 purge 路徑,resolve 短路使 Remove(Purge) 的磁碟清理被跳過)。等同 Remove(Purge) 的清磁碟部分。
+func (b *DockerBackend) PurgeInstanceData(ctx context.Context, uuid string) error {
+	if err := ctxErr(ctx); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(b.instanceDataRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例資料失敗: %w", err)
+	}
+	if err := os.RemoveAll(b.backupInstanceRoot(uuid)); err != nil {
+		return fmt.Errorf("清除實例備份失敗: %w", err)
 	}
 	return nil
 }
@@ -438,8 +468,10 @@ func (b *DockerBackend) readInstanceSpec(uuid string) (protocol.InstanceSpec, er
 	return spec, nil
 }
 
-// ensureImage 若本機無此映像則拉取。
-func (b *DockerBackend) ensureImage(ctx context.Context, ref string) error {
+// ensureImage 若本機無此映像則拉取。拉取時解析 docker 的 JSON 進度串流並經 provisionEmitter 上報
+// (階段 3:先前 io.Copy(io.Discard) 丟棄進度,Docker 建立時 GUI 看不到下載進度);uuid 供進度事件
+// 標記所屬實例(空字串則不上報,僅排空串流)。
+func (b *DockerBackend) ensureImage(ctx context.Context, uuid, ref string) error {
 	if _, _, err := b.cli.ImageInspectWithRaw(ctx, ref); err == nil {
 		return nil
 	} else if !errdefs.IsNotFound(err) {
@@ -450,10 +482,85 @@ func (b *DockerBackend) ensureImage(ctx context.Context, ref string) error {
 		return friendlyDockerErr(err, fmt.Sprintf("拉取映像 %s 失敗", ref))
 	}
 	defer rc.Close()
-	if _, err := io.Copy(io.Discard, rc); err != nil { // 須排空至結束才算拉完
+	if err := b.streamPullProgress(rc, uuid); err != nil { // 須排空至結束才算拉完
 		return friendlyDockerErr(err, fmt.Sprintf("拉取映像 %s 串流失敗", ref))
 	}
 	return nil
+}
+
+// provisionEmitter 回傳一個把 ProvisionProgress 蓋 uuid 後經 eventHub 廣播為 RuntimeEventProvision
+// 的回呼(對映 native.progressEmitter;供 SubscribeProvision→GUI 顯示 Docker 拉映像進度,階段 3)。
+// uuid 為空(如非本工具建立路徑)時回 no-op。事件 ID 留空:provision 事件的路由以 Progress.InstanceUUID
+// 為準(pumpProvision 不使用 ev.ID),拉映像階段亦尚無容器 RuntimeID。
+func (b *DockerBackend) provisionEmitter(uuid string) func(protocol.ProvisionProgress) {
+	if uuid == "" {
+		return func(protocol.ProvisionProgress) {}
+	}
+	return func(p protocol.ProvisionProgress) {
+		pp := p
+		pp.InstanceUUID = uuid
+		b.hub.emit(RuntimeEvent{Kind: protocol.RuntimeEventProvision, TsUTC: time.Now().UTC(), Progress: &pp})
+	}
+}
+
+// streamPullProgress 解析 docker ImagePull 的 JSON 訊息串流,聚合各 layer 的下載/解壓百分比並經
+// emitter 上報(stage="pull-image");百分比每前進 ≥1% 才 emit 一次以節流。uuid 為空時僅排空串流。
+// 串流須讀至 EOF 才算拉取完成。
+func (b *DockerBackend) streamPullProgress(rc io.Reader, uuid string) error {
+	emit := b.provisionEmitter(uuid)
+	type layer struct{ cur, total int64 }
+	layers := make(map[string]layer)
+	lastPct := -1.0
+	dec := json.NewDecoder(rc)
+	for {
+		var msg struct {
+			Status         string `json:"status"`
+			ID             string `json:"id"`
+			ProgressDetail struct {
+				Current int64 `json:"current"`
+				Total   int64 `json:"total"`
+			} `json:"progressDetail"`
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("%s", msg.Error)
+		}
+		if uuid == "" {
+			continue // 僅排空
+		}
+		if msg.ID != "" && msg.ProgressDetail.Total > 0 {
+			layers[msg.ID] = layer{cur: msg.ProgressDetail.Current, total: msg.ProgressDetail.Total}
+		}
+		var sumCur, sumTotal int64
+		for _, l := range layers {
+			sumCur += l.cur
+			sumTotal += l.total
+		}
+		pct := 0.0
+		if sumTotal > 0 {
+			pct = float64(sumCur) / float64(sumTotal) * 100
+		}
+		detail := msg.Status
+		if msg.ID != "" {
+			detail = msg.Status + " " + msg.ID
+		}
+		// 節流:百分比變動 ≥1% 才推(用絕對值——layer 由 Downloading 轉 Extracting 時 total 換算使 pct 可
+		// 能回退,絕對值差確保回退也更新、進度條不凍住);尚無總量的早期狀態行(Pulling from/Digest 等)也推一次。
+		delta := pct - lastPct
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta >= 1 || (sumTotal == 0 && lastPct < 0) {
+			lastPct = pct
+			emit(protocol.ProvisionProgress{Stage: "pull-image", Percent: pct, Detail: detail})
+		}
+	}
 }
 
 // friendlyDockerErr 判定 err 是否為連線類錯誤(daemon 未啟動/斷線),是則轉為使用者友善訊息;

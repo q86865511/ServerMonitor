@@ -145,6 +145,11 @@ export function acquireMetrics(uuid: string): void {
   const e = ensure(uuid);
   e.refCount += 1;
   if (e.subscribed) return;
+  subscribeStats(e, uuid);
+}
+
+// 建立一輪 stats 訂閱(回填 + EventsOn + SubscribeStats)。供 acquireMetrics 首訂與 resubscribeMetrics 重訂共用。
+function subscribeStats(e: Entry, uuid: string): void {
   e.subscribed = true;
   e.gen += 1; // 新一輪訂閱世代
   const myGen = e.gen;
@@ -171,6 +176,19 @@ export function acquireMetrics(uuid: string): void {
     .catch(() => {
       /* 靜默:訂閱失敗不阻斷回填顯示 */
     });
+}
+
+/**
+ * 強制重建 stats 訂閱(B10:停止再啟動同一實例後,後端 fanout 隨 channel 關閉結束、前端訂閱狀態殘留而
+ * 即時指標靜默)。僅在目前仍有引用且已訂閱時作用:teardown(鏈上舊 Unsubscribe 因世代前進被放棄)後
+ * 重新 subscribeStats,重發 SubscribeStats,使後端(channel 關閉後已清除訂閱 map)開新 fanout。
+ * 由 OverviewTab 於實例「非 Running→Running」轉態時呼叫。
+ */
+export function resubscribeMetrics(uuid: string): void {
+  const e = entries.get(uuid);
+  if (!e || !e.subscribed || e.refCount === 0) return;
+  teardown(e, uuid);
+  subscribeStats(e, uuid);
 }
 
 // 合併回填與 ring 現況:回填段為準,僅保留比回填末點更新的即時點;回填為空則保留現況。

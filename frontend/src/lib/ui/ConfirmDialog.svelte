@@ -8,6 +8,7 @@
     confirmLabel = '確認',
     danger = false,
     busy = false,
+    confirmDisabled = false,
     onConfirm,
     onCancel,
     children,
@@ -17,6 +18,8 @@
     confirmLabel?: string;
     danger?: boolean;
     busy?: boolean;
+    /** 確認鈕額外的停用條件(如需先勾選同意項才可執行);與 busy 互相獨立。 */
+    confirmDisabled?: boolean;
     onConfirm: () => void;
     onCancel: () => void;
     /** 額外內容(如 purge 勾選),置於訊息文字下方。 */
@@ -38,7 +41,7 @@
       class="confirm"
       class:danger
       onclick={onConfirm}
-      disabled={busy}
+      disabled={busy || confirmDisabled}
       aria-busy={busy}
     >
       {#if busy}

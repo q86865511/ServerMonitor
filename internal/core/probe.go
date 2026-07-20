@@ -158,6 +158,12 @@ func (p *HealthProber) probeRunning(ctx context.Context, node, uuid string) (boo
 	return st.Running, nil
 }
 
+// Running 查代理 runtime 狀態,回容器是否 running(以及查詢錯誤)。供存活監控(B3)於就緒探測失敗時
+// 再判「容器仍 running(代理可達)=真卡死」vs「代理/狀態端點不可達=基礎設施瞬斷」。實作 runningChecker。
+func (p *HealthProber) Running(ctx context.Context, node, uuid string) (bool, error) {
+	return p.probeRunning(ctx, node, uuid)
+}
+
 // probeTCP 撥範本 port_ref 對應的宿主埠;連得上即健康。
 func (p *HealthProber) probeTCP(ctx context.Context, tmpl *protocol.GameTemplate, portRef string) (bool, error) {
 	host, port, err := resolveCommandPort(tmpl, portRef)
@@ -253,6 +259,12 @@ type stuckRecoverer interface {
 	RecoverStuck(uuid string)
 }
 
+// runningChecker 由能查「容器是否仍 running(且代理可達)」的探針實作(生產 HealthProber),供存活
+// 監控(B3)於就緒探測失敗時區分「容器仍 running=真卡死(計入)」與「代理不可達=基礎設施瞬斷(不計入)」。
+type runningChecker interface {
+	Running(ctx context.Context, node, uuid string) (bool, error)
+}
+
 // HealthMonitor 對所有 observed=Running 的實例週期性執行存活探針(R8):連續失敗達門檻
 // (預設 15s 週期、連續 3 次)→ 判定「running 但卡死」,經 stuckRecoverer 納入復原;單次瞬斷
 // 只累計、不立即觸發(下次成功即歸零)。探測本身無鎖(唯讀 Status/撥號);復原經 per-instance
@@ -331,6 +343,16 @@ func (m *HealthMonitor) checkOnce(ctx context.Context, node string) {
 		if perr == nil && ok {
 			m.reset(rec.UUID)
 			continue
+		}
+		// B3:就緒探測失敗時,僅在「確認容器仍 running(代理可達)」才計入卡死門檻——否則(代理/狀態端點
+		// 瞬斷、或容器已非 running)視為不確定、不計入,避免遠端節點狀態端點瞬斷把健康 Running 伺服器誤判
+		// 卡死並強停+標 Crashed+自動重啟。容器已退出的路徑由 die 事件處理,不靠此存活監控。無 runningChecker
+		// 的探針(測試 mock)維持原行為(任何失敗即累計)。
+		if rc, hasRC := m.prober.(runningChecker); hasRC {
+			running, rerr := rc.Running(ctx, node, rec.UUID)
+			if rerr != nil || !running {
+				continue
+			}
 		}
 		if m.bump(rec.UUID) >= m.threshold {
 			m.reset(rec.UUID)

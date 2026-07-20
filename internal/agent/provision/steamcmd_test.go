@@ -257,6 +257,63 @@ func TestSteamCMDProvisioner_InstallApp_ErrorLineInOutput(t *testing.T) {
 	}
 }
 
+// TestSteamCMDProvisioner_InstallApp_RetriesFirstRunMissingConfig 驗證 B13:全新 SteamCMD 首跑
+// app_update 以 "Missing configuration"(exit 7)失敗時,重試一次即成功(SteamCMD 於首次失敗後自我
+// 更新,重試即就緒)。實機已重現此序列。
+func TestSteamCMDProvisioner_InstallApp_RetriesFirstRunMissingConfig(t *testing.T) {
+	cacheRoot := t.TempDir()
+	preSeedCache(t, cacheRoot)
+
+	var calls int32
+	fakeExec := func(ctx context.Context, exe string, args []string, onLine func(string)) error {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			// 首次:尚未自我更新→app_update 失敗,隨後(同次行程)才自我更新。
+			onLine("Connecting anonymously to Steam Public...OK")
+			onLine("ERROR! Failed to install app '2394010' (Missing configuration)")
+			return errors.New("exit status 7")
+		}
+		// 重試:SteamCMD 已更新,順利安裝。
+		onLine("Update state (0x61) downloading, progress: 100.00 (1000 / 1000)")
+		onLine("Success! App '2394010' fully installed.")
+		return nil
+	}
+	s := NewSteamCMDProvisioner(cacheRoot, WithSteamCMDExec(fakeExec))
+
+	if err := s.InstallApp(context.Background(), "2394010", filepath.Join(t.TempDir(), "palworld"), nil); err != nil {
+		t.Fatalf("首次 Missing configuration 後重試應成功,實得: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("應嘗試 2 次(首失敗+重試成功),實際 exec 次數 = %d", got)
+	}
+}
+
+// TestSteamCMDProvisioner_InstallApp_NoRetryOnRealError 驗證 B13 的重試限定:真實永久錯誤
+// (No subscription)不重試,第 1 次即返回錯誤。
+func TestSteamCMDProvisioner_InstallApp_NoRetryOnRealError(t *testing.T) {
+	cacheRoot := t.TempDir()
+	preSeedCache(t, cacheRoot)
+
+	var calls int32
+	fakeExec := func(ctx context.Context, exe string, args []string, onLine func(string)) error {
+		atomic.AddInt32(&calls, 1)
+		onLine("ERROR! Failed to install app '2394010' (No subscription).")
+		return errors.New("exit status 8")
+	}
+	s := NewSteamCMDProvisioner(cacheRoot, WithSteamCMDExec(fakeExec))
+
+	err := s.InstallApp(context.Background(), "2394010", filepath.Join(t.TempDir(), "palworld"), nil)
+	if err == nil {
+		t.Fatal("No subscription 應回錯,實得 nil")
+	}
+	if !strings.Contains(err.Error(), "No subscription") {
+		t.Fatalf("錯誤應含原始 SteamCMD 錯誤行,實得: %v", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("真實錯誤不應重試,實際 exec 次數 = %d", got)
+	}
+}
+
 func TestSteamCMDProvisioner_ParseSteamCMDLine(t *testing.T) {
 	pct, detail := parseSteamCMDLine("Update state (0x61) downloading, progress: 32.15 (1234 / 5678)")
 	if pct != 32 {

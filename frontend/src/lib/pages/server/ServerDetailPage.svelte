@@ -1,6 +1,6 @@
 <script lang="ts">
   // 伺服器詳細頁(R6/R7/R11):頁首(名稱/範本/節點/runtime/玩家/運行時間/狀態/啟停移除)+
-  // 五分頁(概覽/主控台/備份/排程/設定)。分頁由 hash 路由 :tab 驅動,切換不重建整頁。
+  // 六分頁(概覽/主控台/備份/檔案/排程/設定)。分頁由 hash 路由 :tab 驅動,切換不重建整頁。
   // 實例被外部移除(輪詢後 byUuid 消失)→ 錯誤態 + 釋放子分頁訂閱(子元件 unmount 自行 release)。
   import { onMount } from 'svelte';
   import type { main } from '../../../../wailsjs/go/models';
@@ -14,6 +14,7 @@
   } from '../../../../wailsjs/go/main/App';
   import { route, navigate } from '../../router';
   import { instances, refresh } from '../../stores/instances';
+  import { trackOperation, type OpKind } from '../../stores/operations';
   import { call } from '../../api';
   import { pushToast } from '../../stores/toasts';
   import { fmtPlayers } from '../../format';
@@ -30,6 +31,7 @@
   import OverviewTab from './OverviewTab.svelte';
   import ConsoleTab from './ConsoleTab.svelte';
   import BackupsPanel from './BackupsPanel.svelte';
+  import FilesTab from './FilesTab.svelte';
   import SchedulesPanel from './SchedulesPanel.svelte';
   import SettingsTab from './SettingsTab.svelte';
 
@@ -113,11 +115,12 @@
 
   // ---- 頁首操作(in-flight 鎖 + toast)----
   let busyAction = $state('');
-  async function act(name: string, fn: () => Promise<void>, ok: string): Promise<void> {
+  async function act(name: OpKind, fn: () => Promise<void>, ok: string): Promise<void> {
     if (busyAction) return;
     busyAction = name;
     try {
-      await call(fn);
+      // 全域操作面板登記一筆(進度由 provision:<uuid> 事件豐富);call() 仍負責失敗 toast。
+      await trackOperation({ uuid, name: displayName, kind: name }, () => call(fn));
       pushToast('success', ok);
       await refresh();
     } catch {
@@ -154,6 +157,7 @@
     { id: 'overview', label: '概覽' },
     { id: 'console', label: '主控台' },
     { id: 'backups', label: '備份' },
+    { id: 'files', label: '檔案' },
     { id: 'schedules', label: '排程' },
     { id: 'settings', label: '設定' },
   ];
@@ -248,9 +252,11 @@
       {#if tab === 'overview'}
         <OverviewTab {uuid} {inst} {snapshot} />
       {:else if tab === 'console'}
-        <ConsoleTab {uuid} {snapshot} />
+        <ConsoleTab {uuid} {snapshot} {running} />
       {:else if tab === 'backups'}
         <Card><BackupsPanel {uuid} /></Card>
+      {:else if tab === 'files'}
+        <Card><FilesTab {uuid} /></Card>
       {:else if tab === 'schedules'}
         <Card><SchedulesPanel {uuid} /></Card>
       {:else if tab === 'settings'}

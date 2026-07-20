@@ -667,6 +667,7 @@ func buildNativePayload(tmpl *protocol.GameTemplate, opts CreateOptions, env map
 			Section: cm.Section,
 			Map:     cm.Map,
 			Set:     cm.Set,
+			Quote:   cm.Quote,
 		})
 	}
 	if n.Mods != nil {

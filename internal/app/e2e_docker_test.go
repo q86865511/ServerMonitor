@@ -170,10 +170,10 @@ func TestE2E_MinecraftFullLifecycle(t *testing.T) {
 
 	before, _ := rt.Instance(uuid)
 	oldRID := before.RuntimeID
-	// 取得 oldRID 後**立即**註冊舊容器清理(冪等、容忍不存在),再做還原與斷言:還原成功後舊容器
-	// 成停止孤兒(agent Restore 不自動移除,生產由下次啟動對帳 RECONCILE_ORPHAN 清理);而還原本身或
-	// 後續斷言若失敗而早退,此 defer 仍清掉舊容器,避免 gsm 殘留。no-purge:不動共享的實例資料(新
-	// 容器資料由最終 RemoveInstance(purge) 清理)。註冊於斷言之前,故任一 t.Fatalf 都被涵蓋。
+	// 取得 oldRID 後**立即**註冊舊容器清理(冪等、容忍不存在),再做還原與斷言:還原成功後 agent
+	// Restore 已主動移除舊容器(B9),故此 defer 於成功路徑為 no-op 安全網;而還原本身或後續斷言若在
+	// Restore 移除舊容器**之前**失敗而早退,此 defer 仍清掉舊容器,避免 gsm 殘留。no-purge:不動共享的
+	// 實例資料(新容器資料由最終 RemoveInstance(purge) 清理)。註冊於斷言之前,故任一 t.Fatalf 都被涵蓋。
 	defer func() {
 		octx, ocancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer ocancel()
