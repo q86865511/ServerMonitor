@@ -2,7 +2,7 @@
 
 ## 目前狀態
 
-**🧪 系統全流程測試 + 修改計畫(分支 claude/system-testing-improvements-9201aa,五階段):**系統測試 + 五階段修改全部完成**:階段 1(測試+多代理稽核)、階段 2(8 bug 含 B14)、階段 3(進度主控台+全域操作面板,併 B4/B5/B10)、階段 4(Docker 映像/容器管理+磁碟用量+刪備份+B8)、階段 5(伺服器檔案管理,dual review+codex 第二審);階段 2/3/4 已 push,階段 5 待 push。共確認並修復 14 個真實 bug(B1–B14),兩項功能(進度顯示、檔案/Docker 管理)交付。詳見已完成 2026-07-19 條。GUI 視覺目視各階段留使用者真機一輪。** 前狀態:🔧 修復「GUI 啟動全逾時」雙根因(分支 claude/fix-vanilla-rcon-ready-timeout,已驗證待 push/PR):RCON adapter 管線化寫入使 vanilla 斷線(改循序哨兵)+GUI ReadyTimeout 60s 過短(改 10 分鐘)。詳見已完成 2026-07-19 條。前狀態:七項改進 pipeline 四階段全數完成(分支 claude/server-gui-improvements-063ebd):①Docker 即時偵測+CF 金鑰條件必填+範本 go:embed ②新 icon+關窗縮系統匣+單實例喚醒+NSIS 安裝包 ③遠端節點基礎(cmd/agent+TLS 指紋 pinning+節點管理 GUI,Ubuntu 雲端可部署)④整體回歸+文件收尾。三輪雙審(6+7+11 條)全數裁決處理;分支待 merge。留使用者手動項:GUI 縮匣/喚醒/安裝包真機一輪、遠端節點實機部署驗證。docker E2E 備份後重啟 Crashed 回歸已由另一 session 修復併入(PR #4,die 事件改抵達時刻判 TTL)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
+**🧪 系統全流程測試 + 修改計畫(分支 claude/system-testing-improvements-9201aa,五階段):**系統測試 + 五階段修改全部完成**:階段 1(測試+多代理稽核)、階段 2(8 bug 含 B14)、階段 3(進度主控台+全域操作面板,併 B4/B5/B10)、階段 4(Docker 映像/容器管理+磁碟用量+刪備份+B8)、階段 5(伺服器檔案管理,dual review+codex 第二審);五階段已全數 push 併入 master(PR #7)。共確認並修復 14 個真實 bug(B1–B14),兩項功能(進度顯示、檔案/Docker 管理)交付。詳見已完成 2026-07-19 條。GUI 視覺目視各階段留使用者真機一輪。** 前狀態:🔧 修復「GUI 啟動全逾時」雙根因(分支 claude/fix-vanilla-rcon-ready-timeout,已驗證待 push/PR):RCON adapter 管線化寫入使 vanilla 斷線(改循序哨兵)+GUI ReadyTimeout 60s 過短(改 10 分鐘)。詳見已完成 2026-07-19 條。前狀態:七項改進 pipeline 四階段全數完成(分支 claude/server-gui-improvements-063ebd):①Docker 即時偵測+CF 金鑰條件必填+範本 go:embed ②新 icon+關窗縮系統匣+單實例喚醒+NSIS 安裝包 ③遠端節點基礎(cmd/agent+TLS 指紋 pinning+節點管理 GUI,Ubuntu 雲端可部署)④整體回歸+文件收尾。三輪雙審(6+7+11 條)全數裁決處理;分支待 merge。留使用者手動項:GUI 縮匣/喚醒/安裝包真機一輪、遠端節點實機部署驗證。docker E2E 備份後重啟 Crashed 回歸已由另一 session 修復併入(PR #4,die 事件改抵達時刻判 TTL)**。計劃見 `C:\Users\q86865511\.claude\plans\1-docker-logical-flamingo.md`。前狀態:gui-redesign 全數完成(/pipeline,分支 claude/gui-redesign):T1–T15 實作+雙審(Opus 總審+Codex 二審+波6一審)15 條裁決全修+聚焦複審全關閉+tasks 15/15 回寫**。全套驗證綠(go test 非快取全 ok(core 含 -race)、wails build、svelte-check 171 檔 0 錯 0 警告、手寫碼零 any)。分支待 push/PR 併入 master。留給使用者:GUI 視窗真機一輪(三尺寸目視+真實資料互動;自動化已驗 shell 版面/hash 路由/四態,截圖管線在此環境 timeout 無法目視像素)、native-backend 的 CurseForge 真 key E2E、Palworld native E2E。規格明確排除項(參考圖有但後端無資料):玩家延遲 ping、網路流量圖、TPS、逐玩家清單、檔案管理分頁。
 
 ## 已完成
 
@@ -45,7 +45,7 @@
 
 > 完整任務見 `specs/game-server-manager/tasks.md`——**16/16 全數勾銷**。以下為後續:
 
-- [ ] GUI 重構:以 `/pipeline gui-redesign` 依 `specs/gui-redesign/tasks.md` 執行(c0092e 已於 2026-07-17 經 PR #1 併入 master,規格分支已 rebase 至其上);codex/graphite-ops-gui 分支棄用不併(僅視覺參考)
+- [x] GUI 重構:已完成——`/pipeline gui-redesign` T1–T15 全數勾銷,經 PR #3 併入 master(詳見已完成條目);codex/graphite-ops-gui 分支棄用不併(僅視覺參考)
 - [ ] 使用者 GUI 視窗真機一輪(懶人包見 README 快速開始)
 - [ ] 次期候選:動態埠 host_port=0、Email 告警、Palworld waittime 型別真機查證、Paper 外掛/AUTO_CURSEFORGE 真機驗證(NativeBackend 已升格為 specs/native-backend 進行中)
 - [ ] CurseForge API key:使用者已持有(2026-07-16 口頭確認);T14 於本輪執行,key 以 build-time 注入/本機設定提供,不 commit 進 repo
