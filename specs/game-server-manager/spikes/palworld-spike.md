@@ -58,9 +58,9 @@
 **要求對應(T7/T9 需覆蓋的動作)全部滿足**:伺服器資訊=`info`、線上玩家=`players`、公告=`announce`、踢人=`kick`、封鎖=`ban`、存檔=`save`、關機=`shutdown`(優雅)/`stop`(強制)。
 
 **補充【推論/待查】**:
-- `game-data` 端點見於官方文件導覽,但其 HTTP 方法與確切路徑我未逐頁查證(依 nav 命名規律推為 GET `/v1/api/game-data`)。首版不需要,列待查。
+- `game-data` 端點見於官方文件導覽,但其 HTTP 方法與確切路徑我未逐頁查證(依 nav 命名規律推為 GET `/v1/api/game-data`)。首版不需要,列待查。(截至 2026-07-21 仍為開放項:`templates/palworld.toml` 的 `command_protocols.actions` 未收錄 `game-data`,未實作)
 - `kick/ban` 的 `userid` 於 Palworld 常為 `steam_<SteamID64>` 或 PlayerUID 形式;精確接受格式待 T9 實跑確認。
-- `shutdown` body 欄位名文件寫 `waittime`(秒);拼寫以實跑為準(見待查清單)。
+- `shutdown` body 欄位名文件寫 `waittime`(秒);拼寫以實跑為準(見待查清單)。(截至 2026-07-21 仍為開放項:T9 已依 `waittime` 拼寫實作並單元測試〔`internal/core/commandservice_test.go:633`〕,T16 E2E 亦透過 `StopInstance`→`hooks.stop` 對真 Palworld 容器觸發;但 `RunStopHook` 為 best-effort、失敗只記 `HOOK_FAILED` 事件不阻擋停止,E2E 測試未斷言該事件缺席,故真伺服器是否接受此拼寫未被確鑿驗證)
 
 ---
 
@@ -87,7 +87,7 @@
 - 來源:GitHub Releases API,`tag_name = "2.5.1"`,發布於 **2026-07-10 16:19 UTC**(查證當下最新穩定版)。
 - 採 semver(x.y.z)+ `latest` 雙軌。**務必鎖 semver tag(`2.5.1`),勿用 `latest`**(避免不可重現建置)。
 - **digest 落定**【待查/建議】:本 spike 無 Docker 環境,未取實際 digest。建議 T7/T9 在建置時執行
-  `docker buildx imagetools inspect thijsvanloef/palworld-server-docker:2.5.1` 取 `sha256:...` digest 寫入範本以做真正的不可變鎖定。
+  `docker buildx imagetools inspect thijsvanloef/palworld-server-docker:2.5.1` 取 `sha256:...` digest 寫入範本以做真正的不可變鎖定。(截至 2026-07-21 仍為開放項:`templates/palworld.toml` 的 `image_digest` 欄位仍為空字串,未落定)
 
 **埠**(容器內)【事實】:
 
@@ -218,7 +218,7 @@ action = "players"
 |---|---|---|---|
 | 1 | `game-data` 端點的 HTTP 方法與確切路徑 | 【推論】GET `/v1/api/game-data` | 逐頁看官方 docs 或實跑 curl;首版非必要 |
 | 2 | `shutdown` body 欄位拼寫(`waittime` vs `waitTime`)與型別 | 文件寫 `waittime`(整數秒) | 對真伺服器 POST 實測回應 |
-| 3 | `kick/ban` 的 `userid` 接受格式(`steam_<id>` / PlayerUID / SteamID64) | 【待查】 | 由 `players` 回傳欄位比對後實測 |
+| 3 | `kick/ban` 的 `userid` 接受格式(`steam_<id>` / PlayerUID / SteamID64) | 【待查】(截至 2026-07-21 仍為開放項:`kick`/`ban` 動作僅在 `templates/palworld.toml` 宣告,程式碼與 T16 E2E 均未實跑呼叫) | 由 `players` 回傳欄位比對後實測 |
 | 4 | 映像 `2.5.1` 的實際 digest(sha256) | 未取(無 Docker 環境) | `docker buildx imagetools inspect ...:2.5.1` 落定後寫入範本 |
 | 5 | `metrics`/`info`/`players` 回應 JSON 精確 schema(欄位名) | 概述已知,精確欄位未逐一查證 | 實跑取樣後寫入 adapter 解析結構 |
 | 6 | 官方 RCON 是否已在特定遊戲版本「完全移除」(非僅 deprecated) | 【事實】官方宣告將停止支援;移除時點未逐版查證 | 維持 legacy 佔位即可,無需追版 |

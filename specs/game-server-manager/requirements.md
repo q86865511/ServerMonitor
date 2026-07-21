@@ -1,8 +1,9 @@
 # game-server-manager — 需求規格(requirements.md)
 
-> 建立日期:2026-07-13｜狀態:已核可(2026-07-13),經 Codex 兩輪二審深修(rev.3)
+> 建立日期:2026-07-13｜狀態:已核可(2026-07-13),經 Codex 兩輪二審深修(rev.3);實作完成 2026-07(任務全數收官,見 PROGRESS.md)
 > 需求主體使用 EARS 句式(速查表見 C:\Users\q86865511\.claude\skills\spec\SKILL.md)。
 > rev.3 已將兩輪二審的高/中嚴重發現落實至可測驗收與 design 結構;實作前仍需完成「待查證」的三個 spike。
+> 註(2026-07-21):三個 spike 已於 2026-07-13/14 產出並落檔 `spikes/`,對應任務(T4/T9/T14)均已實作收官,本段「待查證」語句僅存歷史脈絡。
 > 2026-07-16 修訂:本規格中的 Docker 綁定敘述為「Docker 後端語境」;免 Docker 的 native(本機行程)後端
 > 已由 `specs/native-backend/` 三件套接手,其等價行為與 runtime 分派見該規格。本檔僅加註、不改原文語意。
 
@@ -183,3 +184,5 @@
 - **Palworld spike(T9 指令 adapter 前置;由 T6 執行)**:官方 REST 端點/認證與 RCON 現況,鎖伺服器版本/映像 tag 或 digest。
 - **備份 spike(T4 前置)**:Windows/Docker Desktop 下 bind mount 停機快照的一致性與原子切換;named volume 策略是否需要。
 - **模組 spike(T14 前置;由 T14 執行)**:itzg 各 loader/遊戲版本支援矩陣、`AUTO_CURSEFORGE` 實際 env 行為、CurseForge API 條款/金鑰/attribution。
+
+> 註(2026-07-21):三個 spike 已於 2026-07-13/14 產出並落檔 `spikes/`,對應任務(T4/T9/T14)均已實作收官,本段「待查證」語句僅存歷史脈絡。

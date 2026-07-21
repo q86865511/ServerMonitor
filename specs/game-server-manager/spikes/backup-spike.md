@@ -12,7 +12,7 @@
 2. **完整迴圈驗證通過**:host 端 tar 打包 → sha256 → 解包到 staging → 逐檔 checksum 相符 → 新容器掛還原資料讀取正確。「停機快照 + bind mount」首版方案成立,無須改為 named volume。
 3. **原子切換用 rename-aside**:Windows `os.Rename` **不能**覆蓋既有目錄(Access denied);Restore 必須「先把現行資料 rename 到 `.old`,再把 staging rename 就位,最後刪 `.old`」。同卷 rename 為 metadata 操作,足夠原子;跨步驟崩潰由 core journal 復原。
 4. **實作定案**:`Archive` 用 Go `archive/tar` 打包實例資料根 + `crypto/sha256` 邊寫邊算 checksum;`Restore` 先驗 checksum 再解包 staging、rename-aside 切換、建**新**容器回傳新 RuntimeID。備份根由 agent 擁有(`<backupRoot>/<uuid>/<backupID>/`),對外 opaque `BackupID`。
-5. **待查**:真遊戲映像(itzg Minecraft、Palworld)資料含 symlink/大量小檔時的打包耗時與 symlink 保真 — 見文末清單。
+5. **待查**:真遊戲映像(itzg Minecraft、Palworld)資料含 symlink/大量小檔時的打包耗時與 symlink 保真 — 見文末清單。(截至 2026-07-21 仍為開放項:T16 E2E 的備份/還原僅覆核 vanilla Paper 資料,未含 Modrinth 模組安裝或 symlink 情境)
 
 ---
 
@@ -78,5 +78,5 @@
 
 - 【推論】**bind mount 效能**:Windows→容器 bind mount 經 WSL2 檔案共用,I/O 明顯慢於 named volume / WSL2 原生路徑。備份是停機一次性打包,可接受;但**執行期**重 I/O 遊戲(大型 Minecraft 世界)的日常讀寫可能受影響——非 v1 阻斷項,未來可評估 named volume + 原子交換(design 已列為替代方案)或把 dataRoot 放 WSL2 原生路徑。
 - 【推論】**權限模型**:Docker Desktop 的 Windows bind mount 對容器呈「寬鬆」權限(檔案不論容器 UID 皆可讀寫),故 itzg(uid 1000)可寫入 `/data`;與 Linux 原生 bind mount 的 uid 對應不同,但對本工具有利(免 chown)。
-- 【待查】**symlink / 大量小檔**:真遊戲資料(itzg 外掛、模組、Palworld 存檔)若含 symlink 或數萬小檔,`archive/tar` 的保真與耗時需以 T4 真 Docker 整合測試(Minecraft/Palworld)與 T14 模組情境覆核;首版 tar 以「跟隨檔案內容、記錄相對路徑」為準,symlink 依 `archive/tar` 預設行為處理。
-- 【待查】**跨磁碟區 dataRoot/backupRoot**:若使用者把 backupRoot 設在不同磁碟區,Restore 的 staging 應與 dataRoot 同卷以保 rename 原子性;實作把 staging 建在 `<dataRoot>/<uuid>/` 底下即同卷,已規避。
+- 【待查】**symlink / 大量小檔**:真遊戲資料(itzg 外掛、模組、Palworld 存檔)若含 symlink 或數萬小檔,`archive/tar` 的保真與耗時需以 T4 真 Docker 整合測試(Minecraft/Palworld)與 T14 模組情境覆核;首版 tar 以「跟隨檔案內容、記錄相對路徑」為準,symlink 依 `archive/tar` 預設行為處理。(截至 2026-07-21 仍為開放項:`internal/app/e2e_docker_test.go` 的 T16 E2E 備份/還原僅用未安裝模組的 vanilla Paper 資料,未實測 symlink 或大量小檔情境)
+- 【待查】**跨磁碟區 dataRoot/backupRoot**:若使用者把 backupRoot 設在不同磁碟區,Restore 的 staging 應與 dataRoot 同卷以保 rename 原子性;實作把 staging 建在 `<dataRoot>/<uuid>/` 底下即同卷,已規避。(已由 T4 實作覆核,2026-07:`internal/agent/docker_backup.go:115` 的 staging 路徑確為 `filepath.Join(root, ".gsm-restore-...")`,與 dataRoot 同卷)
