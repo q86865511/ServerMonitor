@@ -1,8 +1,9 @@
 # gui-redesign — 技術設計(design.md)
 
-> 建立日期:2026-07-16(2026-07-17 依 c0092e 落地內容修訂;同日依 Codex 二審 18 條修訂,rev.2)｜狀態:已核可(2026-07-17)
+> 建立日期:2026-07-16(2026-07-17 依 c0092e 落地內容修訂;同日依 Codex 二審 18 條修訂,rev.2)｜狀態:已核可(2026-07-17);實作完成 2026-07(任務全數收官,見 PROGRESS.md)
 > 對照 requirements.md;每條 R# 見需求對應表。
-> bindings 基準:**master 併入 claude/session-c0092e 後**的 app.go——既有方法+新增 DockerAvailable/CurseForgeEnabled/CurseForgeKeyConfigured/SetCurseForgeAPIKey;事件 `logs:<uuid>`/`stats:<uuid>`/`provision`(全域,payload {stage,percent,detail},含 stage="blocked-mods");DTO 新欄位 runtime/runtimes/docker_available/memory_mb/cpu_percent(已實測存在於 c0092e 的 wailsjs)。本檔引用的檔案:行號以撰寫時的 master 為準,實作時以併入後實際碼重新定位。
+> 歷史註(2026-07-21):開工前的分支基底/行號裁決語已移除——本規格已全數實作並併入 master(15/15)。
+> bindings 實際內容:既有方法+新增 DockerAvailable/CurseForgeEnabled/CurseForgeKeyConfigured/SetCurseForgeAPIKey;事件 `logs:<uuid>`/`stats:<uuid>`/`provision`(全域,payload {stage,percent,detail},含 stage="blocked-mods");DTO 新欄位 runtime/runtimes/docker_available/memory_mb/cpu_percent(已實測存在於 c0092e 的 wailsjs)。
 
 ## 架構概述
 

@@ -1,6 +1,6 @@
 # gui-redesign — 任務清單(tasks.md)
 
-> 建立日期:2026-07-16｜狀態:已核可(2026-07-17;同日依 Codex 二審 18 條修訂,rev.2)
+> 建立日期:2026-07-16｜狀態:已核可(2026-07-17;同日依 Codex 二審 18 條修訂,rev.2);實作完成 2026-07(任務全數收官,見 PROGRESS.md)
 > 本檔為 /pipeline 任務清單來源:pipeline 第 1 步直接採用本清單與 HARD/NORMAL 標記,不重新拆解。
 > 勾選(`- [x]`)只由 pipeline 第 5 步收尾回寫,其他階段不動。
 > 前置注意:開工前提=claude/session-c0092e 已併入 master(併入經使用者確認執行),重構分支自併入後的 master 開出;主 repo 工作樹目前 checkout 於 codex/graphite-ops-gui(棄用分支),實作 session 用獨立 worktree,勿基於該分支。tasks 內後端行號引用以併入後實際碼重新定位。
