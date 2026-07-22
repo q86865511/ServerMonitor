@@ -4,7 +4,7 @@
 
 **English** | [繁體中文](README.zh-TW.md)
 
-![Release](https://img.shields.io/badge/release-v0.2.0-blue)
+![Release](https://img.shields.io/badge/release-v0.3.0-blue)
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
 ![Wails](https://img.shields.io/badge/Wails-v2.13-DF0000)
 ![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)
