@@ -11,6 +11,7 @@
 ![Docker](https://img.shields.io/badge/runtime-Docker%20%7C%20Native-2496ED?logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-pure%20Go-003B57?logo=sqlite&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D4)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ## 總覽
 
@@ -161,3 +162,7 @@ specs/             # 規格驅動開發:三組 requirements/design/tasks
 | [docs/development.md](docs/development.md) | 建置、測試矩陣、依賴版本鎖定 |
 | [specs/README.md](specs/README.md) | 規格驅動開發索引(三組功能規格,均已收官) |
 | [CLAUDE.md](CLAUDE.md) | AI 輔助開發的專案約定 |
+
+## 授權
+
+本專案以 [MIT License](LICENSE) 授權。

@@ -11,6 +11,7 @@
 ![Docker](https://img.shields.io/badge/runtime-Docker%20%7C%20Native-2496ED?logo=docker&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-pure%20Go-003B57?logo=sqlite&logoColor=white)
 ![Platform](https://img.shields.io/badge/platform-Windows%2011-0078D4)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ## Overview
 
@@ -161,3 +162,7 @@ specs/             # spec-driven development: requirements/design/tasks × 3 fea
 | [docs/development.md](docs/development.md) | Build, test matrix, pinned dependency versions |
 | [specs/README.md](specs/README.md) | Spec-driven development index (3 feature suites, all shipped) |
 | [CLAUDE.md](CLAUDE.md) | Project conventions for AI-assisted development |
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
