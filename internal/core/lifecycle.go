@@ -171,6 +171,32 @@ func (o *Orchestrator) Start(ctx context.Context, uuid string) error {
 	return o.startLocked(ctx, uuid)
 }
 
+// AutoStart 是**自動重啟專用**的啟動入口(由 RestartPolicy.SetRestart 注入,取代直接注入 Start):
+// 於 per-instance lock 內先確認 DesiredState 仍為 Running,才委給 startLocked。
+//
+// 守衛的必要性:planned-stop 判定只靠 token TTL 與 agent 蓋章的 ev.TsUTC(見 handleDie),不比對
+// token 值(protocol.RuntimeEvent 刻意不攜帶 token)。遠端節點時鐘快於本機超過 TTL(2×grace)時,
+// 使用者按「停止」產生的 die 會因 TsUTC 已越過 expiresAt 而被 consumeAt 判為過期 → 誤標 Crashed →
+// 交棒 crashHook → 自動重啟把使用者刻意停掉的伺服器拉回 Running。此時 DesiredState 已由 stopLocked
+// 收斂為 Stopped,故據此拒絕:誤判最多留下一則崩潰事件/告警,不會違背使用者的停止意圖。
+// 手動 Start 與排程 Restart 不走本路徑(它們本就要把 DesiredState 改為 Running)。
+//
+// 回 nil(而非錯誤)使 RestartPolicy 不把「刻意不重啟」計為一次重試失敗、不續排退避。
+func (o *Orchestrator) AutoStart(ctx context.Context, uuid string) error {
+	lock := o.lockFor(uuid)
+	lock.Lock()
+	defer lock.Unlock()
+
+	rec, err := o.store.GetInstance(uuid)
+	if err != nil {
+		return err
+	}
+	if rec.DesiredState == protocol.InstanceStateStopped {
+		return nil
+	}
+	return o.startLocked(ctx, uuid)
+}
+
 // startLocked 是 Start 的實作(呼叫端須已持有 per-instance lock;供 Restart 內部重用)。
 func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	rec, err := o.store.GetInstance(uuid)

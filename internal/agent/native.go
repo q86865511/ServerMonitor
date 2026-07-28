@@ -1541,7 +1541,14 @@ func (b *NativeBackend) readProcMeta(uuid string) (procMeta, error) {
 }
 
 func (b *NativeBackend) writeSpec(spec protocol.InstanceSpec) error {
-	return writeJSONFile(filepath.Join(b.instanceDataRoot(spec.UUID), instanceSpecFile), spec)
+	p := filepath.Join(b.instanceDataRoot(spec.UUID), instanceSpecFile)
+	if err := writeJSONFile(p, spec); err != nil {
+		return err
+	}
+	// 與 DockerBackend.writeInstanceSpec 同理:spec 的 Env 含明文機密,權限收斂為 0600
+	// (writeJSONFile 為各中繼檔共用的 0644;Windows 上 mode 語意有限,失敗不視為錯誤)。
+	_ = os.Chmod(p, 0o600)
+	return nil
 }
 
 func (b *NativeBackend) readSpec(uuid string) (protocol.InstanceSpec, error) {

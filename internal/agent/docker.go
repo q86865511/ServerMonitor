@@ -442,15 +442,19 @@ func (b *DockerBackend) labelsFor(spec protocol.InstanceSpec) map[string]string 
 }
 
 // writeInstanceSpec 把 spec 快照寫到實例資料根(bind mount 之外)。
+// 權限 0600(而非其他中繼檔的 0644):spec 的 Env 內含明文機密(RCON 密碼等),0644 在 Linux
+// 節點上等於讓任一本機使用者 cat 得到該伺服器的 RCON 密碼。os.WriteFile 的 mode 僅在建檔時套用,
+// 故對升級前留下的既有檔補一次 Chmod 收斂權限(Windows 上 mode 語意有限,失敗不視為錯誤)。
 func (b *DockerBackend) writeInstanceSpec(spec protocol.InstanceSpec) error {
 	data, err := json.MarshalIndent(spec, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化 spec 失敗: %w", err)
 	}
 	p := filepath.Join(b.instanceDataRoot(spec.UUID), instanceSpecFile)
-	if err := os.WriteFile(p, data, 0o644); err != nil {
+	if err := os.WriteFile(p, data, 0o600); err != nil {
 		return fmt.Errorf("寫入 spec 快照失敗: %w", err)
 	}
+	_ = os.Chmod(p, 0o600)
 	return nil
 }
 

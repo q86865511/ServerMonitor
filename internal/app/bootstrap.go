@@ -421,7 +421,9 @@ func Bootstrap(opts Options) (*Runtime, error) {
 			}
 		},
 	})
-	r.restart.SetRestart(r.orch.Start, r.orch.MarkGiveup)
+	// 自動重啟走 AutoStart(非 Start):它多一道 DesiredState 守衛,使「時鐘偏移導致計畫停機被
+	// 誤判為崩潰」時不會把使用者刻意停掉的伺服器拉回 Running(見 Orchestrator.AutoStart)。
+	r.restart.SetRestart(r.orch.AutoStart, r.orch.MarkGiveup)
 
 	r.backups = core.NewBackupService(core.BackupServiceConfig{
 		Store: store, Events: events, Registry: r.registry, Orchestrator: r.orch, OpJournal: opJrnl, Now: now,

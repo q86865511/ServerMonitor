@@ -365,6 +365,8 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 // handleUploadMount 接收 body=檔案位元組(application/octet-stream),寫入實例的具名 mount
 // 宿主目錄下的 <filename>(R11 手動模組包檔)。filename 由 query 帶入並 sanitize(拒路徑分隔/..);
 // 實例或 mount 不存在 → 404;成功回 201。上傳採覆寫,天然冪等。
+// body 與 handleUploadFile 同樣以 http.MaxBytesReader 設上界(maxUploadBytes)——同一威脅模型下的
+// 孿生端點,防護須對稱:否則持有節點 token 者可對本端點無界串流塞爆節點磁碟。超限映為 413。
 func (s *Server) handleUploadMount(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("id")
 	name := r.PathValue("name")
@@ -385,8 +387,17 @@ func (s *Server) handleUploadMount(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer r.Body.Close()
-	if err := writer.WriteMountFile(r.Context(), uuid, name, filename, r.Body); err != nil {
+	body := http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	defer body.Close()
+	if err := writer.WriteMountFile(r.Context(), uuid, name, filename, body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, protocol.APIError{
+				Code:    protocol.ErrBadRequest,
+				Message: fmt.Sprintf("上傳超過大小上限 %d bytes", maxUploadBytes),
+			})
+			return
+		}
 		writeErr(w, err)
 		return
 	}

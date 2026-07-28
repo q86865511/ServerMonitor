@@ -1,0 +1,67 @@
+name: CI
+
+# 對照 README「測試」矩陣的自動化版本:預設(免 Docker)那一列在 CI 上跑。
+# 需要 Docker daemon 或真機遊戲伺服器的 build tag(docker / native)不在 CI 範圍——
+# GitHub runner 沒有這些前提,只能本機執行。
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新 push 取消尚在跑的舊 run(PR 連續 push 時省額度)。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go (vet + test)
+    # windows-latest 而非 ubuntu:本專案的 native 後端、系統匣、單一實例都是 Windows 專屬路徑,
+    # 只有在 Windows 上編譯才會實際走到那些 //go:build windows 檔。
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # frontend/dist 在版控裡只有 .gitkeep 佔位,足以讓 main.go 的 //go:embed all:frontend/dist
+      # 有東西可對(GUI 資產由 wails build 產生,CI 不需要)。
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./internal/... ./cmd/... -cover
+
+  frontend:
+    name: Frontend (build + svelte-check)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Type check
+        run: npm run check

@@ -9,8 +9,10 @@ vendor/
 # Wails 建置產出
 build/bin/
 build/windows/installer/
+# frontend/dist 只保留 .gitkeep 佔位:main.go 的 //go:embed all:frontend/dist 需要目錄內至少
+# 有一個檔案,否則 fresh clone 直接 `go build ./...` 會噴 no matching files found。
 frontend/dist/*
-!frontend/dist/gitkeep
+!frontend/dist/.gitkeep
 frontend/node_modules/
 node_modules/
 

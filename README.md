@@ -4,6 +4,7 @@
 
 **English** | [繁體中文](README.zh-TW.md)
 
+[![CI](https://github.com/q86865511/ServerMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/q86865511/ServerMonitor/actions/workflows/ci.yml)
 ![Release](https://img.shields.io/badge/release-v0.3.0-blue)
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
 ![Wails](https://img.shields.io/badge/Wails-v2.13-DF0000)
@@ -27,7 +28,7 @@ ServerMonitor is a Windows desktop tool for running and monitoring game dedicate
 - **Multi-node by construction** — the core talks to node agents over HTTP even on localhost. Remote Linux nodes run a single static agent binary with auto-generated persistent token + self-signed TLS, pinned in the GUI by SHA-256 fingerprint (TOFU); a swapped certificate is refused outright.
 - **Path confinement as a hard rule** — every host path derived from an instance UUID, backup id, or user-supplied relative path passes a three-layer guard (clean → within-root check via `filepath.Rel` → per-segment `Lstat` refusing symlinks/junctions), closing traversal and link-following attacks including Windows junctions.
 - **Crash recovery state machine** — protocol-aware readiness probes (RCON/REST, not just TCP), restart with retry caps, OOM-specific alerts distinguished from generic crashes, and orphan adoption: closing the tool never kills servers, and a restarted agent re-adopts still-running processes.
-- **Secrets never touch disk in plaintext** — RCON passwords, node tokens, webhook URLs, and API keys live in the OS keyring (Windows Credential Manager); plaintext keys pasted into config are migrated into the keyring on next start and scrubbed from the file.
+- **Secrets stay out of the core's files** — RCON passwords, node tokens, webhook URLs, and API keys live in the OS keyring (Windows Credential Manager), never in the SQLite database or config files; plaintext keys pasted into config are migrated into the keyring on next start and scrubbed from the file. On a node, the secrets a server actually needs to run reach it as an `instance.json` spec snapshot written `0600` inside the instance data root, excluded from the file manager and from backups.
 - **Consistent backups** — quiesce/announce hooks, offline tar snapshots with checksums, scheduled or manual, restorable across Docker ↔ native.
 
 ## Architecture
@@ -84,12 +85,15 @@ Live log console with level filters, search, and an interactive RCON command lin
 Requires Go 1.26+, Node 18+, and Wails CLI v2.13 (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`).
 
 ```bash
+cd frontend && npm ci && npm run build && cd ..   # build the embedded frontend bundle first
 go build ./...        # compile all packages
 wails dev             # development mode (GUI)
 wails build           # produce the Windows executable
 wails build -nsis     # additionally produce the NSIS installer
 go build ./cmd/agent  # headless node agent for remote nodes
 ```
+
+`main.go` embeds `frontend/dist` via `//go:embed`; a fresh clone ships only a `.gitkeep` placeholder there, so `go build ./...` compiles but serves no UI until the frontend bundle is built. `wails dev` / `wails build` run the frontend build themselves.
 
 ## Testing
 

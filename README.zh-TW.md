@@ -4,6 +4,7 @@
 
 [English](README.md) | **繁體中文**
 
+[![CI](https://github.com/q86865511/ServerMonitor/actions/workflows/ci.yml/badge.svg)](https://github.com/q86865511/ServerMonitor/actions/workflows/ci.yml)
 ![Release](https://img.shields.io/badge/release-v0.3.0-blue)
 ![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?logo=go&logoColor=white)
 ![Wails](https://img.shields.io/badge/Wails-v2.13-DF0000)
@@ -27,7 +28,7 @@ ServerMonitor 是 Windows 桌面工具,用來執行與監控遊戲專用伺服�
 - **天生多節點** — 核心即使對本機也走 HTTP 與節點代理溝通。遠端 Linux 節點跑單一靜態 agent 執行檔,自動產生持久 token 與自簽 TLS 憑證,GUI 以 SHA-256 指紋釘選(TOFU);憑證被換直接拒連。
 - **路徑拘束是硬規則** — 任何由實例 UUID、備份 id 或使用者相對路徑拼出的宿主路徑,都要過三層防禦(clean → `filepath.Rel` within-root 檢查 → 逐段 `Lstat` 拒絕 symlink/junction),封死路徑遍歷與連結穿越攻擊(含 Windows junction)。
 - **崩潰復原狀態機** — 協定感知的就緒探針(RCON/REST,不只 TCP)、有重試上限的自動重啟、與一般 crash 區分的 OOM 告警、孤兒收養:關掉工具不會殺伺服器,agent 重啟後自動接管仍在跑的行程。
-- **機密不以明文落地** — RCON 密碼、節點 token、webhook URL、API 金鑰全存 OS 金鑰庫(Windows 認證管理員);貼進設定檔的明文金鑰下次啟動自動遷入金鑰庫並從檔案抹除。
+- **機密不落在核心自己的檔案裡** — RCON 密碼、節點 token、webhook URL、API 金鑰全存 OS 金鑰庫(Windows 認證管理員),不進 SQLite 資料庫與設定檔;貼進設定檔的明文金鑰下次啟動自動遷入金鑰庫並從檔案抹除。節點端為了把伺服器跑起來所需的機密,以 `instance.json` spec 快照寫在實例資料根(權限 0600),不開放檔案管理存取、不入備份。
 - **一致性備份** — quiesce/announce hook、停機一致 tar 快照 + checksum,支援排程與手動,可跨 Docker ↔ native 還原。
 
 ## 架構
@@ -84,12 +85,15 @@ flowchart LR
 需 Go 1.26+、Node 18+、Wails CLI v2.13(`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`)。
 
 ```bash
+cd frontend && npm ci && npm run build && cd ..   # 先建置要被內嵌的前端產出
 go build ./...        # 編譯全部套件
 wails dev             # 開發模式(GUI)
 wails build           # 產出 Windows 可執行檔
 wails build -nsis     # 另產出 NSIS 安裝包
 go build ./cmd/agent  # 遠端節點用的無 GUI 節點代理
 ```
+
+`main.go` 以 `//go:embed` 內嵌 `frontend/dist`;fresh clone 只帶一個 `.gitkeep` 佔位,故 `go build ./...` 可過但尚無 UI 可服務,需先跑上面的前端建置。`wails dev` / `wails build` 會自行建置前端。
 
 ## 測試
 

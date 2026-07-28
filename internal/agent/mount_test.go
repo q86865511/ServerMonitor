@@ -114,6 +114,31 @@ func TestUploadMount_InstanceNotFound(t *testing.T) {
 	}
 }
 
+// TestUploadMount_SizeLimit:mount 上傳與檔案上傳(見 TestFilesEndpoints_UploadSizeLimit)同受
+// maxUploadBytes 上界約束 —— 超限 → 413 且不落檔;上限內仍正常 201。maxUploadBytes 為 var,
+// 此處注入小值免真的送 16 GiB。
+func TestUploadMount_SizeLimit(t *testing.T) {
+	backend := NewMockBackend()
+	_, _ = backend.Create(context.Background(), specWithMount("u1", "modpack", "/modpacks"))
+	hs := newTestServer(t, backend)
+
+	orig := maxUploadBytes
+	maxUploadBytes = 8
+	t.Cleanup(func() { maxUploadBytes = orig })
+
+	if s := uploadMountReq(t, hs.URL, "u1", "modpack", "big.mrpack", testToken, []byte("way more than eight bytes")); s != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超限上傳 status = %d, 期望 413", s)
+	}
+	if _, ok := backend.MountFile("u1", "modpack", "big.mrpack"); ok {
+		t.Fatal("超限上傳不應寫入 mount 檔")
+	}
+
+	maxUploadBytes = 1 << 20
+	if s := uploadMountReq(t, hs.URL, "u1", "modpack", "ok.mrpack", testToken, []byte("small")); s != http.StatusCreated {
+		t.Fatalf("上限內上傳 status = %d, 期望 201", s)
+	}
+}
+
 // TestUploadMount_MountNotDeclared:實例存在但未宣告該 mount → 404。
 func TestUploadMount_MountNotDeclared(t *testing.T) {
 	backend := NewMockBackend()

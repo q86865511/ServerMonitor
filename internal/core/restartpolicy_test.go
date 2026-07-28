@@ -310,4 +310,73 @@ func TestRestartPolicy_PlannedStopNoRestart(t *testing.T) {
 	}
 }
 
+// TestRestartPolicy_ClockSkewMisjudgedStopNotRestarted 驗證 DesiredState 守衛(Orchestrator.AutoStart):
+// 遠端節點時鐘快於核心超過 planned-stop token TTL(2×grace,預設 60s)時,使用者刻意停止產生的 die 會
+// 因 agent 蓋章的 TsUTC 已越過 expiresAt 而被 consumeAt 判為過期 → 誤標 Crashed → 交棒 crashHook。
+// 此時 DesiredState 已由 stopLocked 收斂為 Stopped,自動重啟必須放行不啟動:誤判最多留下一則崩潰事件,
+// 不得把使用者停掉的伺服器拉回 Running。若把注入改回 orch.Start,本測試會紅——即回歸守衛。
+func TestRestartPolicy_ClockSkewMisjudgedStopNotRestarted(t *testing.T) {
+	env := newT11Env(t, map[string]string{"life": lifeTestTemplate}, false)
+	policy := NewRestartPolicy(RestartPolicyConfig{
+		Store: env.store, Events: env.events,
+		Backoff: func(int) time.Duration { return 10 * time.Millisecond },
+	})
+	orch := NewOrchestrator(OrchestratorConfig{
+		Store: env.store, Events: env.events, Registry: env.reg, CrashHook: policy.OnCrash,
+	})
+	policy.SetRestart(orch.AutoStart, orch.markGiveup) // 與 app.Bootstrap 的接線一致
+
+	env.create("life", "cs-1")
+	if err := orch.Start(context.Background(), "cs-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	rec, _ := env.store.GetInstance("cs-1")
+
+	if err := orch.Stop(context.Background(), "cs-1"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	// 節點時鐘快 90s(> TTL 60s):die 的 TsUTC 越過 expiresAt → token 判過期 → 誤判為崩潰。
+	orch.HandleRuntimeEvent(context.Background(), "local", protocol.RuntimeEvent{
+		ID: rec.RuntimeID, Kind: protocol.RuntimeEventDie, ExitCode: intPtr(0),
+		TsUTC: time.Now().Add(90 * time.Second),
+	})
+	if n := env.countEvents(protocol.EventInstanceCrashed); n != 1 {
+		t.Fatalf("前提不成立:時鐘偏移應使計畫停機 die 被誤判為崩潰, INSTANCE_CRASHED = %d 期望 1", n)
+	}
+
+	time.Sleep(200 * time.Millisecond) // 遠大於 10ms 退避:若守衛失效,重啟早已完成
+	if got := env.state("cs-1"); got == protocol.InstanceStateRunning {
+		t.Error("使用者刻意停止的實例不得被誤判崩潰的自動重啟拉回 Running")
+	}
+	after, _ := env.store.GetInstance("cs-1")
+	if after.DesiredState != protocol.InstanceStateStopped {
+		t.Errorf("desired = %s, 期望維持 Stopped", after.DesiredState)
+	}
+}
+
+// TestRestartPolicy_AutoStartRestartsGenuineCrash 驗證 DesiredState 守衛不誤傷真崩潰:desired 仍為
+// Running 的實例崩潰後,AutoStart 照常委給 startLocked 重啟回 Running(守衛只擋 desired=Stopped)。
+func TestRestartPolicy_AutoStartRestartsGenuineCrash(t *testing.T) {
+	env := newT11Env(t, map[string]string{"life": lifeTestTemplate}, false)
+	policy := NewRestartPolicy(RestartPolicyConfig{
+		Store: env.store, Events: env.events,
+		Backoff: func(int) time.Duration { return 10 * time.Millisecond },
+	})
+	orch := NewOrchestrator(OrchestratorConfig{
+		Store: env.store, Events: env.events, Registry: env.reg, CrashHook: policy.OnCrash,
+	})
+	policy.SetRestart(orch.AutoStart, orch.markGiveup)
+
+	env.create("life", "gc-1")
+	if err := orch.Start(context.Background(), "gc-1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	rec, _ := env.store.GetInstance("gc-1")
+
+	orch.HandleRuntimeEvent(context.Background(), "local", protocol.RuntimeEvent{
+		ID: rec.RuntimeID, Kind: protocol.RuntimeEventDie, ExitCode: intPtr(1), TsUTC: time.Now(),
+	})
+	env.waitState("gc-1", protocol.InstanceStateRunning, 3*time.Second)
+}
+
 func intPtr(n int) *int { return &n }
