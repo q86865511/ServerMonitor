@@ -234,6 +234,90 @@ func TestOrchestrator_StartReadyTimeout(t *testing.T) {
 	if got := h.state(t, "to-1"); got != protocol.InstanceStateError {
 		t.Errorf("就緒逾時後 observed = %s, 期望 Error", got)
 	}
+	// 缺陷修復(稽查發現的主症狀):啟動就緒逾時先前完全不記事件,使用者在事件頁查無任何線索。
+	if n := h.countEvents(t, protocol.EventInstanceStartFailed); n != 1 {
+		t.Errorf("INSTANCE_START_FAILED = %d, 期望 1", n)
+	}
+}
+
+// TestOrchestrator_StartAgentFailureRecordsEvent 驗證代理 Start 呼叫本身失敗(尚未進入就緒輪詢)
+// 時同樣記 INSTANCE_START_FAILED——先前此路徑只 forceObserved(Error)+回錯誤,不記任何事件。
+func TestOrchestrator_StartAgentFailureRecordsEvent(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	rec := h.createInstance(t, "sf-1")
+	// 建立後(尚未啟動)直接從代理端移除容器,使後續 Start 呼叫代理時因容器已不存在而失敗。
+	if err := h.backend.Remove(context.Background(), rec.RuntimeID, agent.RemoveOpts{}); err != nil {
+		t.Fatalf("移除容器: %v", err)
+	}
+
+	err := h.orch.Start(context.Background(), "sf-1")
+	if err == nil {
+		t.Fatal("代理容器已不存在,Start 應失敗")
+	}
+	if got := h.state(t, "sf-1"); got != protocol.InstanceStateError {
+		t.Errorf("代理啟動失敗後 observed = %s, 期望 Error", got)
+	}
+	if n := h.countEvents(t, protocol.EventInstanceStartFailed); n != 1 {
+		t.Errorf("INSTANCE_START_FAILED = %d, 期望 1", n)
+	}
+}
+
+// TestOrchestrator_StopAgentFailureRecordsEvent 驗證代理 Stop 呼叫失敗時記 INSTANCE_STOP_FAILED
+// (與 StartFailed 同一缺口家族修復:先前此路徑只 forceObserved(Error)+回錯誤,不記任何事件)。
+func TestOrchestrator_StopAgentFailureRecordsEvent(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	rec := h.createInstance(t, "spf-1")
+	h.startInstance(t, "spf-1")
+	// 從代理端直接移除容器,使後續 Stop 呼叫代理時因容器已不存在而失敗。
+	if err := h.backend.Remove(context.Background(), rec.RuntimeID, agent.RemoveOpts{}); err != nil {
+		t.Fatalf("移除容器: %v", err)
+	}
+
+	err := h.orch.Stop(context.Background(), "spf-1")
+	if err == nil {
+		t.Fatal("代理容器已不存在,Stop 應失敗")
+	}
+	if got := h.state(t, "spf-1"); got != protocol.InstanceStateError {
+		t.Errorf("代理停止失敗後 observed = %s, 期望 Error", got)
+	}
+	if n := h.countEvents(t, protocol.EventInstanceStopFailed); n != 1 {
+		t.Errorf("INSTANCE_STOP_FAILED = %d, 期望 1", n)
+	}
+}
+
+// TestOrchestrator_StartIdempotentSyncsDesiredState 驗證冪等短路(已 Running)仍會把 desired 收斂
+// 為 Running(缺陷修復):外部手動啟動容器後,對帳把 observed 修正為 Running,但 desired 若殘留
+// Stopped(使用者先前按過停止),之後崩潰時 AutoStart 會誤判使用者曾要求停止而放棄自動重啟。
+func TestOrchestrator_StartIdempotentSyncsDesiredState(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	h.createInstance(t, "idd-1")
+	h.startInstance(t, "idd-1")
+
+	// 模擬「observed 已是 Running,但 desired 仍停留在 Stopped」的不一致(對帳修正 observed 後、
+	// 使用者按啟動前的瞬間)。
+	rec, err := h.store.GetInstance("idd-1")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	rec.DesiredState = protocol.InstanceStateStopped
+	if err := h.store.UpsertInstance(rec); err != nil {
+		t.Fatalf("UpsertInstance: %v", err)
+	}
+
+	if err := h.orch.Start(context.Background(), "idd-1"); err != nil {
+		t.Fatalf("冪等 Start 不應報錯: %v", err)
+	}
+	after, err := h.store.GetInstance("idd-1")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	if after.DesiredState != protocol.InstanceStateRunning {
+		t.Errorf("冪等短路後 desired = %s, 期望 Running", after.DesiredState)
+	}
+	// 冪等短路未呼叫代理、未產生 planned-stop token,不應被計為一次操作世代。
+	if after.OpGeneration != rec.OpGeneration {
+		t.Errorf("冪等短路不應遞增 OpGeneration, 得 %d(原 %d)", after.OpGeneration, rec.OpGeneration)
+	}
 }
 
 func TestOrchestrator_RestartSameRuntimeID(t *testing.T) {

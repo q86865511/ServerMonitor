@@ -255,6 +255,65 @@ func TestScheduler_BackupFailureAlerts(t *testing.T) {
 	}
 }
 
+// ---- 排程重啟失敗的可觀測性(缺陷修復:先前 announce/restart 錯誤皆 `_ =` 丟棄,完全靜默) ----
+
+// TestScheduler_RestartFailureRecordsEventAndAlerts 驗證排程重啟失敗會記 INSTANCE_START_FAILED
+// 並比照 fireBackup 經 AlertSink 告警,不再完全靜默。
+func TestScheduler_RestartFailureRecordsEventAndAlerts(t *testing.T) {
+	store, events := schedTestStore(t)
+	sink := &fakeAlertSink{}
+	s := NewScheduler(SchedulerConfig{
+		Store: store, Events: events, Alerts: sink,
+		Restart: func(context.Context, string) error {
+			return errors.New("代理離線")
+		},
+	})
+	if _, err := s.CreateSchedule("inst-rf", ScheduleKindRestart, ScheduleSpec{At: "04:30"}, true); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	at := time.Date(2026, 1, 5, 4, 30, 0, 0, time.UTC)
+	s.Tick(context.Background(), at)
+	s.Wait() // 動作已改為 goroutine 非同步派出(#5),斷言前需等待完成
+
+	if n := countCode(t, events, protocol.EventInstanceStartFailed); n != 1 {
+		t.Errorf("INSTANCE_START_FAILED = %d, 期望 1", n)
+	}
+	if sink.count() != 1 {
+		t.Errorf("排程重啟失敗應發告警 1 次, 得 %d", sink.count())
+	}
+	if n := countCode(t, events, protocol.EventAlertSent); n != 1 {
+		t.Errorf("ALERT_SENT = %d, 期望 1", n)
+	}
+}
+
+// TestScheduler_RestartAnnounceFailureDoesNotBlockButLogs 驗證 announce 失敗維持 best-effort
+// (不阻擋重啟),但仍記 HOOK_FAILED 供事後查閱(而非完全丟棄)。
+func TestScheduler_RestartAnnounceFailureDoesNotBlockButLogs(t *testing.T) {
+	store, events := schedTestStore(t)
+	var restarted int32
+	s := NewScheduler(SchedulerConfig{
+		Store: store, Events: events,
+		Announce: func(context.Context, string) error { return errors.New("公告逾時") },
+		Restart: func(context.Context, string) error {
+			atomic.AddInt32(&restarted, 1)
+			return nil
+		},
+	})
+	if _, err := s.CreateSchedule("inst-an", ScheduleKindRestart, ScheduleSpec{At: "04:30"}, true); err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	at := time.Date(2026, 1, 5, 4, 30, 0, 0, time.UTC)
+	s.Tick(context.Background(), at)
+	s.Wait()
+
+	if atomic.LoadInt32(&restarted) != 1 {
+		t.Errorf("announce 失敗不應阻擋重啟, restarted = %d", restarted)
+	}
+	if n := countCode(t, events, EventHookFailed); n != 1 {
+		t.Errorf("HOOK_FAILED = %d, 期望 1", n)
+	}
+}
+
 // ---- 雙審修正 #4:Run 進入輪詢迴圈前先評估一次當下時刻 ----
 
 // TestScheduler_RunTicksImmediatelyOnStart 驗證 Run 不等待首個 ticker 週期就先評估一次:
