@@ -26,20 +26,28 @@
   let updateWebhook = $state(false);
   let webhookUrl = $state('');
 
+  // 遞增序號:load() 可能因 uuid 切換而併發(舊 uuid 慢回應晚到);回應套用前檢查自己仍是
+  // 最新一次呼叫,否則丟棄(同 stores/instances.ts 的 refreshSeq)——避免 A 的回應在切到 B 之後
+  // 覆寫表單,使用者按「儲存」把 A 的門檻/webhook 誤寫到 B。
+  let loadSeq = 0;
+
   async function load(): Promise<void> {
+    const seq = ++loadSeq;
     loading = true;
     loadError = '';
     try {
       const s: main.AlertSettingsDTO = await call(() => GetAlertSettings(uuid), { silent: true });
+      if (seq !== loadSeq) return; // 已有更新的 load 在途,丟棄此次舊回應
       webhookConfigured = s.webhook_configured;
       cpuStr = s.cpu_percent > 0 ? String(s.cpu_percent) : '';
       memStr = s.memory_percent > 0 ? String(s.memory_percent) : '';
       updateWebhook = false;
       webhookUrl = '';
     } catch (e) {
+      if (seq !== loadSeq) return;
       loadError = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 

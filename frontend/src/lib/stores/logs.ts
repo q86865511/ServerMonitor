@@ -68,6 +68,12 @@ interface Entry {
   gen: number;
   /** Subscribe/Unsubscribe RPC 序列化操作鏈(語意同 stores/metrics.ts 的 Entry.chain)。 */
   chain: Promise<void>;
+  /**
+   * B10 轉態基準(上次通報的 running 狀態);null=尚未通報過。刻意存在 entry(隨 uuid 存活)
+   * 而非元件實體變數——後者在元件卸載(切分頁)時會重置,導致卸載期間發生的「非 Running→
+   * Running」轉態在下次掛載時無法被偵測到,見 resubscribeLogs/noteRunning 註解。
+   */
+  lastRunning: boolean | null;
 }
 
 const entries = new Map<string, Entry>();
@@ -87,6 +93,7 @@ function ensure(uuid: string): Entry {
       flushTimer: null,
       gen: 0,
       chain: Promise.resolve(),
+      lastRunning: null,
     };
     entries.set(uuid, e);
   }
@@ -204,4 +211,19 @@ export function resubscribeLogs(uuid: string): void {
   if (!e || !e.subscribed || e.refCount === 0) return;
   teardown(e, uuid);
   subscribe(e, uuid);
+}
+
+/**
+ * 通報目前 running 狀態,於「非 Running→Running」轉態時觸發 resubscribeLogs(B10)。
+ * 轉態基準存於 store entry.lastRunning(隨 uuid 存活),不像 ConsoleTab 過去用的元件實體變數
+ * 會在卸載/掛載間重置——修正「停止實例→切到其他分頁(元件卸載,進入 30s 延遲釋放但
+ * subscribed 仍 true)→啟動→30 秒內切回主控台(元件重新掛載)」序列下,轉態發生在卸載期間
+ * 無人通報、掛載當下又把 uuid 首次出現誤判為「換頁/首次」而不重訂閱,導致日誌永久靜默。
+ * 首次通報(entry 剛建立、lastRunning 為 null)只記錄基準,不觸發。
+ */
+export function noteRunning(uuid: string, isRunning: boolean): void {
+  const e = ensure(uuid);
+  const prev = e.lastRunning;
+  e.lastRunning = isRunning;
+  if (prev !== null && !prev && isRunning) resubscribeLogs(uuid);
 }

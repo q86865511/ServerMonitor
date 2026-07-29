@@ -146,7 +146,9 @@
       removeImageTarget = null;
       await loadImages();
     } catch (e) {
-      const hint = !forceImage && t.containers > 0 ? '(映像正被容器使用,可勾選「強制刪除」)' : '';
+      // containers 為 -1 表 Docker API 未計算(ContainerCount 未生效),視同「未知」一併提示;
+      // 僅 containers === 0(確定無容器使用)才不提示。
+      const hint = !forceImage && t.containers !== 0 ? '(映像正被容器使用,可勾選「強制刪除」)' : '';
       pushToast('error', `刪除映像失敗:${errMsg(e)}${hint}`);
     } finally {
       removingImage = false;
@@ -220,7 +222,11 @@
   <span>{fmtBytes(im.size_bytes)}</span>
 {/snippet}
 {#snippet imgContainersCell(im: main.ImageDTO)}
-  <span class:muted={im.containers === 0}>{im.containers}</span>
+  {#if im.containers < 0}
+    <span class="muted">不適用</span>
+  {:else}
+    <span class:muted={im.containers === 0}>{im.containers}</span>
+  {/if}
 {/snippet}
 {#snippet imgCreatedCell(im: main.ImageDTO)}
   <span class="muted">{fmtTime(im.created)}</span>

@@ -6,7 +6,7 @@
     metricSamples,
     acquireMetrics,
     releaseMetrics,
-    resubscribeMetrics,
+    noteRunning,
     cpuTrend,
     ramPercentTrend,
     type MetricSample,
@@ -62,20 +62,11 @@
     };
   });
 
-  // B10:停止再啟動同實例(不離頁)後即時 stats 靜默——後端 fanout 隨 channel 關閉結束,前端訂閱狀態
-  // 殘留(上方 effect 僅隨 uuid 重跑)。於「非 Running→Running」轉態時重建訂閱使即時指標恢復。
-  let reSubUuid = '';
-  let prevRunning = false;
+  // ---- B10:停止再啟動同實例後即時指標靜默——轉態基準交給 metrics store(entry.lastRunning)
+  // 判定,不用元件實體變數(後者在切分頁卸載/掛載間會重置,無法偵測「卸載期間發生的轉態」,
+  // 見 stores/metrics.ts noteRunning 註解)。
   $effect(() => {
-    const id = uuid;
-    const isRunning = inst.observed_state === 'Running';
-    if (id !== reSubUuid) {
-      reSubUuid = id;
-      prevRunning = isRunning;
-      return;
-    }
-    if (isRunning && !prevRunning) resubscribeMetrics(id);
-    prevRunning = isRunning;
+    noteRunning(uuid, inst.observed_state === 'Running');
   });
 
   const cpuSeries = $derived<TrendSeries[]>([
