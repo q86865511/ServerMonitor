@@ -114,6 +114,8 @@ The E2E suites exercise the real thing: create → start → probe readiness →
 ### Lifecycle & Provisioning
 Serialized, idempotent operations with atomic creation and port reservation. Long operations (create/start/stop/restart/backup) stream stage-level progress (pulling image / installing / waiting for readiness) into the console and a global operations panel.
 
+Host ports are per instance, not per template: the create wizard lets you override any declared port, and a port declared `host_port = 0` (or set to auto in the wizard) is assigned by the core at creation time — it picks a free port starting from the template's container port, avoiding both existing reservations and ports already bound on the host. Command protocols and health probes resolve against the instance's actual reservation rather than the template's declared value, so a second server of the same game works end to end without editing templates.
+
 ### Monitoring & Consoles
 CPU/RAM/disk and player-count polling with 15-second aggregated time series persisted for 36 hours (charts draw gaps for missing data instead of faking zeros); a live log console with backpressure-safe fanout; an interactive command console speaking RCON (Minecraft) or named REST actions with Basic Auth (Palworld).
 
