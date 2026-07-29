@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,34 @@ var ErrModpackIncompatible = errors.New("provision: 模組包版本/loader 不�
 // maxMrpackIndexBytes 是讀取 modrinth.index.json 的上限,防禦高壓縮比條目(zip bomb);沿用
 // internal/core/modpack.go 的索引檔讀取上限慣例(該檔獨立持有,不跨套件相依)。
 const maxMrpackIndexBytes = 32 << 20
+
+// defaultAllowedModpackDownloadHosts 是 mrpack files[].downloads 下載連結允許的網域白名單
+// (SSRF 防禦):modrinth.index.json 由第三方(Modrinth 使用者上傳的模組包)提供,downloads 陣列
+// 可填任意 URL——若不限制網域,持有節點 token 者可誘使節點對任意內部/外部位址發起請求。僅允許
+// Modrinth 官方 CDN/API 網域,且 scheme 一律限 https(見 validateModpackDownloadURL)。呼叫端
+// (ModrinthProvider.allowedDownloadHosts)會併入其自身設定的 API host,供自架代理/測試使用。
+var defaultAllowedModpackDownloadHosts = map[string]struct{}{
+	"cdn.modrinth.com": {},
+	"api.modrinth.com": {},
+}
+
+// validateModpackDownloadURL 拒絕 host 不在 allowedHosts 白名單、或 scheme 不安全的下載連結;
+// scheme 恆允許 https,allowInsecure 為真時額外允許 http(供呼叫端自身以 http 設定的 API host
+// 使用,見 ModrinthProvider.allowInsecureDownload——正式部署的預設 API host 恆為 https,故正式
+// 流程下 allowInsecure 恆為 false)。被拒時回傳含被拒 host 的明確錯誤,不靜默跳過該檔案。
+func validateModpackDownloadURL(rawURL string, allowedHosts map[string]struct{}, allowInsecure bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("provision: 模組包下載連結格式錯誤 %q: %w", rawURL, err)
+	}
+	if u.Scheme != "https" && !(allowInsecure && u.Scheme == "http") {
+		return fmt.Errorf("provision: 模組包下載連結 scheme 不允許 %q(僅允許 https)", rawURL)
+	}
+	if _, ok := allowedHosts[u.Hostname()]; !ok {
+		return fmt.Errorf("provision: 模組包下載連結網域不在白名單,拒絕: %q", u.Hostname())
+	}
+	return nil
+}
 
 // ModpackRef 描述一個遠端模組包來源(對映 protocol.ModpackRef,本套件刻意不依賴 protocol,
 // 由呼叫端 adapter 轉譯,同 ProvisionProgress 的解耦慣例)。
@@ -82,8 +111,9 @@ type mrpackFile struct {
 
 // installMrpackArchive 是 mrpack 安裝的共用核心邏輯(解析 index → 相容性檢查 → 逐檔下載校驗 →
 // 解 overrides),供 ModrinthProvider 於「已取得本機封存檔」後呼叫——不論該檔是遠端解析下載而來,
-// 抑或使用者手動上傳(見 native.go WriteMountFile)。
-func installMrpackArchive(ctx context.Context, client *http.Client, archivePath, targetDir, mcVersion, loader string, progress ProgressFunc) error {
+// 抑或使用者手動上傳(見 native.go WriteMountFile)。allowedHosts/allowInsecure 見
+// validateModpackDownloadURL;由呼叫端決定(生產路徑用 ModrinthProvider.allowedDownloadHosts 等)。
+func installMrpackArchive(ctx context.Context, client *http.Client, archivePath, targetDir, mcVersion, loader string, progress ProgressFunc, allowedHosts map[string]struct{}, allowInsecure bool) error {
 	idx, err := readMrpackIndex(archivePath)
 	if err != nil {
 		return err
@@ -105,6 +135,9 @@ func installMrpackArchive(ctx context.Context, client *http.Client, archivePath,
 		}
 		if len(f.Downloads) == 0 {
 			return fmt.Errorf("provision: 模組包檔案 %q 無下載連結", f.Path)
+		}
+		if err := validateModpackDownloadURL(f.Downloads[0], allowedHosts, allowInsecure); err != nil {
+			return err
 		}
 		dest, err := safeModpackFilePath(targetDir, f.Path)
 		if err != nil {

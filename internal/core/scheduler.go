@@ -240,12 +240,34 @@ func (s *Scheduler) fire(ctx context.Context, rec ScheduleRecord) {
 }
 
 // fireRestart 排程重啟:先最佳努力公告(範本有 hooks.announce 才發、失敗不阻擋)→ 重啟。
+// 重啟失敗比照 fireBackup 記事件並經 AlertSink 告警(缺陷修復:先前失敗僅 `_ =` 丟棄,夜間排程
+// 重啟失敗完全靜默、使用者無從得知);announce 失敗維持 best-effort 不阻擋,但仍記 HOOK_FAILED
+// 供事後查閱(與 lifecycle.go runStopHook 的 hooks.stop 失敗記法同慣例)。
 func (s *Scheduler) fireRestart(ctx context.Context, uuid string) {
 	if s.announce != nil {
-		_ = s.announce(ctx, uuid) // best-effort:無 hook / 失敗皆不阻擋重啟
+		if aerr := s.announce(ctx, uuid); aerr != nil {
+			s.record(uuid, EventHookFailed, protocol.SeverityWarning, map[string]any{
+				"hook":  "announce",
+				"error": aerr.Error(),
+			})
+		}
 	}
-	if s.restart != nil {
-		_ = s.restart(ctx, uuid)
+	if s.restart == nil {
+		return
+	}
+	if rerr := s.restart(ctx, uuid); rerr != nil {
+		// 重用 INSTANCE_START_FAILED:重啟(Stop→Start)不論敗於哪個階段,對使用者可觀測的結果
+		// 都是「排程重啟未能讓實例回到 Running」,錯誤字串已含 Restart 內部標註的階段前綴
+		// (見 lifecycle.go Restart 的 "restart 停止/啟動階段失敗" 包裝),供事後判讀確切階段。
+		ev := s.record(uuid, protocol.EventInstanceStartFailed, protocol.SeverityError,
+			map[string]any{"error": rerr.Error(), "source": "scheduled_restart"})
+		if aerr := s.alerts.Alert(ctx, ev); aerr != nil {
+			s.record(uuid, protocol.EventAlertFailed, protocol.SeverityWarning,
+				map[string]any{"alert_code": string(protocol.EventInstanceStartFailed), "error": aerr.Error()})
+		} else {
+			s.record(uuid, protocol.EventAlertSent, protocol.SeverityInfo,
+				map[string]any{"alert_code": string(protocol.EventInstanceStartFailed)})
+		}
 	}
 }
 

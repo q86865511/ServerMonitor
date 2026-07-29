@@ -254,13 +254,21 @@ func indexByUUID(insts []InstanceRecord) map[string]InstanceRecord {
 }
 
 // expectsContainer 回報某 observed 狀態是否隱含「應有容器存在」(據以判斷容器缺失是否為不一致)。
+//
+// Error 刻意與 Created/Starting/Running/Stopping 同歸為「容器缺失即不一致」(缺陷修復):Error
+// 本身不像 Crashed 承載明確的崩潰資訊,只表示「上次操作以不確定的失敗狀態收場」——啟動失敗、卡死
+// 復原強制停止失敗、對帳放棄(RESTART_GIVEUP)皆可能落入此狀態,而容器當下是否還存在並不確定。
+// 若容器已不存在,維持 Error 會使該實例卡死(GUI 只剩「移除實例」,無法重新啟動);既然容器確定
+// 不存在,收斂為 Stopped 讓使用者能照正常路徑重新啟動。Crashed 則不放寬:它承載崩潰時的退出碼等
+// 診斷資訊,使用者需要看到「崩潰過」而非被静默改寫為 Stopped,且崩潰迴圈自有 RestartPolicy 收斂。
 func expectsContainer(s protocol.InstanceState) bool {
 	switch s {
 	case protocol.InstanceStateCreated, protocol.InstanceStateStarting,
-		protocol.InstanceStateRunning, protocol.InstanceStateStopping:
+		protocol.InstanceStateRunning, protocol.InstanceStateStopping,
+		protocol.InstanceStateError:
 		return true
 	default:
-		// Stopped/Crashed/Error/Offline/BackingUp/Restoring:容器缺失不視為新的不一致。
+		// Stopped/Crashed/Offline/BackingUp/Restoring:容器缺失不視為新的不一致。
 		return false
 	}
 }

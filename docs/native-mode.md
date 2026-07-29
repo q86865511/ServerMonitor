@@ -6,7 +6,7 @@
 
 - **runtime 選擇(逐實例)**:建立實例時可選執行後端。**Windows 預設 native**;偵測到 Docker 可用時亦可改選 docker(Docker 不可用時 docker 選項置灰並說明原因)。Linux 平台強制 Docker(native 選項不可見)。範本以 `[docker]`/`[native]` 區段宣告支援哪些後端(兩者至少其一;僅含其一時該遊戲只能以該 runtime 建立)。
 - **支援矩陣**:
-  - Minecraft 五種 loader:**Vanilla**(Mojang manifest + sha1)、**Paper**(PaperMC v3 Fill API + sha256)、**Fabric**(官方 installer)、**Forge**/**NeoForge**(官方 `--installServer` 產出 `run.bat` + `user_jvm_args.txt`,由後端於啟動期橋接為腳本啟動、記憶體上限注入 args 檔)。
+  - Minecraft 四種可直接建立的 loader:**Vanilla**(Mojang manifest + sha1)、**Paper**(PaperMC v3 Fill API + sha256)、**Fabric**(官方 installer)、**Forge**(官方 `--installServer` 產出 `run.bat` + `user_jvm_args.txt`,由後端於啟動期橋接為腳本啟動、記憶體上限注入 args 檔)。**NeoForge** 共用同一套 `--installServer` 安裝機制,但目前僅透過模組包相容層(`modpack_loaders`)觸發,範本尚未提供可直接建立的 NeoForge 變體。
   - **Palworld**:SteamCMD 匿名載點下載 + `app_update 2394010`;`update_on_start` 可於每次啟動前檢查更新。
 - **資源上限(Windows Job Objects)**:記憶體/CPU 上限與 Docker 後端同一實例設定來源,以 Job Objects 強制;記憶體超限產生可辨識的「超出記憶體上限」告警(區別於一般 crash)。agent 退出不連坐殺伺服器——重啟後自動收養仍在執行的行程、重新納入 Job 管理。
 - **與 Docker 模式的差異**:native **無容器級隔離**(檔案系統/網路);埠衝突由 OS bind 失敗直接回報(而非 Docker 埠映射)。監控/日誌/指令/備份/自動重啟/告警等上層行為與 Docker 後端一致,GUI 無須分辨後端。

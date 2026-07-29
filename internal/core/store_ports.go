@@ -54,9 +54,23 @@ func (s *Store) ReleasePortsForInstance(instanceUUID string) error {
 
 // ListPortReservations 回傳所有埠預留,依 (bind_ip, protocol, host_port) 排序。
 func (s *Store) ListPortReservations() ([]PortReservation, error) {
-	rows, err := s.db.Query(`
+	return s.queryPortReservations(`
 		SELECT bind_ip, protocol, host_port, instance_uuid, name
 		FROM port_reservations ORDER BY bind_ip, protocol, host_port`)
+}
+
+// ListPortReservationsForInstance 回傳某實例的埠預留(依 protocol, host_port 排序)。
+// 供指令協定/健康探針以「該實例實際預留的埠」解析目標,而非讀範本宣告值——覆寫與核心
+// 動態分配後,範本宣告值已不代表實際埠。
+func (s *Store) ListPortReservationsForInstance(instanceUUID string) ([]PortReservation, error) {
+	return s.queryPortReservations(`
+		SELECT bind_ip, protocol, host_port, instance_uuid, name
+		FROM port_reservations WHERE instance_uuid = ? ORDER BY protocol, host_port`, instanceUUID)
+}
+
+// queryPortReservations 掃出埠預留列(ListPortReservations/…ForInstance 共用)。
+func (s *Store) queryPortReservations(query string, args ...any) ([]PortReservation, error) {
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("查詢埠預留清單失敗: %w", err)
 	}

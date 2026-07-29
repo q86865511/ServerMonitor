@@ -23,8 +23,8 @@ ServerMonitor is a Windows desktop tool for running and monitoring game dedicate
 
 ## Key Technical Highlights
 
-- **Template-driven extensibility** — a versioned TOML schema declares variants/loaders, port claims with conflict keys, typed parameters, secrets, RCON/REST command protocols as a tagged union, health probes, lifecycle hooks, and modpack policy. Built-in templates are embedded into the executable (`go:embed`); user templates hot-load from the data directory with validation and rejection events.
-- **Dual runtime backends behind one interface** — Docker containers, or native Windows child processes with everything auto-provisioned (Adoptium JRE, five Minecraft loader lines, SteamCMD) and resource caps enforced via Windows Job Objects. Chosen per instance; backups are format-identical and convertible between the two backends.
+- **Template-driven extensibility** — a versioned TOML schema declares variants/loaders, port claims with conflict keys, typed parameters, secrets, RCON/REST command protocols as a tagged union, health probes, lifecycle hooks, and modpack policy. Built-in templates are embedded into the executable (`go:embed`); user templates load from the data directory at startup, with validation and rejection events — a template dropped in after launch takes effect on the next restart, not live.
+- **Dual runtime backends behind one interface** — Docker containers, or native Windows child processes with everything auto-provisioned (Adoptium JRE, four Minecraft loader lines plus NeoForge modpack support, SteamCMD) and resource caps enforced via Windows Job Objects. Chosen per instance; backups are format-identical and convertible between the two backends.
 - **Multi-node by construction** — the core talks to node agents over HTTP even on localhost. Remote Linux nodes run a single static agent binary with auto-generated persistent token + self-signed TLS, pinned in the GUI by SHA-256 fingerprint (TOFU); a swapped certificate is refused outright.
 - **Path confinement as a hard rule** — every host path derived from an instance UUID, backup id, or user-supplied relative path passes a three-layer guard (clean → within-root check via `filepath.Rel` → per-segment `Lstat` refusing symlinks/junctions), closing traversal and link-following attacks including Windows junctions.
 - **Crash recovery state machine** — protocol-aware readiness probes (RCON/REST, not just TCP), restart with retry caps, OOM-specific alerts distinguished from generic crashes, and orphan adoption: closing the tool never kills servers, and a restarted agent re-adopts still-running processes.
@@ -82,7 +82,7 @@ Live log console with level filters, search, and an interactive RCON command lin
 
 ## Build from Source
 
-Requires Go 1.26+, Node 18+, and Wails CLI v2.13 (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`).
+Requires Go 1.26+, Node 20.19+ or 22.12+ (per Vite's `engines.node`), and Wails CLI v2.13 (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`).
 
 ```bash
 cd frontend && npm ci && npm run build && cd ..   # build the embedded frontend bundle first
@@ -107,10 +107,14 @@ go build ./cmd/agent  # headless node agent for remote nodes
 
 The E2E suites exercise the real thing: create → start → probe readiness → run commands → back up → restore → stop → remove, against actual Minecraft and Palworld servers.
 
+> `go test -tags docker ./...` runs packages in parallel by default; several E2E tests contending for the same Docker daemon at once can produce spurious timeouts (`TestE2E_MinecraftFullLifecycle` has been observed to fail this way while passing standalone in under two minutes). Add `-p 1` to serialize package execution, or run the E2E tests one at a time as shown above.
+
 ## Signature Systems
 
 ### Lifecycle & Provisioning
 Serialized, idempotent operations with atomic creation and port reservation. Long operations (create/start/stop/restart/backup) stream stage-level progress (pulling image / installing / waiting for readiness) into the console and a global operations panel.
+
+Host ports are per instance, not per template: the create wizard lets you override any declared port, and a port declared `host_port = 0` (or set to auto in the wizard) is assigned by the core at creation time — it picks a free port starting from the template's container port, avoiding both existing reservations and ports already bound on the host. Command protocols and health probes resolve against the instance's actual reservation rather than the template's declared value, so a second server of the same game works end to end without editing templates.
 
 ### Monitoring & Consoles
 CPU/RAM/disk and player-count polling with 15-second aggregated time series persisted for 36 hours (charts draw gaps for missing data instead of faking zeros); a live log console with backpressure-safe fanout; an interactive command console speaking RCON (Minecraft) or named REST actions with Basic Auth (Palworld).
@@ -122,7 +126,7 @@ Scheduled or manual, announced via in-game hooks, taken as stop-consistent tar s
 A supervisor state machine with health probes and bounded retries restarts crashed servers; Discord webhooks deliver alerts with time-window suppression, hysteresis, and dedup — OOM kills are reported distinctly from generic crashes.
 
 ### Mods & Modpacks
-Paper/Forge/Fabric/NeoForge/Vanilla loader lines; Modrinth modpacks on both backends; CurseForge via itzg's `AUTO_CURSEFORGE` (Docker) or a built-in Prism-style installer (native) that honors author opt-outs with an honest manual-download fallback. See [docs/native-mode.md](docs/native-mode.md).
+Paper/Forge/Fabric/Vanilla loader lines, plus NeoForge support at the modpack-compatibility layer (not yet a standalone creatable variant); Modrinth modpacks on both backends; CurseForge via itzg's `AUTO_CURSEFORGE` (Docker) or a built-in Prism-style installer (native) that honors author opt-outs with an honest manual-download fallback. See [docs/native-mode.md](docs/native-mode.md).
 
 ### Multi-node
 Manage servers on remote hosts from the same GUI: a single-binary agent, HTTPS with fingerprint-pinned self-signed certs (or bring your own), per-node tokens in the keyring. See [docs/multi-node.md](docs/multi-node.md).
@@ -131,7 +135,7 @@ Manage servers on remote hosts from the same GUI: a single-binary agent, HTTPS w
 
 | Game | Variants / loaders | Backends | Commands | Mods |
 |---|---|---|---|---|
-| Minecraft (Java) | Vanilla · Paper · Fabric · Forge · NeoForge | Docker + Native | RCON | Modrinth · CurseForge |
+| Minecraft (Java) | Vanilla · Paper · Fabric · Forge (NeoForge: modpacks only, no standalone variant) | Docker + Native | RCON | Modrinth · CurseForge |
 | Palworld | Steam dedicated server | Docker + Native (SteamCMD) | REST named actions | — |
 | *Your game* | declared in one `templates/<id>.toml` | per template | RCON / REST | per template |
 

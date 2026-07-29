@@ -230,6 +230,9 @@ type CreateInstanceRequest struct {
 	// 僅 runtime=native 有意義;轉填 core CreateOptions.Resources(兩者皆 0 時為 nil)。
 	MemoryMB   int `json:"memory_mb"`
 	CPUPercent int `json:"cpu_percent"`
+	// PortOverrides 是使用者對範本宣告埠的宿主埠覆寫(鍵=TemplateDTO.Ports[].name,值=宿主埠);
+	// 未列出的埠沿用範本預設,值為 0 表示交由核心動態分配。建立第二台同範本伺服器時用以避開埠衝突。
+	PortOverrides map[string]int `json:"port_overrides"`
 }
 
 // ModpackRequest 是模組包來源輸入(R11)。
@@ -353,13 +356,14 @@ func (a *App) CreateInstance(req CreateInstanceRequest) (string, error) {
 // 抽為獨立方法以利單元測轉填正確性,不需啟動整個後端。
 func (req CreateInstanceRequest) toCreateOptions() core.CreateOptions {
 	opts := core.CreateOptions{
-		TemplateID: req.TemplateID,
-		Variant:    req.Variant,
-		Name:       req.Name,
-		Params:     req.Params,
-		Secrets:    req.Secrets,
-		Node:       req.Node,
-		Runtime:    req.Runtime,
+		TemplateID:    req.TemplateID,
+		Variant:       req.Variant,
+		Name:          req.Name,
+		Params:        req.Params,
+		Secrets:       req.Secrets,
+		Node:          req.Node,
+		Runtime:       req.Runtime,
+		PortOverrides: req.PortOverrides,
 	}
 	if req.Modpack != nil && (req.Modpack.Type != "" || req.Modpack.Ref != "") {
 		opts.Modpack = &core.ModpackSource{Type: core.ModpackType(req.Modpack.Type), Ref: req.Modpack.Ref}

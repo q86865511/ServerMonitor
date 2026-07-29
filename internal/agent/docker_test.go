@@ -292,7 +292,8 @@ logLoop:
 		t.Fatalf("restored container uuid label mismatch: %v", info.Labels)
 	}
 
-	// List 應含兩者且皆 managed。
+	// List 應只含新容器;舊容器已於 Restore 內被移除(B9:見 docker_backup.go 還原後清理舊容器的
+	// 註解——其 bind 資料已於 swap 換出,是帶相同 gsm.uuid 的無用停止殼,不清除會每次還原累積孤兒)。
 	refs, err := b.List(ctx)
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -309,8 +310,11 @@ logLoop:
 			seenNew = true
 		}
 	}
-	if !seenOld || !seenNew {
-		t.Fatalf("List missing containers: old=%v new=%v", seenOld, seenNew)
+	if seenOld {
+		t.Fatalf("List should not contain removed old container: old=%v", oldID)
+	}
+	if !seenNew {
+		t.Fatalf("List missing new container: new=%v", newID)
 	}
 }
 

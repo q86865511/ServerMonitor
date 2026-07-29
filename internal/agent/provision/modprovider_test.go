@@ -16,10 +16,23 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+// testAllowedHosts 依 rawURL(通常是 httptest server 的 srv.URL)推導單一 host 的允許清單,
+// 供直接呼叫 installMrpackArchive 的測試(略過 ModrinthProvider)注入下載白名單(見
+// validateModpackDownloadURL);production 路徑改由 ModrinthProvider.allowedDownloadHosts 提供。
+func testAllowedHosts(t *testing.T, rawURL string) map[string]struct{} {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatalf("解析測試伺服器 URL %q 失敗: %v", rawURL, err)
+	}
+	return map[string]struct{}{u.Hostname(): {}}
+}
 
 // mrpackFileSpec 是測試建構 mrpack 用的單一檔案規格;內容位元組經雜湊自動填入 index.json。
 type mrpackFileSpec struct {
@@ -133,7 +146,7 @@ func TestInstallMrpackArchive_HappyPath(t *testing.T) {
 	var lastPct int = -99
 	err := installMrpackArchive(context.Background(), srv.Client(), archivePath, targetDir, "1.20.1", "fabric", func(p ProvisionProgress) {
 		lastPct = p.Percent
-	})
+	}, testAllowedHosts(t, srv.URL), true)
 	if err != nil {
 		t.Fatalf("installMrpackArchive: %v", err)
 	}
@@ -159,7 +172,7 @@ func TestInstallMrpackArchive_IncompatibleMCVersion(t *testing.T) {
 	zipBytes := buildMrpackZip(t, deps, nil, nil, nil, "http://unused.invalid")
 	archivePath := writeTempMrpack(t, zipBytes)
 
-	err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "1.21.0", "", nil)
+	err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "1.21.0", "", nil, nil, false)
 	if !errors.Is(err, ErrModpackIncompatible) {
 		t.Fatalf("期望 ErrModpackIncompatible,實得: %v", err)
 	}
@@ -170,7 +183,7 @@ func TestInstallMrpackArchive_IncompatibleLoader(t *testing.T) {
 	zipBytes := buildMrpackZip(t, deps, nil, nil, nil, "http://unused.invalid")
 	archivePath := writeTempMrpack(t, zipBytes)
 
-	err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "1.20.1", "fabric", nil)
+	err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "1.20.1", "fabric", nil, nil, false)
 	if !errors.Is(err, ErrModpackIncompatible) {
 		t.Fatalf("期望 ErrModpackIncompatible(缺 fabric-loader 依賴),實得: %v", err)
 	}
@@ -182,7 +195,7 @@ func TestInstallMrpackArchive_CompatibleWhenVersionUnspecified(t *testing.T) {
 	zipBytes := buildMrpackZip(t, deps, nil, nil, nil, "http://unused.invalid")
 	archivePath := writeTempMrpack(t, zipBytes)
 
-	if err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "", "", nil); err != nil {
+	if err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "", "", nil, nil, false); err != nil {
 		t.Fatalf("mcVersion/loader 皆空時不應報相容性錯誤: %v", err)
 	}
 }
@@ -193,7 +206,7 @@ func TestInstallMrpackArchive_ChecksumMismatch(t *testing.T) {
 	zipBytes := buildMrpackZip(t, nil, files, nil, nil, srv.URL)
 	archivePath := writeTempMrpack(t, zipBytes)
 
-	err := installMrpackArchive(context.Background(), srv.Client(), archivePath, t.TempDir(), "", "", nil)
+	err := installMrpackArchive(context.Background(), srv.Client(), archivePath, t.TempDir(), "", "", nil, testAllowedHosts(t, srv.URL), true)
 	if !errors.Is(err, ErrChecksumMismatch) {
 		t.Fatalf("期望 ErrChecksumMismatch,實得: %v", err)
 	}
@@ -208,7 +221,7 @@ func TestInstallMrpackArchive_MissingIndex(t *testing.T) {
 	}
 	archivePath := writeTempMrpack(t, buf.Bytes())
 
-	if err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "", "", nil); err == nil {
+	if err := installMrpackArchive(context.Background(), http.DefaultClient, archivePath, t.TempDir(), "", "", nil, nil, false); err == nil {
 		t.Fatal("缺 modrinth.index.json 應報錯,實際成功")
 	}
 }
@@ -233,5 +246,30 @@ func TestSafeModpackFilePath_AllowsNestedRelative(t *testing.T) {
 	want := filepath.Join(targetDir, "mods", "sub", "A.jar")
 	if got != want {
 		t.Errorf("got=%q want=%q", got, want)
+	}
+}
+
+// validateModpackDownloadURL 拒絕白名單外 host 與非 https scheme(SSRF 防禦):mrpack index 由
+// 第三方模組包提供,downloads 陣列若不受限,可誘使節點對任意內部/外部位址發起請求。
+func TestValidateModpackDownloadURL_RejectsDisallowedHostOrScheme(t *testing.T) {
+	allowed := map[string]struct{}{"cdn.modrinth.com": {}}
+	cases := []string{
+		"http://cdn.modrinth.com/mods/A.jar",     // 白名單 host 但非 https
+		"https://evil.example.com/mods/A.jar",    // https 但 host 不在白名單
+		"https://169.254.169.254/latest/meta",    // 雲端 metadata 端點,經典 SSRF 目標
+		"http://127.0.0.1:8080/internal",         // 內網位址
+		"file:///etc/passwd",                     // 非 http(s) scheme
+	}
+	for _, u := range cases {
+		if err := validateModpackDownloadURL(u, allowed, false); err == nil {
+			t.Errorf("validateModpackDownloadURL(%q) 應拒絕,實際通過", u)
+		}
+	}
+}
+
+func TestValidateModpackDownloadURL_AllowsWhitelistedHTTPS(t *testing.T) {
+	allowed := map[string]struct{}{"cdn.modrinth.com": {}}
+	if err := validateModpackDownloadURL("https://cdn.modrinth.com/data/mods/A.jar", allowed, false); err != nil {
+		t.Errorf("白名單 host + https 應通過,實得: %v", err)
 	}
 }

@@ -117,6 +117,10 @@ type CreateOptions struct {
 	// Resources 為此實例的資源上限(native Job Objects / docker cgroup 同來源;native-backend R9)。
 	// GUI(T12)填入;nil=不限額(沿用範本/映像預設)。
 	Resources *protocol.ResourceLimits
+	// PortOverrides 是使用者對範本宣告埠的宿主埠覆寫(鍵=[[ports]].name,值=宿主埠)。
+	// 未列出的埠沿用範本 host_port;值為 0 表示要求核心動態分配。覆寫後仍衝突→ PortConflictError
+	// (不靜默改號)。這是「同一範本建立第二台伺服器」的主要途徑。
+	PortOverrides map[string]int
 }
 
 // InstanceService 實作 R2「一鍵建立」的原子建立骨幹:驗證必填/EULA → 機密入庫 →
@@ -146,6 +150,10 @@ type InstanceService struct {
 	// releasePortsHook 是測試縫:注入 Remove 期間「釋放埠預留」失敗,以驗證失敗中止語意
 	// (T15 雙審 #6:回錯誤、保留 DB 列)。生產環境恆為 nil(走 store.ReleasePortsForInstance)。
 	releasePortsHook func(uuid string) error
+
+	// portFreeHook 是測試縫:取代動態分配時的「本機埠可綁」實測,使挑號結果可預期。
+	// 生產環境恆為 nil(走 hostPortFree)。
+	portFreeHook func(bindIP, proto string, port int) bool
 }
 
 // InstanceServiceConfig 是 InstanceService 的建構參數。
@@ -218,6 +226,9 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	if serr := validateSecrets(tmpl, opts.Secrets); serr != nil {
 		return InstanceRecord{}, serr
 	}
+	if oerr := validatePortOverrides(tmpl, opts.PortOverrides); oerr != nil {
+		return InstanceRecord{}, oerr
+	}
 	// R2 runtime 分派:由範本能力 ∩ 平台決定執行後端(未知/不支援/平台不符回錯);無副作用。
 	// 先於模組包檢查解析,使 validateModpack 能依 runtime 決定 CF_API_KEY 是否必填(#4)。
 	rt, rterr := resolveRuntime(tmpl, opts.Runtime, s.goos)
@@ -230,7 +241,7 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	}
 
 	uuid := s.newUUID()
-	ports := buildPortReservations(tmpl, uuid)
+	plans := buildPortPlans(tmpl, uuid, opts.PortOverrides)
 
 	// 回滾狀態旗標;下方 defer 於 err!=nil 時反序清理已完成的階段。
 	var (
@@ -267,8 +278,9 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 		secretsWritten = append(secretsWritten, ref)
 	}
 
-	// 3. 埠預留(含 wildcard 重疊規則),臨界區序列化。
-	if perr := s.reservePorts(ports); perr != nil {
+	// 3. 埠預留(含 wildcard 重疊規則與 host_port<=0 的核心動態分配),臨界區序列化。
+	reserved, perr := s.reservePorts(plans)
+	if perr != nil {
 		portsReserved = true // 可能已部分預留,交回滾統一釋放
 		return InstanceRecord{}, perr
 	}
@@ -283,7 +295,7 @@ func (s *InstanceService) Create(ctx context.Context, opts CreateOptions) (rec I
 	journalWritten = true
 
 	// 5. 經 NodeClient 呼叫代理建容器(機密於此邊界注入 Env:R12 runtime 明文例外,loopback 信任域)。
-	spec := s.buildSpec(uuid, node, tmpl, opts, variantEnv, rt)
+	spec := s.buildSpec(uuid, node, tmpl, opts, variantEnv, rt, reserved)
 	var runtimeID protocol.RuntimeID
 	cerr := s.registry.Call(node, func(c *NodeClient) error {
 		resp, e := c.Create(ctx, spec)
@@ -539,47 +551,131 @@ func (s *InstanceService) uploadModpackMount(ctx context.Context, node, uuid str
 	})
 }
 
-// reservePorts 在序列化臨界區內做 wildcard 重疊檢查後逐一預留(R2)。
+// 核心端動態分配的挑號參數(host_port<=0 時適用)。
+const (
+	// dynamicPortSearchSpan 是自起點往上試的最大號碼數。
+	dynamicPortSearchSpan = 512
+	// dynamicPortFallbackBase 是範本未宣告 container 埠時的挑號起點(避開常見服務埠)。
+	dynamicPortFallbackBase = 30000
+)
+
+// reservePorts 在序列化臨界區內做 wildcard 重疊檢查後逐一預留(R2),並就地為 host_port<=0
+// 的埠挑一個可用宿主埠(核心端動態分配,取代首版「不預留、交由後端 OS 分配」)。
 // 檢查涵蓋「與既有 DB 預留」及「本批範本內部」的重疊;唯一約束為併發下的最終防線。
-func (s *InstanceService) reservePorts(ports []PortReservation) error {
+// 回傳已定案的預留列(順序同輸入),供組出傳給代理的 PortBinding——代理拿到的一律是具體埠。
+func (s *InstanceService) reservePorts(plans []portPlan) ([]PortReservation, error) {
 	s.reserveMu.Lock()
 	defer s.reserveMu.Unlock()
 
 	existing, err := s.store.ListPortReservations()
 	if err != nil {
-		return fmt.Errorf("查詢既有埠預留失敗: %w", err)
+		return nil, fmt.Errorf("查詢既有埠預留失敗: %w", err)
 	}
 
+	out := make([]PortReservation, len(plans))
 	checked := append([]PortReservation(nil), existing...)
-	for _, np := range ports {
+	// 先定案靜態埠(使用者覆寫/範本宣告),使動態分配得以同時避開本批的靜態埠;
+	// 靜態埠衝突維持 PortConflictError,不靜默改號。
+	for i, plan := range plans {
+		out[i] = plan.Res
+		if plan.Res.HostPort <= 0 {
+			continue
+		}
 		for _, ep := range checked {
-			if portsOverlap(np, ep) {
-				return &PortConflictError{
-					BindIP:       np.BindIP,
-					Protocol:     np.Protocol,
-					HostPort:     np.HostPort,
+			if portsOverlap(plan.Res, ep) {
+				return nil, &PortConflictError{
+					BindIP:       plan.Res.BindIP,
+					Protocol:     plan.Res.Protocol,
+					HostPort:     plan.Res.HostPort,
 					ExistingUUID: ep.InstanceUUID,
 				}
 			}
 		}
-		checked = append(checked, np)
+		checked = append(checked, plan.Res)
+	}
+	for i, plan := range plans {
+		if plan.Res.HostPort > 0 {
+			continue
+		}
+		port, aerr := s.allocateDynamicPort(plan, checked)
+		if aerr != nil {
+			return nil, aerr
+		}
+		out[i].HostPort = port
+		checked = append(checked, out[i])
 	}
 
-	for _, np := range ports {
+	for _, np := range out {
 		if rerr := s.store.ReservePort(np); rerr != nil {
 			if errors.Is(rerr, ErrPortReserved) {
-				return &PortConflictError{BindIP: np.BindIP, Protocol: np.Protocol, HostPort: np.HostPort}
+				return nil, &PortConflictError{BindIP: np.BindIP, Protocol: np.Protocol, HostPort: np.HostPort}
 			}
-			return fmt.Errorf("預留埠失敗: %w", rerr)
+			return nil, fmt.Errorf("預留埠失敗: %w", rerr)
 		}
 	}
-	return nil
+	return out, nil
+}
+
+// allocateDynamicPort 為 host_port<=0 的埠挑一個可用宿主埠:自範本 container 埠(無則
+// dynamicPortFallbackBase)往上找,同時避開「DB 既有預留 + 本批已定案」與「本機當下實際
+// 已被占用(含非本工具的程式)」的埠號。呼叫端須持有 reserveMu。
+func (s *InstanceService) allocateDynamicPort(plan portPlan, checked []PortReservation) (int, error) {
+	base := plan.Container
+	if base <= 0 || base > 65535 {
+		base = dynamicPortFallbackBase
+	}
+	probe := plan.Res
+	for cand := base; cand < base+dynamicPortSearchSpan && cand <= 65535; cand++ {
+		probe.HostPort = cand
+		taken := false
+		for _, ep := range checked {
+			if portsOverlap(probe, ep) {
+				taken = true
+				break
+			}
+		}
+		if taken || !s.portFree(probe.BindIP, probe.Protocol, cand) {
+			continue
+		}
+		return cand, nil
+	}
+	return 0, fmt.Errorf("埠 %q 動態分配失敗: 自 %d 起連續 %d 個埠皆不可用", plan.Res.Name, base, dynamicPortSearchSpan)
+}
+
+// portFree 回報宿主埠當下是否可綁(測試可經 portFreeHook 注入)。
+func (s *InstanceService) portFree(bindIP, proto string, port int) bool {
+	if s.portFreeHook != nil {
+		return s.portFreeHook(bindIP, proto, port)
+	}
+	return hostPortFree(bindIP, proto, port)
+}
+
+// hostPortFree 實際嘗試綁定一次以判定埠是否空閒(綁上即刻釋放)。綁不上一律視為不可用
+// (含權限/位址不可用),使動態分配跳過該號碼而非把問題留到啟動時才爆。
+func hostPortFree(bindIP, proto string, port int) bool {
+	addr := net.JoinHostPort(bindIP, strconv.Itoa(port))
+	if proto == "udp" {
+		pc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return false
+		}
+		_ = pc.Close()
+		return true
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return false
+	}
+	_ = ln.Close()
+	return true
 }
 
 // buildSpec 由範本 + 使用者輸入組出 InstanceSpec(env 解析、機密注入、標籤、映像鎖)。
 // runtime 決定後端相關欄位:docker 路徑套 itzg 模組包 env;native 路徑翻譯 [native] 區段為
 // NativeSpecPayload 並以 Modpack 透傳遠端模組包(native-backend R2/R11)。
-func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTemplate, opts CreateOptions, variantEnv map[string]string, runtime string) protocol.InstanceSpec {
+// reserved 是本實例已定案的埠預留(順序同範本 [[ports]]),使 spec.Ports 帶具體宿主埠;
+// 傳 nil 則退回範本宣告值(純 spec 組裝的單元測試用法)。
+func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTemplate, opts CreateOptions, variantEnv map[string]string, runtime string, reserved []PortReservation) protocol.InstanceSpec {
 	env := resolveEnv(tmpl, opts.Params, variantEnv)
 	// 機密以明文注入 Env(R12 runtime 明文例外;僅在 loopback 信任域內經 NodeClient 傳遞)。
 	// 空白值不注入,避免以空環境變數覆蓋映像端「未設定時自動產生」類預設行為。
@@ -604,7 +700,7 @@ func (s *InstanceService) buildSpec(uuid, node string, tmpl *protocol.GameTempla
 		Variant:    opts.Variant,
 		Image:      resolveImage(tmpl.Docker),
 		Env:        env,
-		Ports:      buildPortBindings(tmpl),
+		Ports:      buildPortBindings(tmpl, reserved),
 		DataDirs:   dataDirs,
 		Mounts:     modpackMounts(tmpl, opts.Modpack),
 		Labels: map[string]string{
@@ -838,38 +934,87 @@ func resolveImage(d *protocol.DockerImage) string {
 	return d.Image
 }
 
-// buildPortReservations 由範本 ports 造 DB 預留列(只取 host_port>0 的靜態綁定;
-// host_port=0 為動態分配,首版不預留、交由後端 OS 分配)。
-func buildPortReservations(tmpl *protocol.GameTemplate, uuid string) []PortReservation {
-	var out []PortReservation
+// portPlan 是一筆待預留的埠計畫:Res 為預留鍵(HostPort<=0 表示待核心動態分配),
+// Container 為範本宣告的容器埠,作為動態分配挑號的起點。
+type portPlan struct {
+	Res       PortReservation
+	Container int
+}
+
+// buildPortPlans 由範本 ports + 使用者覆寫造出待預留的埠計畫(每個 [[ports]] 一筆)。
+// 宿主埠取值序:使用者覆寫 > 範本 host_port;取到 <=0 表示交由核心動態分配(見
+// allocateDynamicPort)——不再像首版那樣略過不預留,故下游(指令協定/探針/GUI)一律
+// 看得到具體埠。
+func buildPortPlans(tmpl *protocol.GameTemplate, uuid string, overrides map[string]int) []portPlan {
+	out := make([]portPlan, 0, len(tmpl.Ports))
 	for _, p := range tmpl.Ports {
-		if p.HostPort <= 0 {
-			continue
+		hostPort := p.HostPort
+		if ov, ok := overrides[p.Name]; ok && p.Name != "" {
+			hostPort = ov // 明確指定 0 = 要求動態分配
 		}
-		out = append(out, PortReservation{
-			BindIP:       normalizeBindIP(p.BindIP),
-			Protocol:     normalizeProtocol(p.Protocol),
-			HostPort:     p.HostPort,
-			InstanceUUID: uuid,
-			Name:         p.Name, // R12:寫入範本 PortSpec.Name,供卡片/詳細頁標埠角色
+		out = append(out, portPlan{
+			Res: PortReservation{
+				BindIP:       normalizeBindIP(p.BindIP),
+				Protocol:     normalizeProtocol(p.Protocol),
+				HostPort:     hostPort,
+				InstanceUUID: uuid,
+				Name:         p.Name, // R12:寫入範本 PortSpec.Name,供卡片/詳細頁標埠角色
+			},
+			Container: p.Container,
 		})
 	}
 	return out
 }
 
-// buildPortBindings 由範本 ports 造要傳給代理的 PortBinding(含動態埠)。
-func buildPortBindings(tmpl *protocol.GameTemplate) []protocol.PortBinding {
+// buildPortBindings 由範本 ports 造要傳給代理的 PortBinding。宿主埠取「已定案的預留」
+// (含使用者覆寫與核心動態分配的具體埠),使代理拿到的一律是具體埠而非 0;reserved 長度
+// 對不上(如測試以 nil 呼叫)才退回範本宣告值。
+func buildPortBindings(tmpl *protocol.GameTemplate, reserved []PortReservation) []protocol.PortBinding {
 	out := make([]protocol.PortBinding, 0, len(tmpl.Ports))
-	for _, p := range tmpl.Ports {
+	for i, p := range tmpl.Ports {
+		hostPort := p.HostPort
+		bindIP := normalizeBindIP(p.BindIP)
+		if i < len(reserved) {
+			hostPort = reserved[i].HostPort
+			bindIP = reserved[i].BindIP
+		}
 		out = append(out, protocol.PortBinding{
 			Name:      p.Name,
 			Container: p.Container,
-			HostPort:  p.HostPort,
-			BindIP:    normalizeBindIP(p.BindIP),
+			HostPort:  hostPort,
+			BindIP:    bindIP,
 			Protocol:  normalizeProtocol(p.Protocol),
 		})
 	}
 	return out
+}
+
+// validatePortOverrides 檢查使用者埠覆寫的合法性(R2:建立前阻擋,無副作用):埠名須為範本
+// 宣告的 [[ports]].name,值須落在 0..65535(0=要求核心動態分配)。
+func validatePortOverrides(tmpl *protocol.GameTemplate, overrides map[string]int) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+	declared := make(map[string]bool, len(tmpl.Ports))
+	for _, p := range tmpl.Ports {
+		if p.Name != "" {
+			declared[p.Name] = true
+		}
+	}
+	names := make([]string, 0, len(overrides))
+	for name := range overrides {
+		names = append(names, name)
+	}
+	sort.Strings(names) // 使錯誤訊息順序穩定、可測
+	for _, name := range names {
+		if !declared[name] {
+			return fmt.Errorf("埠覆寫 %q 於範本 %q 無對應 [[ports]]", name, tmpl.ID)
+		}
+		if v := overrides[name]; v < 0 || v > 65535 {
+			return fmt.Errorf("埠覆寫 %q 的值 %d 超出範圍(0=動態分配,或 1-65535)", name, v)
+		}
+	}
+	return nil
 }
 
 // ---- 埠 wildcard 重疊規則(R2)----

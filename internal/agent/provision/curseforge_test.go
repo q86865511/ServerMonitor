@@ -310,6 +310,46 @@ func TestCurseForgeProvider_ObtainArchive_RejectsPlainHTTP(t *testing.T) {
 	}
 }
 
+func TestCurseForgeProvider_ObtainArchive_RejectsUnlistedHost(t *testing.T) {
+	// 直接下載 URL 雖為 https,但 host 不在白名單(非 CurseForge 官方 CDN、亦非本 provider 的
+	// apiBase host)應被拒(SSRF 防禦,見 defaultAllowedCurseForgeDownloadHosts)。
+	p := NewCurseForgeProvider(http.DefaultClient, "https://api.example", fakeCFKey)
+	_, _, err := p.obtainArchive(context.Background(), "https://evil.example/pack.zip", nil)
+	if err == nil {
+		t.Fatal("host 不在白名單的 https 直接下載 URL 應被拒,實得 nil")
+	}
+	if !strings.Contains(err.Error(), "白名單") {
+		t.Fatalf("錯誤訊息應說明網域不在白名單,實得: %v", err)
+	}
+}
+
+// TestCurseForgeProvider_InstallModpack_RejectsDownloadURLUnlistedHost 驗證 CurseForge API 回應的
+// downloadUrl 若指向白名單外網域(模擬遭竄改回應或惡意/相容代理),於下載前即被拒,不會對該位址發起
+// 請求(SSRF 防禦)。與 TestCurseForgeProvider_ObtainArchive_RejectsUnlistedHost 的差異:此測試涵蓋
+// installArchive 逐檔下載路徑(manifest.files[] 查得的 downloadUrl),而非 obtainArchive 取得 cfzip
+// 本身的路徑。
+func TestCurseForgeProvider_InstallModpack_RejectsDownloadURLUnlistedHost(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/mods/100/files/1", func(w http.ResponseWriter, r *http.Request) {
+		evilURL := "http://evil.example/A.jar"
+		_ = json.NewEncoder(w).Encode(cfFileResponse{Data: cfFile{ID: 1, ModID: 100, FileName: "A.jar", DownloadURL: &evilURL}})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	mods := []cfTestMod{{projectID: 100, fileID: 1, fileName: "A.jar", content: []byte("AAA")}}
+	archive := writeTempCfzip(t, buildCurseForgeZip(t, mods, "overrides", nil))
+
+	p := NewCurseForgeProvider(srv.Client(), srv.URL, fakeCFKey)
+	err := p.InstallModpack(context.Background(), ModpackInstallRequest{ArchivePath: archive, TargetDir: t.TempDir()}, nil)
+	if err == nil {
+		t.Fatal("downloadUrl 指向白名單外網域時應被拒,實得 nil")
+	}
+	if !strings.Contains(err.Error(), "白名單") {
+		t.Fatalf("錯誤訊息應說明網域不在白名單,實得: %v", err)
+	}
+}
+
 // ---- Provisioner 層:key 啟用/覆蓋語意(以假 key 字串,不觸網)----
 
 func TestProvisioner_CurseForgeDisabledWhenNoKey(t *testing.T) {

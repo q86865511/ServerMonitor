@@ -70,6 +70,41 @@ func TestReconciler_DBHasContainerMissing(t *testing.T) {
 	}
 }
 
+// R13(缺陷修復):容器不存在且 observed 為 Error(如啟動失敗、或卡死放棄後容器又被外部刪除)時,
+// 對帳應收斂為 Stopped 並記 RECONCILE_MISMATCH——先前 expectsContainer 排除 Error,使這種實例
+// 永遠卡在 Error(GUI 只剩「移除實例」可用)。
+func TestReconciler_ErrorStateContainerMissingResolves(t *testing.T) {
+	h := newLifeHarness(t, lifeOpts{})
+	rec := h.createInstance(t, "err-1")
+
+	// 竄改 observed 為 Error(模擬啟動失敗或卡死復原放棄後的狀態),並移除底層容器。
+	cur, err := h.store.GetInstance("err-1")
+	if err != nil {
+		t.Fatalf("GetInstance: %v", err)
+	}
+	cur.ObservedState = protocol.InstanceStateError
+	if err := h.store.UpsertInstance(cur); err != nil {
+		t.Fatalf("UpsertInstance: %v", err)
+	}
+	if err := h.backend.Remove(context.Background(), rec.RuntimeID, agent.RemoveOpts{}); err != nil {
+		t.Fatalf("移除容器: %v", err)
+	}
+
+	sum, err := h.recon.Reconcile(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := h.state(t, "err-1"); got != protocol.InstanceStateStopped {
+		t.Errorf("Error 狀態容器缺失後應收斂為 Stopped, 得 %s", got)
+	}
+	if len(sum.Missing) != 1 || sum.Missing[0] != "err-1" {
+		t.Errorf("summary.Missing = %v, 期望 [err-1]", sum.Missing)
+	}
+	if n := h.countEvents(t, protocol.EventReconcileMismatch); n != 1 {
+		t.Errorf("RECONCILE_MISMATCH = %d, 期望 1", n)
+	}
+}
+
 // R13:容器有 gsm.uuid 而 DB 無 → 孤兒(記 RECONCILE_ORPHAN,不自動刪)。
 func TestReconciler_ContainerOrphanFlagged(t *testing.T) {
 	h := newLifeHarness(t, lifeOpts{})

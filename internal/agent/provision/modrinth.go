@@ -41,6 +41,30 @@ func NewModrinthProvider(client *http.Client, apiBase string) *ModrinthProvider 
 
 var _ ModProvider = (*ModrinthProvider)(nil)
 
+// allowedDownloadHosts 回傳本 provider 允許的模組包下載連結網域集合(SSRF 白名單,見
+// validateModpackDownloadURL):恆含官方 CDN/API 網域,另併入本 provider 設定的 apiBase host——
+// 正式部署 apiBase 恆為官方網域(已在預設集合內,併入為 no-op);自架 Modrinth 相容代理或測試以
+// httptest 假伺服器指定 apiBase 時,其 host 隨之納入白名單(apiBase 由部署端明確設定,非模組包
+// 內容可控,信任層級與白名單本身相同)。
+func (m *ModrinthProvider) allowedDownloadHosts() map[string]struct{} {
+	hosts := make(map[string]struct{}, len(defaultAllowedModpackDownloadHosts)+1)
+	for h := range defaultAllowedModpackDownloadHosts {
+		hosts[h] = struct{}{}
+	}
+	if u, err := url.Parse(m.apiBase); err == nil && u.Hostname() != "" {
+		hosts[u.Hostname()] = struct{}{}
+	}
+	return hosts
+}
+
+// allowInsecureDownload 回報是否放行 http(非 https)下載連結:僅當本 provider 的 apiBase 本身
+// 即以 http 設定時(非正式部署——官方 apiBase 恆為 https;此為 httptest 假伺服器等場景)才放行,
+// 且放行對象仍受 allowedDownloadHosts 限制,不等同全面放寬。
+func (m *ModrinthProvider) allowInsecureDownload() bool {
+	u, err := url.Parse(m.apiBase)
+	return err == nil && u.Scheme == "http"
+}
+
 // modrinthVersionFile 是 GET .../version 回應中 files[] 元素的最小子集(查證來源同套件頂註)。
 type modrinthVersionFile struct {
 	Filename string            `json:"filename"`
@@ -73,7 +97,8 @@ func (m *ModrinthProvider) InstallModpack(ctx context.Context, req ModpackInstal
 		defer cleanup()
 		archivePath = resolved
 	}
-	return installMrpackArchive(ctx, m.client, archivePath, req.TargetDir, req.MCVersion, req.Loader, progress)
+	return installMrpackArchive(ctx, m.client, archivePath, req.TargetDir, req.MCVersion, req.Loader, progress,
+		m.allowedDownloadHosts(), m.allowInsecureDownload())
 }
 
 // resolve 解析 ref 取得 mrpack 下載來源並落地至暫存檔,回傳其路徑與清理函式(呼叫端 defer 呼叫,

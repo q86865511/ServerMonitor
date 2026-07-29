@@ -211,6 +211,56 @@ func TestWriteConfigFile_UnknownFormat(t *testing.T) {
 	}
 }
 
+// TestWriteConfigFile_RejectsPathTraversal 驗證 cm.File(來自範本、經核心↔代理網路邊界併入 spec)
+// 逃逸實例根時拒絕,不落地於根外(SSRF/路徑遍歷稽查項目 3)。
+func TestWriteConfigFile_RejectsPathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(filepath.Dir(dir), "secret-config.properties")
+	for _, file := range []string{"../secret-config.properties", "..\\secret-config.properties", "/etc/secret", ""} {
+		cm := protocol.NativeConfigMap{File: file, Format: "properties", Map: map[string]string{"a": "b"}}
+		if err := writeConfigFile(dir, cm, map[string]string{"a": "1"}, nil); err == nil {
+			t.Errorf("writeConfigFile(File=%q) 應拒絕逃逸實例根,實際成功", file)
+		}
+	}
+	if _, err := os.Stat(secret); !os.IsNotExist(err) {
+		t.Fatalf("不應在實例根外落地檔案, stat err=%v", err)
+	}
+}
+
+// TestNativeBackend_WorkingDir_RejectsEscape 驗證 workingDir(啟動工作目錄,來自範本
+// Launch.WorkingDir)拒絕逃逸實例根的相對路徑,空字串回實例根本身、合法相對路徑正常落在根下
+// (稽查項目 3)。
+func TestNativeBackend_WorkingDir_RejectsEscape(t *testing.T) {
+	b := newTestNativeBackend(t)
+	root := t.TempDir()
+
+	for _, rel := range []string{"../escape", "..\\escape", "/etc/passwd"} {
+		if _, err := b.workingDir(root, rel); err == nil {
+			t.Errorf("workingDir(rel=%q) 應拒絕逃逸實例根,實際成功", rel)
+		}
+	}
+	if got, err := b.workingDir(root, ""); err != nil || got != root {
+		t.Errorf("workingDir(rel=\"\") = (%q, %v), want (%q, nil)", got, err, root)
+	}
+	if got, err := b.workingDir(root, "data"); err != nil || got != filepath.Join(root, "data") {
+		t.Errorf("workingDir(rel=\"data\") = (%q, %v), want (%q, nil)", got, err, filepath.Join(root, "data"))
+	}
+}
+
+// TestNativeBackend_ModsInstallDir_RejectsEscape 驗證 modsInstallDir(範本宣告的 native 模組落位
+// 目錄,ModsDir)拒絕逃逸實例根的相對路徑(稽查項目 3)。
+func TestNativeBackend_ModsInstallDir_RejectsEscape(t *testing.T) {
+	b := newTestNativeBackend(t)
+	root := t.TempDir()
+
+	for _, rel := range []string{"../escape", "..\\escape"} {
+		spec := protocol.InstanceSpec{Native: &protocol.NativeSpecPayload{ModsDir: rel}}
+		if _, err := b.modsInstallDir(root, spec); err == nil {
+			t.Errorf("modsInstallDir(ModsDir=%q) 應拒絕逃逸實例根,實際成功", rel)
+		}
+	}
+}
+
 // TestWriteConfigFile_SetWithPortTokens 驗證 [native.config.set] 的固定/衍生值:字面值直落、
 // {port:<name>} 展開為對應主機埠、且 Set 覆蓋同 configKey 的 Map 產出(native 執行必需值優先)。
 func TestWriteConfigFile_SetWithPortTokens(t *testing.T) {

@@ -203,8 +203,19 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	if err != nil {
 		return err
 	}
-	// 冪等:已在執行則不重建容器,回報「已在執行」(不視為錯誤)。
+	// 冪等:已在執行則不重建容器,回報「已在執行」(不視為錯誤)。但仍需把 desired 收斂為
+	// Running:外部手動啟動容器後,對帳把 observed 修正為 Running,此時 desired 可能仍停留在
+	// Stopped(使用者先前按過停止);若不在此收斂,該實例之後崩潰時 AutoStart 會看到
+	// DesiredState==Stopped 而放棄自動重啟(見 AutoStart 註解),形成「看似在跑、其實不會自動復原」
+	// 的隱性缺口。未呼叫代理、未產生 planned-stop token,不算一次「操作」,故不遞增 OpGeneration
+	// (該欄位僅追蹤實際發起的操作世代,供 planned-stop token 生成與診斷比對)。
 	if rec.ObservedState == protocol.InstanceStateRunning {
+		if rec.DesiredState != protocol.InstanceStateRunning {
+			rec.DesiredState = protocol.InstanceStateRunning
+			if err := o.store.UpsertInstance(rec); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
@@ -220,6 +231,9 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 	}); aerr != nil {
 		o.emitProgress(uuid, "failed", -1, "啟動失敗") // 失敗終態:使主控台進度橫幅收束而非卡在啟動中
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
+		o.record(protocol.EventInstanceStartFailed, protocol.SeverityError, rec, map[string]any{
+			"error": aerr.Error(),
+		})
 		return fmt.Errorf("代理啟動失敗: %w", aerr)
 	}
 
@@ -233,6 +247,11 @@ func (o *Orchestrator) startLocked(ctx context.Context, uuid string) error {
 			return fmt.Errorf("啟動途中崩潰: %s: %w", uuid, rerr)
 		}
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
+		// 就緒逾時或 ctx 取消(非崩潰,崩潰已由上面的 markStartupCrashed 記 INSTANCE_CRASHED):
+		// 如實記錄啟動失敗,否則使用者按啟動失敗後事件頁完全無跡可查(稽查發現的主症狀)。
+		o.record(protocol.EventInstanceStartFailed, protocol.SeverityError, rec, map[string]any{
+			"error": rerr.Error(),
+		})
 		return rerr
 	}
 	o.emitProgress(uuid, "ready", 100, "已就緒")
@@ -353,6 +372,11 @@ func (o *Orchestrator) stopLocked(ctx context.Context, uuid string) error {
 		// 操作失敗即清除 token,避免 stale token 遮蔽下次真崩潰(R8)。
 		o.tokens.clear(uuid)
 		_ = o.forceObserved(&rec, protocol.InstanceStateError)
+		// 如實記錄停止失敗,否則使用者按停止失敗後事件頁完全無跡可查(與啟動失敗同一缺口家族,
+		// 見 startLocked 的 EventInstanceStartFailed)。
+		o.record(protocol.EventInstanceStopFailed, protocol.SeverityError, rec, map[string]any{
+			"error": aerr.Error(),
+		})
 		return fmt.Errorf("代理停止失敗: %w", aerr)
 	}
 

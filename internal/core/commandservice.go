@@ -129,7 +129,7 @@ func (s *CommandService) dispatch(ctx context.Context, rec InstanceRecord, tmpl 
 
 // buildTarget 由範本協定 + 實例 UUID(機密命名空間)+ 埠映射組出線上 CommandTarget。
 func (s *CommandService) buildTarget(rec InstanceRecord, tmpl *protocol.GameTemplate, cp protocol.CommandProtocol) (protocol.CommandTarget, error) {
-	host, port, err := resolveCommandPort(tmpl, cp.HostPortRef)
+	host, port, err := resolveInstancePort(s.store, tmpl, rec.UUID, cp.HostPortRef)
 	if err != nil {
 		return protocol.CommandTarget{}, err
 	}
@@ -219,24 +219,62 @@ func buildHookCommand(cp protocol.CommandProtocol, hook *protocol.Hook, msg stri
 	return cmd
 }
 
-// resolveCommandPort 由協定的 host_port_ref(指向 [[ports]].name)解析宿主 host/port。
-// 指令協定埠(rcon/rest)首版皆為靜態綁定;host_port=0(動態分配)首版不支援→明確錯誤。
+// resolveInstancePort 由 port_ref(指向 [[ports]].name)解析「該實例實際使用」的宿主 host/port,
+// 是指令協定(CommandService)與健康探針(HealthProber)共用的唯一解析路徑。
+//
+// 取值序:該實例在 DB 的 PortReservation(同 Name)→ 範本宣告值。前者才是真值——使用者埠覆寫
+// 與核心動態分配後,範本宣告值已不代表實際埠;後者僅為相容路徑(本改動前建立、或建立時未留下
+// 具名預留的舊實例)。範本無此 port_ref 一律先報錯,語意不因 DB 有無預留而改變。
+func resolveInstancePort(store *Store, tmpl *protocol.GameTemplate, uuid, ref string) (host string, port int, err error) {
+	// 先驗範本:port_ref 缺失/無對應 [[ports]] 的錯誤語意不因 DB 有無預留而改變。
+	spec, serr := lookupPortSpec(tmpl, ref)
+	if serr != nil {
+		return "", 0, serr
+	}
+	if store != nil && uuid != "" {
+		res, lerr := store.ListPortReservationsForInstance(uuid)
+		if lerr != nil {
+			return "", 0, fmt.Errorf("查詢實例 %s 的埠預留失敗: %w", uuid, lerr)
+		}
+		for _, r := range res {
+			if r.Name == ref && r.HostPort > 0 {
+				return commandHost(r.BindIP), r.HostPort, nil
+			}
+		}
+	}
+	// 相容退路:舊實例無具名預留 → 用範本宣告值。
+	if spec.HostPort <= 0 {
+		return "", 0, fmt.Errorf("實例 %s 的埠 %q 查無預留、範本亦為動態分配,無法解析宿主埠", uuid, ref)
+	}
+	return commandHost(spec.BindIP), spec.HostPort, nil
+}
+
+// lookupPortSpec 取範本中 name==ref 的 [[ports]] 宣告。
+func lookupPortSpec(tmpl *protocol.GameTemplate, ref string) (protocol.PortSpec, error) {
+	if ref == "" {
+		return protocol.PortSpec{}, fmt.Errorf("指令協定缺少 host_port_ref")
+	}
+	for _, p := range tmpl.Ports {
+		if p.Name == ref {
+			return p, nil
+		}
+	}
+	return protocol.PortSpec{}, fmt.Errorf("指令協定埠參照 %q 於範本無對應 [[ports]]", ref)
+}
+
+// resolveCommandPort 由 port_ref 解析範本宣告的宿主 host/port(不查實例預留)。
+// 僅供「無實例上下文」的場合;有 uuid 時一律走 resolveInstancePort。
 // host 取 bind_ip:wildcard(0.0.0.0/::)或空值一律回 127.0.0.1(單機 loopback,且 command
 // 埠本即綁 loopback)。
 func resolveCommandPort(tmpl *protocol.GameTemplate, ref string) (host string, port int, err error) {
-	if ref == "" {
-		return "", 0, fmt.Errorf("指令協定缺少 host_port_ref")
+	spec, serr := lookupPortSpec(tmpl, ref)
+	if serr != nil {
+		return "", 0, serr
 	}
-	for _, p := range tmpl.Ports {
-		if p.Name != ref {
-			continue
-		}
-		if p.HostPort <= 0 {
-			return "", 0, fmt.Errorf("指令協定埠 %q 為動態分配,首版不支援指令協定", ref)
-		}
-		return commandHost(p.BindIP), p.HostPort, nil
+	if spec.HostPort <= 0 {
+		return "", 0, fmt.Errorf("指令協定埠 %q 於範本為動態分配,無宣告宿主埠可解析", ref)
 	}
-	return "", 0, fmt.Errorf("指令協定埠參照 %q 於範本無對應 [[ports]]", ref)
+	return commandHost(spec.BindIP), spec.HostPort, nil
 }
 
 // commandHost 把埠的 bind_ip 正規化為代理連線用主機:wildcard/空→loopback。

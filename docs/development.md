@@ -4,7 +4,7 @@
 
 ## 開發環境
 
-- Windows 11、Go 1.26+、Node 18+/npm。
+- Windows 11、Go 1.26+、Node 20.19+ 或 22.12+/npm(依 Vite 的 `engines.node` 要求)。
 - Wails CLI v2:`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`(鎖版本對齊專案 pin 的 Wails v2.13,避免升級回歸)。
 - NSIS 安裝包另需:`winget install NSIS.NSIS`。
 

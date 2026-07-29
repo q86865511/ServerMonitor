@@ -62,6 +62,12 @@ interface Entry {
    * (反轉時後端冪等 no-op + 隨後被舊 Unsubscribe 拆除 → 前端自認已訂閱、後端已停流)。
    */
   chain: Promise<void>;
+  /**
+   * B10 轉態基準(上次通報的 running 狀態);null=尚未通報過。刻意存在 entry(隨 uuid 存活)
+   * 而非元件實體變數——後者在元件卸載(切分頁)時會重置,導致卸載期間發生的「非 Running→
+   * Running」轉態在下次掛載時無法被偵測到,見 resubscribeMetrics/noteRunning 註解。
+   */
+  lastRunning: boolean | null;
 }
 
 const entries = new Map<string, Entry>();
@@ -77,6 +83,7 @@ function ensure(uuid: string): Entry {
       open: null,
       gen: 0,
       chain: Promise.resolve(),
+      lastRunning: null,
     };
     entries.set(uuid, e);
   }
@@ -189,6 +196,20 @@ export function resubscribeMetrics(uuid: string): void {
   if (!e || !e.subscribed || e.refCount === 0) return;
   teardown(e, uuid);
   subscribeStats(e, uuid);
+}
+
+/**
+ * 通報目前 running 狀態,於「非 Running→Running」轉態時觸發 resubscribeMetrics(B10)。
+ * 轉態基準存於 store entry.lastRunning(隨 uuid 存活),不像 OverviewTab 過去用的元件實體變數
+ * 會在卸載/掛載間重置——修正「停止實例→切到其他分頁(元件卸載)→啟動→切回概覽(元件重新掛載)」
+ * 序列下,轉態發生在卸載期間無人通報、掛載當下又把 uuid 首次出現誤判為「換頁/首次」而不重訂閱,
+ * 導致趨勢圖即時指標永久靜默。首次通報(entry 剛建立、lastRunning 為 null)只記錄基準,不觸發。
+ */
+export function noteRunning(uuid: string, isRunning: boolean): void {
+  const e = ensure(uuid);
+  const prev = e.lastRunning;
+  e.lastRunning = isRunning;
+  if (prev !== null && !prev && isRunning) resubscribeMetrics(uuid);
 }
 
 // 合併回填與 ring 現況:回填段為準,僅保留比回填末點更新的即時點;回填為空則保留現況。

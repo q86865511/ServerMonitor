@@ -230,6 +230,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
+	if err := validateInstanceUUID(req.Spec.UUID); err != nil {
+		writeErr(w, err) // 路徑遍歷第一層防禦:uuid 將直接充當宿主資料/備份根目錄名
+		return
+	}
 	rid, err := s.backend.Create(r.Context(), req.Spec)
 	if err != nil {
 		writeErr(w, err)
@@ -406,6 +410,10 @@ func (s *Server) handleUploadMount(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	uuid := r.PathValue("id")
+	if err := validateInstanceUUID(uuid); err != nil {
+		writeErr(w, err) // 路徑遍歷防禦:備份清單以 uuid 定位宿主備份根,先驗格式(對齊 handleDeleteBackup)
+		return
+	}
 	lister, ok := s.backend.(BackupLister)
 	if !ok {
 		writeError(w, http.StatusInternalServerError, protocol.APIError{

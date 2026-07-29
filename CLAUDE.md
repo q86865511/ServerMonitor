@@ -20,7 +20,8 @@ Go(核心/代理)+ Wails v2(桌面)+ Svelte-TS 前端 + Docker(執行後端,官�
 
 - 編譯:`go build ./...`
 - 單元/整合測試(免 Docker):`go test ./...`
-- 真 Docker 整合測試:`go test -tags docker ./...`(需 Docker daemon;build tag 為 `docker`)
+- 前端測試(vitest,store 行為測試):`cd frontend && npm test`
+- 真 Docker 整合測試:`go test -tags docker -p 1 ./...`(需 Docker daemon;build tag 為 `docker`。**`-p 1` 必加**:套件預設並行,多個 E2E 同時搶 daemon 會使 `TestE2E_MinecraftFullLifecycle` 假性逾時)
 - 端到端(T16,需 Docker;會拉映像/建啟容器,測後自動清理):`go test -tags docker -run TestE2E ./internal/app/`
   - 單跑 Minecraft 全流程:`go test -tags docker -run TestE2E_MinecraftFullLifecycle ./internal/app/`
   - Palworld(需先 `docker pull thijsvanloef/palworld-server-docker:v2.5.1`,約 6-8GB;否則自動 skip):`-run TestE2E_Palworld`
@@ -45,7 +46,8 @@ Go 1.26+｜Wails v2.13｜docker v27.5.1(**go-connections 必須 v0.5.0**,v0.7.0 
 - 新增遊戲=加範本檔;新增執行後端=實作 `RuntimeBackend` 介面。
 - `RuntimeBackend` 之外的可選能力(備份刪除、映像/容器管理、磁碟用量、檔案管理、資料清理)一律以**橫切介面**表達(如 `BackupDeleter`/`ImageManager`/`FileManager`/`instanceDataPurger`),於 agent 套件定義、docker/native 各自實作、`dispatchBackend` 型別斷言轉發、`server.go` 端點型別斷言啟用(缺失回 `ErrUnsupported`);**勿擴張核心 `RuntimeBackend` 介面**。
 - 節點端**任何以 uuid/rel 拼接宿主路徑的操作,必經路徑拘束**:uuid 用 `validateInstanceUUID`、備份 id 用 `validateBackupID`、檔案相對路徑用 `resolveWithinRoot`(三層:cleanRelPath→withinRoot(filepath.Rel 擋 sibling-prefix)→assertNoLinkComponents 逐段 Lstat 拒穿越連結;Windows junction 為 ModeIrregular、EvalSymlinks 不解析,故以逐段 Lstat 為主力)。含明文機密的中繼檔(instance.json 等)不開放檔案管理存取。實例層操作(檔案/磁碟/備份)經 `rec.Node` 路由到該實例所屬節點,勿固定本機。
-- 內建範本以 `//go:embed all:templates`(main.go)打進執行檔,啟動抽出到 `<dataRoot>\templates-builtin\`;使用者自訂範本放 `<dataRoot>\templates\`。
+- 內建範本以 `//go:embed all:templates`(main.go)打進執行檔,啟動抽出到 `<dataRoot>\templates-builtin\`;使用者自訂範本放 `<dataRoot>\templates\`。範本**只在啟動時載入一次**(`loadTemplates`),無檔案監看,新增範本需重啟。
+- **埠屬於實例,不屬於範本**:範本的 `host_port` 只是預設值。建立時經 `CreateOptions.PortOverrides` 覆寫,`host_port<=0` 由核心在 `reserveMu` 臨界區內挑可用埠(避開既有預留、本批已定案、實際 `net.Listen` 試綁),一律落成具體 `PortReservation`。**指令協定與健康探針必經 `resolveInstancePort`**(取該實例實際預留,查無才退回範本值),勿直接讀 `tmpl.Ports[].HostPort`——否則第二台同範本伺服器會探到錯的埠。
 - 多節點:遠端節點跑 `cmd/agent`(TLS 自簽+SHA-256 指紋 pinning(TOFU)或自備憑證);節點 token 一律入 OS 金鑰庫(`NodeTokenRef`),config.json 只存非敏感連線設定且必經 `SaveAppConfig` 原子寫。
 
 ## 前端慣例(gui-redesign 之後)

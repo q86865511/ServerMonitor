@@ -115,7 +115,10 @@ func (b *NativeBackend) maybeInstallManualModpack(ctx context.Context, uuid stri
 	if _, derr := b.modsInstallDir(root, spec); derr != nil {
 		return derr
 	}
-	workDir := b.workingDir(root, spec.Native.Launch.WorkingDir)
+	workDir, err := b.workingDir(root, spec.Native.Launch.WorkingDir)
+	if err != nil {
+		return err
+	}
 	var mcVersion, loader string
 	if spec.Native != nil {
 		mcVersion = spec.Native.Provision.MCVersion

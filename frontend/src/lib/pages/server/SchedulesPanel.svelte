@@ -39,15 +39,23 @@
 
   const KIND_LABEL: Record<string, string> = { restart: '重啟', backup: '備份' };
 
+  // 遞增序號:load() 可能因 uuid 切換而併發(舊 uuid 慢回應晚到);回應套用前檢查自己仍是
+  // 最新一次呼叫,否則丟棄(同 stores/instances.ts 的 refreshSeq)。
+  let loadSeq = 0;
+
   async function load(): Promise<void> {
+    const seq = ++loadSeq;
     loading = true;
     loadError = '';
     try {
-      schedules = await call(() => ListSchedules(uuid), { silent: true });
+      const s = await call(() => ListSchedules(uuid), { silent: true });
+      if (seq !== loadSeq) return; // 已有更新的 load 在途,丟棄此次舊回應
+      schedules = s;
     } catch (e) {
+      if (seq !== loadSeq) return;
       loadError = e instanceof Error ? e.message : String(e);
     } finally {
-      loading = false;
+      if (seq === loadSeq) loading = false;
     }
   }
 
@@ -56,6 +64,10 @@
   $effect(() => {
     if (uuid && uuid !== loadedFor) {
       loadedFor = uuid;
+      // 關閉可能挾帶舊實例排程 id 的編輯視窗/刪除確認,避免使用者對著 A 的資料操作、
+      // 卻送出 instance_uuid=B(save()/doDelete() 用當下 uuid,對象卻是切換前的舊項目)。
+      editing = false;
+      deleteTarget = null;
       load();
     }
   });

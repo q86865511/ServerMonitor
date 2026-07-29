@@ -14,7 +14,7 @@
     acquireLogs,
     releaseLogs,
     clearLogs,
-    resubscribeLogs,
+    noteRunning,
     type LogConn,
   } from '../../stores/logs';
   import {
@@ -67,21 +67,11 @@
     };
   });
 
-  // ---- B10:停止再啟動同實例(不離頁)後即時 log 靜默——後端 fanout 隨 channel 關閉結束,前端
-  // 訂閱狀態殘留(logs effect 僅隨 uuid 重跑)。於「非 Running→Running」轉態時重建訂閱使其恢復。
-  let reSubUuid = '';
-  let prevRunning = false;
+  // ---- B10:停止再啟動同實例後即時 log 靜默——轉態基準交給 logs store(entry.lastRunning)
+  // 判定,不用元件實體變數(後者在切分頁卸載/掛載間會重置,無法偵測「卸載期間發生的轉態」,
+  // 見 stores/logs.ts noteRunning 註解)。
   $effect(() => {
-    const id = uuid;
-    const isRunning = running;
-    if (id !== reSubUuid) {
-      // 換頁/首次:設轉態基準,不重訂(logs effect 會處理新 uuid 的首次訂閱)。
-      reSubUuid = id;
-      prevRunning = isRunning;
-      return;
-    }
-    if (isRunning && !prevRunning) resubscribeLogs(id);
-    prevRunning = isRunning;
+    noteRunning(uuid, running);
   });
 
   // ---- 指令能力(rcon 自由輸入 / rest 具名動作 / none 停用)----
