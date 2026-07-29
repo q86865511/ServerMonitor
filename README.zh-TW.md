@@ -23,8 +23,8 @@ ServerMonitor 是 Windows 桌面工具,用來執行與監控遊戲專用伺服�
 
 ## 技術亮點
 
-- **範本驅動的擴充性** — 帶版本的 TOML schema 宣告變體/loader、含衝突鍵的埠宣告、型別化參數、機密、RCON/REST 指令協定(tagged union)、健康探針、生命週期 hook 與模組包政策。內建範本以 `go:embed` 打進執行檔;自訂範本從資料目錄載入,驗證失敗會拒載並記事件。
-- **同一介面下的雙執行後端** — Docker 容器,或全自動供應的原生 Windows 子行程(Adoptium JRE、五種 Minecraft loader、SteamCMD),資源上限以 Windows Job Objects 強制。逐實例選擇;備份格式相同,可在兩後端間互轉。
+- **範本驅動的擴充性** — 帶版本的 TOML schema 宣告變體/loader、含衝突鍵的埠宣告、型別化參數、機密、RCON/REST 指令協定(tagged union)、健康探針、生命週期 hook 與模組包政策。內建範本以 `go:embed` 打進執行檔;自訂範本於啟動時從資料目錄載入,驗證失敗會拒載並記事件——啟動後才放入的範本要下次重啟才會生效,並非即時載入。
+- **同一介面下的雙執行後端** — Docker 容器,或全自動供應的原生 Windows 子行程(Adoptium JRE、四種 Minecraft loader,另支援 NeoForge 模組包、SteamCMD),資源上限以 Windows Job Objects 強制。逐實例選擇;備份格式相同,可在兩後端間互轉。
 - **天生多節點** — 核心即使對本機也走 HTTP 與節點代理溝通。遠端 Linux 節點跑單一靜態 agent 執行檔,自動產生持久 token 與自簽 TLS 憑證,GUI 以 SHA-256 指紋釘選(TOFU);憑證被換直接拒連。
 - **路徑拘束是硬規則** — 任何由實例 UUID、備份 id 或使用者相對路徑拼出的宿主路徑,都要過三層防禦(clean → `filepath.Rel` within-root 檢查 → 逐段 `Lstat` 拒絕 symlink/junction),封死路徑遍歷與連結穿越攻擊(含 Windows junction)。
 - **崩潰復原狀態機** — 協定感知的就緒探針(RCON/REST,不只 TCP)、有重試上限的自動重啟、與一般 crash 區分的 OOM 告警、孤兒收養:關掉工具不會殺伺服器,agent 重啟後自動接管仍在跑的行程。
@@ -82,7 +82,7 @@ flowchart LR
 
 ## 從原始碼建置
 
-需 Go 1.26+、Node 18+、Wails CLI v2.13(`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`)。
+需 Go 1.26+、Node 20.19+ 或 22.12+(依 Vite 的 `engines.node` 要求)、Wails CLI v2.13(`go install github.com/wailsapp/wails/v2/cmd/wails@v2.13.0`)。
 
 ```bash
 cd frontend && npm ci && npm run build && cd ..   # 先建置要被內嵌的前端產出
@@ -107,6 +107,8 @@ go build ./cmd/agent  # 遠端節點用的無 GUI 節點代理
 
 E2E 測的是真實流程:建立 → 啟動 → 就緒探測 → 下指令 → 備份 → 還原 → 停止 → 移除,對象是真正的 Minecraft 與 Palworld 伺服器。
 
+> `go test -tags docker ./...` 預設會平行跑多個套件,多個 E2E 測試同時搶同一個 Docker daemon 會出現假性逾時(實測 `TestE2E_MinecraftFullLifecycle` 曾以此方式失敗,單獨重跑僅需不到兩分鐘即通過)。建議加 `-p 1` 序列化執行套件,或如上表逐一單獨跑 E2E 測試。
+
 ## 招牌系統
 
 ### 生命週期與供應
@@ -122,7 +124,7 @@ CPU/RAM/磁碟與線上人數輪詢,15 秒聚合時序持久化 36 小時(缺值
 帶健康探針與重試上限的監督狀態機自動重啟崩潰的伺服器;Discord webhook 告警支援時間窗抑制、遲滯與去重——OOM 與一般 crash 分開回報。
 
 ### 模組與模組包
-Paper/Forge/Fabric/NeoForge/Vanilla 五線 loader;Modrinth 模組包兩後端皆支援;CurseForge 走 itzg 的 `AUTO_CURSEFORGE`(Docker)或內建 Prism 式安裝器(native),尊重作者停用第三方散布並提供誠實的手動下載降級流程。見 [docs/native-mode.md](docs/native-mode.md)。
+Paper/Forge/Fabric/Vanilla 四線 loader,另於模組包相容層支援 NeoForge(尚無可直接建立的 NeoForge 變體);Modrinth 模組包兩後端皆支援;CurseForge 走 itzg 的 `AUTO_CURSEFORGE`(Docker)或內建 Prism 式安裝器(native),尊重作者停用第三方散布並提供誠實的手動下載降級流程。見 [docs/native-mode.md](docs/native-mode.md)。
 
 ### 多節點
 同一個 GUI 管理遠端主機上的伺服器:單一執行檔 agent、指紋釘選的自簽 HTTPS(或自備憑證)、逐節點 token 入金鑰庫。見 [docs/multi-node.md](docs/multi-node.md)。
@@ -131,7 +133,7 @@ Paper/Forge/Fabric/NeoForge/Vanilla 五線 loader;Modrinth 模組包兩後端皆
 
 | 遊戲 | 變體 / loader | 後端 | 指令 | 模組 |
 |---|---|---|---|---|
-| Minecraft(Java) | Vanilla · Paper · Fabric · Forge · NeoForge | Docker + Native | RCON | Modrinth · CurseForge |
+| Minecraft(Java) | Vanilla · Paper · Fabric · Forge(NeoForge:僅限模組包,無獨立變體) | Docker + Native | RCON | Modrinth · CurseForge |
 | Palworld | Steam dedicated server | Docker + Native(SteamCMD) | REST 具名動作 | — |
 | *你的遊戲* | 一份 `templates/<id>.toml` 宣告 | 依範本 | RCON / REST | 依範本 |
 
