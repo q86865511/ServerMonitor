@@ -15,6 +15,8 @@
     cpuPercent: string;
     modpackType: string;
     modpackRef: string;
+    // portValues:鍵=範本 [[ports]].name,值=目前顯示的宿主埠字串;"0"=自動分配。
+    portValues: Record<string, string>;
     [k: string]: unknown;
   }
 
@@ -52,8 +54,23 @@
     }),
   );
 
-  const secretKeys = $derived(
-    (tmpl.secrets ?? []).map((s) => s.label || s.key),
+  // 連接埠摘要:只列具名埠(可覆寫者);顯示目前有效值,"0"顯示為「自動分配」。
+  const portRows = $derived(
+    (tmpl.ports ?? [])
+      .filter((p) => p.name !== '')
+      .map((p) => {
+        const raw = (form.portValues[p.name] ?? String(p.host_port)).trim();
+        const n = raw === '' ? NaN : parseInt(raw, 10);
+        const value = !Number.isFinite(n) ? '—' : n === 0 ? '自動分配' : String(n);
+        return { label: `${p.name}(${p.protocol.toUpperCase()})`, value };
+      }),
+  );
+
+  const secretRows = $derived(
+    (tmpl.secrets ?? []).map((s) => ({
+      label: s.label || s.key,
+      filled: (form.secretValues[s.key] ?? '').trim() !== '',
+    })),
   );
 
   const showProvision = $derived(submitting && (provStage !== '' || form.runtime === 'native'));
@@ -86,8 +103,11 @@
     {#each paramRows as r}
       <div class="row"><dt>{r.label}</dt><dd>{r.value}</dd></div>
     {/each}
-    {#each secretKeys as k}
-      <div class="row"><dt>{k}</dt><dd class="muted">••••••</dd></div>
+    {#each portRows as r}
+      <div class="row"><dt>{r.label}</dt><dd>{r.value}</dd></div>
+    {/each}
+    {#each secretRows as s}
+      <div class="row"><dt>{s.label}</dt><dd class="muted">{s.filled ? '••••••' : '未設定'}</dd></div>
     {/each}
     {#if form.modpackType !== ''}
       <div class="row">

@@ -151,6 +151,7 @@ export namespace main {
 	    runtime: string;
 	    memory_mb: number;
 	    cpu_percent: number;
+	    port_overrides: Record<string, number>;
 	
 	    static createFrom(source: any = {}) {
 	        return new CreateInstanceRequest(source);
@@ -168,6 +169,7 @@ export namespace main {
 	        this.runtime = source["runtime"];
 	        this.memory_mb = source["memory_mb"];
 	        this.cpu_percent = source["cpu_percent"];
+	        this.port_overrides = source["port_overrides"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

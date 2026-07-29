@@ -58,6 +58,9 @@
     modpackType: string;
     modpackRef: string;
     cfApiKey: string;
+    // portValues 是使用者對範本宣告埠(鍵=TemplateDTO.Ports[].name)目前顯示的宿主埠字串;
+    // "0" 表示自動分配。未改動的埠維持範本預設值,submit() 時與範本預設相同者不送入覆寫。
+    portValues: Record<string, string>;
     // 與各步子元件的 WizardForm 介面結構相容(其宣告了 index signature)。
     [k: string]: unknown;
   }
@@ -93,6 +96,7 @@
     modpackType: '',
     modpackRef: '',
     cfApiKey: '',
+    portValues: {},
   });
 
   // 供應進度(建立期間);stage 空=尚無進度;percent<0=不確定態。
@@ -155,6 +159,44 @@
   const modpackIncomplete = $derived(form.modpackType !== '' && form.modpackRef.trim() === '');
   const cfKeyMissing = $derived(needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() === '');
 
+  // 埠(R2 UI):僅named埠(TemplateDTO.Ports[].name非空)可覆寫,無名埠(舊資料相容)不提供編輯。
+  // effPort 為目前顯示值解析後的埠號("0"=自動分配)。
+  interface PortEntry {
+    name: string;
+    label: string;
+    n: number;
+  }
+  const portEntries = $derived(
+    (tmpl?.ports ?? [])
+      .filter((p) => p.name !== '')
+      .map((p): PortEntry => {
+        const raw = (form.portValues[p.name] ?? String(p.host_port)).trim();
+        const n = raw === '' ? NaN : parseInt(raw, 10);
+        return { name: p.name, label: `${p.name}(${p.protocol.toUpperCase()})`, n };
+      }),
+  );
+  const portsInvalid = $derived(
+    portEntries.filter((e) => !Number.isFinite(e.n) || e.n < 0 || e.n > 65535),
+  );
+  // 同一次建立內不可有兩個埠填相同宿主埠(簡化判定:僅比對埠號本身,不比對協定/bind_ip——
+  // 完整重疊規則見 core.portsOverlap;UI 只做粗篩,最終仍由後端 PortConflictError 裁決)。
+  // 自動分配(n===0)不計入衝突比對。
+  const portConflicts = $derived.by(() => {
+    const byPort = new Map<number, string[]>();
+    for (const e of portEntries) {
+      if (!Number.isFinite(e.n) || e.n === 0) continue;
+      const names = byPort.get(e.n) ?? [];
+      names.push(e.name);
+      byPort.set(e.n, names);
+    }
+    const conflicted = new Set<string>();
+    for (const names of byPort.values()) {
+      if (names.length > 1) names.forEach((n) => conflicted.add(n));
+    }
+    return conflicted;
+  });
+  const portsOk = $derived(portsInvalid.length === 0 && portConflicts.size === 0);
+
   const canStep3 = $derived(
     !!tmpl &&
       !noRuntimeAvailable &&
@@ -162,7 +204,8 @@
       missingSecrets.length === 0 &&
       !modpackIncomplete &&
       !cfKeyMissing &&
-      !cfNativeUnavailable,
+      !cfNativeUnavailable &&
+      portsOk,
   );
   const canSubmit = $derived(canStep3 && !submitting);
 
@@ -175,6 +218,11 @@
     if (modpackIncomplete) items.push('模組包來源位置未填');
     if (cfKeyMissing) items.push('CF_API_KEY 未填');
     if (cfNativeUnavailable) items.push('native 模式未啟用 CurseForge,請改用其他來源或後端');
+    for (const e of portsInvalid) items.push(`埠「${e.label}」號碼須為 0(自動分配)或 1-65535`);
+    if (portConflicts.size > 0) {
+      const names = portEntries.filter((e) => portConflicts.has(e.name)).map((e) => e.label);
+      items.push(`連接埠設定衝突:${names.join('、')} 使用相同宿主埠,請改號或改自動分配`);
+    }
     return items;
   });
 
@@ -265,6 +313,11 @@
     for (const s of t?.secrets ?? []) sv[s.key] = '';
     form.paramValues = pv;
     form.secretValues = sv;
+    const ports: Record<string, string> = {};
+    for (const p of t?.ports ?? []) {
+      if (p.name !== '') ports[p.name] = String(p.host_port);
+    }
+    form.portValues = ports;
   }
 
   function next(): void {
@@ -340,6 +393,14 @@
     if (needsCFKey && !templateHasCFSecret && form.cfApiKey.trim() !== '') {
       secrets[CF_KEY] = form.cfApiKey.trim();
     }
+    // 只送出使用者實際改動過的埠(目前顯示值與範本預設 host_port 不同者);未動的埠不列入,
+    // 沿用範本預設(R2)。"自動分配"勾選後顯示值為 "0",與非 0 預設不同故會被送出。
+    const portOverrides: Record<string, number> = {};
+    for (const p of tmpl.ports ?? []) {
+      if (p.name === '') continue;
+      const n = parseInt((form.portValues[p.name] ?? String(p.host_port)).trim(), 10);
+      if (Number.isFinite(n) && n !== p.host_port) portOverrides[p.name] = n;
+    }
     const req = main.CreateInstanceRequest.createFrom({
       name: form.name.trim(),
       template_id: tmpl.id,
@@ -354,6 +415,7 @@
         form.modpackType !== ''
           ? { type: form.modpackType, ref: form.modpackRef.trim() }
           : undefined,
+      port_overrides: portOverrides,
     });
 
     try {
@@ -430,6 +492,7 @@
             {templateHasCFSecret}
             {modpackRefPlaceholder}
             {noRuntimeAvailable}
+            {portConflicts}
             isRemoteNode={!selectedNodeIsLocal}
           />
           {#if missingItems.length > 0}

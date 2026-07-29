@@ -19,6 +19,8 @@
     modpackType: string;
     modpackRef: string;
     cfApiKey: string;
+    // portValues:鍵=範本 [[ports]].name,值=目前顯示的宿主埠字串;"0"=自動分配。
+    portValues: Record<string, string>;
     [k: string]: unknown;
   }
 
@@ -34,6 +36,7 @@
     templateHasCFSecret,
     modpackRefPlaceholder,
     noRuntimeAvailable,
+    portConflicts,
     isRemoteNode,
   }: {
     form: WizardForm;
@@ -47,6 +50,8 @@
     templateHasCFSecret: boolean;
     modpackRefPlaceholder: string;
     noRuntimeAvailable: boolean;
+    // portConflicts:目前與其他埠使用相同宿主埠(粗篩,僅比對埠號)的埠名集合,由父層算好傳入。
+    portConflicts: Set<string>;
     // 所選節點是否為遠端:由父層依後端 is_local 旗標判定並傳入(不在此硬編節點名)。
     // 遠端節點的 Docker 能力後端尚未回報,不可用本機旗標置灰,只如實提示「以節點端實際為準」。
     isRemoteNode: boolean;
@@ -57,6 +62,13 @@
 
   function runtimeName(rt: string): string {
     return rt === 'native' ? '本機行程(native)' : rt === 'docker' ? 'Docker 容器' : rt;
+  }
+
+  // 只有具名埠(TemplateDTO.Ports[].name 非空)才支援覆寫;無名埠(舊資料相容)不提供編輯。
+  const namedPorts = $derived((tmpl.ports ?? []).filter((p) => p.name !== ''));
+
+  function portDisplayValue(name: string, hostPort: number): string {
+    return form.portValues[name] ?? String(hostPort);
   }
 
   const modpackOptions = $derived([
@@ -202,6 +214,50 @@
     {/each}
   {/if}
 
+  <!-- 連接埠 -->
+  {#if namedPorts.length > 0}
+    <h4 class="sect">連接埠</h4>
+    <div class="hint hint-block">
+      預設值取自範本;可改為其他埠號避開衝突,或勾選「自動分配」交由核心尋找空閒埠。
+    </div>
+    {#each namedPorts as p (p.name)}
+      {@const raw = portDisplayValue(p.name, p.host_port).trim()}
+      {@const n = raw === '' ? NaN : parseInt(raw, 10)}
+      {@const isAuto = n === 0}
+      {@const rangeErr =
+        Number.isFinite(n) && n >= 0 && n <= 65535 ? '' : '埠號須為 0(自動分配)或 1-65535'}
+      {@const conflictErr = portConflicts.has(p.name) ? '與其他埠使用相同宿主埠' : ''}
+      <div class="field port-row">
+        <div class="port-head">
+          <span class="lbl">
+            {p.name}<span class="port-meta">({p.protocol.toUpperCase()}・容器埠 {p.container})</span>
+            {#if p.required}<span class="req">*</span>{/if}
+          </span>
+          <label class="checkbox-row port-auto">
+            <input
+              type="checkbox"
+              checked={isAuto}
+              onchange={(e) =>
+                (form.portValues[p.name] = e.currentTarget.checked
+                  ? '0'
+                  : String(p.host_port || p.container))}
+            />
+            <span>自動分配</span>
+          </label>
+        </div>
+        {#if !isAuto}
+          <TextField
+            type="number"
+            value={portDisplayValue(p.name, p.host_port)}
+            onInput={(v) => (form.portValues[p.name] = v)}
+            placeholder={String(p.host_port)}
+            error={rangeErr || conflictErr}
+          />
+        {/if}
+      </div>
+    {/each}
+  {/if}
+
   <!-- 模組包 -->
   {#if tmpl.modpack}
     <h4 class="sect">模組包(選填)</h4>
@@ -334,6 +390,25 @@
   }
   .mp-src {
     max-width: 360px;
+  }
+  .port-row {
+    max-width: 360px;
+  }
+  .port-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+  .port-meta {
+    margin-left: 4px;
+    font-size: var(--text-xs);
+    color: var(--fg-2);
+    font-weight: 400;
+  }
+  .port-auto {
+    flex: none;
+    font-size: var(--text-xs);
   }
   .hint {
     font-size: var(--text-xs);

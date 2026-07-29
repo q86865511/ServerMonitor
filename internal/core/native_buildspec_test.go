@@ -172,7 +172,7 @@ func TestBuildSpec_NativePayload(t *testing.T) {
 	if verr != nil {
 		t.Fatalf("resolveVariant: %v", verr)
 	}
-	spec := (&InstanceService{}).buildSpec("u-native", "local", tmpl, opts, variantEnv, runtimeNative)
+	spec := (&InstanceService{}).buildSpec("u-native", "local", tmpl, opts, variantEnv, runtimeNative, nil)
 
 	if spec.Runtime != runtimeNative {
 		t.Fatalf("Runtime = %q,期望 native", spec.Runtime)
@@ -249,7 +249,7 @@ command = ["{instance_dir}/PalServer.sh", "-port={port:game}"]
 	if err != nil {
 		t.Fatalf("ParseTemplate: %v", err)
 	}
-	spec := (&InstanceService{}).buildSpec("u-pal", "local", tmpl, CreateOptions{TemplateID: "palnative"}, nil, runtimeNative)
+	spec := (&InstanceService{}).buildSpec("u-pal", "local", tmpl, CreateOptions{TemplateID: "palnative"}, nil, runtimeNative, nil)
 	if spec.Native == nil {
 		t.Fatal("Native payload 為 nil")
 	}
@@ -276,7 +276,7 @@ func TestBuildSpec_ItzgEnvGate(t *testing.T) {
 	variantEnv, _ := resolveVariant(tmpl, opts.Variant)
 
 	// docker 路徑:itzg env 生效,Modpack 不透傳(nil),Native nil。
-	dockerSpec := (&InstanceService{}).buildSpec("u-d", "local", tmpl, opts, variantEnv, runtimeDocker)
+	dockerSpec := (&InstanceService{}).buildSpec("u-d", "local", tmpl, opts, variantEnv, runtimeDocker, nil)
 	if dockerSpec.Env["TYPE"] != "MODRINTH" || dockerSpec.Env["MODRINTH_MODPACK"] != slug {
 		t.Errorf("docker 路徑 itzg env 未生效: %+v", dockerSpec.Env)
 	}
@@ -288,7 +288,7 @@ func TestBuildSpec_ItzgEnvGate(t *testing.T) {
 	}
 
 	// native 路徑:不寫 itzg env,改以 Modpack 透傳。
-	nativeSpec := (&InstanceService{}).buildSpec("u-n", "local", tmpl, opts, variantEnv, runtimeNative)
+	nativeSpec := (&InstanceService{}).buildSpec("u-n", "local", tmpl, opts, variantEnv, runtimeNative, nil)
 	if _, ok := nativeSpec.Env["MODRINTH_MODPACK"]; ok {
 		t.Errorf("native 路徑不應寫 itzg MODRINTH_MODPACK: %+v", nativeSpec.Env)
 	}
@@ -310,7 +310,7 @@ func TestBuildSpec_NativeManualModpackViaMounts(t *testing.T) {
 		Modpack:    &ModpackSource{Type: ModpackManualMrpack, Ref: "C:/tmp/pack.mrpack"},
 	}
 	variantEnv, _ := resolveVariant(tmpl, opts.Variant)
-	spec := (&InstanceService{}).buildSpec("u-manual", "local", tmpl, opts, variantEnv, runtimeNative)
+	spec := (&InstanceService{}).buildSpec("u-manual", "local", tmpl, opts, variantEnv, runtimeNative, nil)
 
 	if spec.Modpack != nil {
 		t.Errorf("手動模組包不應填 Modpack(應走 Mounts): %+v", spec.Modpack)

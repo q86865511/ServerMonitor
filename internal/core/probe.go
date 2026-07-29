@@ -133,7 +133,7 @@ func (p *HealthProber) Ready(ctx context.Context, node, uuid string) (bool, erro
 	}
 	switch hp.Kind {
 	case "tcp":
-		return p.probeTCP(ctx, tmpl, hp.PortRef)
+		return p.probeTCP(ctx, tmpl, uuid, hp.PortRef)
 	case "rest":
 		return p.probeREST(ctx, tmpl, uuid, hp)
 	case "rcon":
@@ -164,9 +164,9 @@ func (p *HealthProber) Running(ctx context.Context, node, uuid string) (bool, er
 	return p.probeRunning(ctx, node, uuid)
 }
 
-// probeTCP 撥範本 port_ref 對應的宿主埠;連得上即健康。
-func (p *HealthProber) probeTCP(ctx context.Context, tmpl *protocol.GameTemplate, portRef string) (bool, error) {
-	host, port, err := resolveCommandPort(tmpl, portRef)
+// probeTCP 撥 port_ref 對應的宿主埠(取該實例實際預留的埠,見 resolveInstancePort);連得上即健康。
+func (p *HealthProber) probeTCP(ctx context.Context, tmpl *protocol.GameTemplate, uuid, portRef string) (bool, error) {
+	host, port, err := resolveInstancePort(p.store, tmpl, uuid, portRef)
 	if err != nil {
 		return false, fmt.Errorf("tcp 探針: %w", err)
 	}
@@ -187,7 +187,7 @@ func (p *HealthProber) probeREST(ctx context.Context, tmpl *protocol.GameTemplat
 	if hp.ActionID != "" {
 		return p.probeRestAction(ctx, tmpl, uuid, hp.ActionID)
 	}
-	host, port, err := resolveCommandPort(tmpl, hp.PortRef)
+	host, port, err := resolveInstancePort(p.store, tmpl, uuid, hp.PortRef)
 	if err != nil {
 		return false, fmt.Errorf("rest 探針: %w", err)
 	}
