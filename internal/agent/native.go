@@ -293,7 +293,10 @@ func (b *NativeBackend) Create(ctx context.Context, spec protocol.InstanceSpec) 
 		}
 	}
 
-	workDir := b.workingDir(root, spec.Native.Launch.WorkingDir)
+	workDir, err := b.workingDir(root, spec.Native.Launch.WorkingDir)
+	if err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
 		return "", fmt.Errorf("建立工作目錄失敗: %w", err)
 	}
@@ -464,7 +467,10 @@ func (b *NativeBackend) Start(ctx context.Context, id protocol.RuntimeID) error 
 		return fmt.Errorf("讀取 spec 快照失敗: %w", err)
 	}
 	root := b.instanceDataRoot(uuid)
-	workDir := b.workingDir(root, meta.WorkingDir)
+	workDir, err := b.workingDir(root, meta.WorkingDir)
+	if err != nil {
+		return err
+	}
 
 	// R6:啟動前更新(steamcmd app_update)。失敗即啟動失敗(帶明確錯誤),不起行程。
 	if err := b.maybeUpdateOnStart(ctx, uuid, spec, workDir); err != nil {
@@ -848,7 +854,11 @@ func (b *NativeBackend) ExecProcess(ctx context.Context, id protocol.RuntimeID, 
 	workDir := cmd.WorkDir
 	if workDir == "" {
 		meta, _ := b.readNativeMeta(uuid)
-		workDir = b.workingDir(b.instanceDataRoot(uuid), meta.WorkingDir)
+		wd, werr := b.workingDir(b.instanceDataRoot(uuid), meta.WorkingDir)
+		if werr != nil {
+			return ExecResult{}, werr
+		}
+		workDir = wd
 	}
 	c := exec.CommandContext(ctx, cmd.Cmd[0], cmd.Cmd[1:]...)
 	c.Dir = workDir
@@ -1430,22 +1440,32 @@ func (b *NativeBackend) ensureInstanceTemp(root string) (string, error) {
 	return dir, nil
 }
 
-// workingDir 解析啟動工作目錄:相對 WorkingDir 落在實例根下;空則為實例根。
-func (b *NativeBackend) workingDir(root, rel string) string {
+// workingDir 解析啟動工作目錄:相對 WorkingDir 落在實例根下(經 resolveWithinRoot 拘束,拒絕
+// 逃逸片段與連結穿越——WorkingDir 來自範本 spec,非攻擊者直接輸入,但仍經核心↔代理網路邊界,
+// 比照 files.go 的路徑拘束慣例處理);空則為實例根。
+func (b *NativeBackend) workingDir(root, rel string) (string, error) {
 	if rel == "" {
-		return root
+		return root, nil
 	}
-	return filepath.Join(root, filepath.FromSlash(rel))
+	dir, err := resolveWithinRoot(root, rel)
+	if err != nil {
+		return "", fmt.Errorf("agent: working_dir 設定不安全: %w", err)
+	}
+	return dir, nil
 }
 
 // modsInstallDir 解析範本宣告的 native 模組落位目錄(NativeSpecPayload.ModsDir,相對實例根)
 // 為絕對路徑;未宣告時回明確錯誤,不臆測預設值(R11——範本須以 [native.mods] mods_dir 宣告
-// 才能安裝模組包)。
+// 才能安裝模組包)。同 workingDir 經 resolveWithinRoot 拘束,拒絕逃逸片段與連結穿越。
 func (b *NativeBackend) modsInstallDir(root string, spec protocol.InstanceSpec) (string, error) {
 	if spec.Native == nil || spec.Native.ModsDir == "" {
 		return "", fmt.Errorf("agent: 範本未宣告 native mods 落位目錄(mods_dir),無法安裝模組包")
 	}
-	return filepath.Join(root, filepath.FromSlash(spec.Native.ModsDir)), nil
+	dir, err := resolveWithinRoot(root, spec.Native.ModsDir)
+	if err != nil {
+		return "", fmt.Errorf("agent: mods_dir 設定不安全: %w", err)
+	}
+	return dir, nil
 }
 
 // instanceExists 以 native.json 存在判定實例是否為本後端所管(Remove 後即不存在)。

@@ -227,6 +227,31 @@ func TestServer_CreateListStatus_UUIDRouting(t *testing.T) {
 	}
 }
 
+// handleCreate 對不合法 uuid(路徑遍歷字元)先於呼叫後端就地拒絕(400)——uuid 將直接充當宿主
+// 資料/備份根目錄名,未驗證即可能逃逸(對齊其餘以 uuid 定位宿主目錄的端點,如 handleDeleteBackup)。
+func TestServer_Create_RejectsInvalidUUID(t *testing.T) {
+	hs := newTestServer(t, NewMockBackend())
+	for _, uuid := range []string{"", "..", "../escape", "..\\escape", ".hidden", "a/b", "a\\b"} {
+		status, data := request(t, hs, http.MethodPost, apiBase+"/instances", testToken, "", protocol.CreateInstanceRequest{Spec: specWithUUID(uuid)})
+		if status != http.StatusBadRequest {
+			t.Fatalf("uuid=%q create status=%d body=%s want 400", uuid, status, data)
+		}
+	}
+}
+
+// handleListBackups 對不合法 uuid 拒絕(400),對齊 handleDeleteBackup 既有的路徑遍歷防禦
+// (backupID 側的等價測試見 TestServer_DeleteBackup)。以 URL 編碼 "..\..\secret"(%5c=反斜線)
+// 構造:反斜線非 URL 路徑分隔字元,可通過路由的單一 {id} 區段比對,但落地為 Windows 路徑分隔符,
+// 未驗證即可能逃逸備份根。
+func TestServer_ListBackups_RejectsInvalidUUID(t *testing.T) {
+	hs := newTestServer(t, NewMockBackend())
+	path := apiBase + "/instances/%2e%2e%5c%2e%2e%5csecret/backups"
+	status, data := request(t, hs, http.MethodGet, path, testToken, "", nil)
+	if status != http.StatusBadRequest {
+		t.Fatalf("traversal list-backups status=%d body=%s want 400", status, data)
+	}
+}
+
 func TestServer_NotFound(t *testing.T) {
 	hs := newTestServer(t, NewMockBackend())
 	status, data := request(t, hs, http.MethodGet, apiBase+"/instances/does-not-exist/status", testToken, "", nil)

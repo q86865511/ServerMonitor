@@ -22,12 +22,24 @@ import (
 // writeConfigFile 依 cm.Format 選編碼器,把 env 中對應的參數值(cm.Map)與固定/衍生值(cm.Set,
 // 展開 {port:<name>} token)寫入實例根下的 cm.File。ports 供 Set 的埠 token 展開(native 無 docker
 // 埠映射,伺服器須自 server.properties/ini 綁到與探針一致的埠)。
+//
+// cm.File 來自範本(經核心↔代理網路邊界併入 spec),先以 cleanRelPath 拒絕絕對路徑/NUL/".." 片段,
+// 再以 withinRoot 複驗落在實例根之下(拒 sibling-prefix)。不用 resolveWithinRoot 的完整三層拘束:
+// 該函式的連結層拘束(assertNoLinkComponents/EvalSymlinks)要求路徑各段落已存在,而設定檔的深層
+// 父目錄常晚於本函式才由後續 MkdirAll 建立(或由供應步驟產生),故僅套用不依賴存在性的宣告層拘束。
 func writeConfigFile(instanceRoot string, cm protocol.NativeConfigMap, env map[string]string, ports []protocol.PortBinding) error {
 	pairs, err := resolveConfigPairs(cm.Map, cm.Set, cm.Quote, env, ports)
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(instanceRoot, filepath.FromSlash(cm.File))
+	rel, cerr := cleanRelPath(cm.File)
+	if cerr != nil || rel == "" {
+		return fmt.Errorf("agent: 設定檔路徑不安全 %q", cm.File)
+	}
+	path := filepath.Join(instanceRoot, filepath.FromSlash(rel))
+	if !withinRoot(instanceRoot, path) {
+		return fmt.Errorf("agent: 設定檔路徑不安全 %q", cm.File)
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("建立設定檔目錄失敗: %w", err)
 	}

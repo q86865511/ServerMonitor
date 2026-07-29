@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -38,6 +39,19 @@ const defaultCurseForgeAPIBase = "https://api.curseforge.com"
 
 // cfHashAlgoSha1 是 CurseForge File.hashes[].algo 的 sha1 列舉值(2=md5,download() 不支援故忽略)。
 const cfHashAlgoSha1 = 1
+
+// defaultAllowedCurseForgeDownloadHosts 是 CurseForge 檔案下載連結允許的網域白名單(SSRF 防禦,
+// 語意同 modprovider.go 的 defaultAllowedModpackDownloadHosts):API 回傳的 downloadUrl 與使用者直接
+// 提供的 cfzip URL 皆屬第三方可控輸入——若不限制網域,持有節點 token 者可誘使節點對任意內部/外部
+// 位址發起請求。僅允許 CurseForge 官方下載 CDN 網域(查證 2026-07-29,
+// https://blog.curseforge.com/introducing-api-key-authentication-for-curseforge-file-downloads/:
+// downloadUrl 網域為 edge.forgecdn.net,重導向替代位置為 media.forgecdn.net),且 scheme 一律限 https
+// (見 validateModpackDownloadURL)。呼叫端(CurseForgeProvider.allowedDownloadHosts)會併入其自身
+// 設定的 API host,供自架代理/測試使用。
+var defaultAllowedCurseForgeDownloadHosts = map[string]struct{}{
+	"edge.forgecdn.net":  {},
+	"media.forgecdn.net": {},
+}
 
 // BlockedMod 是一個因作者停用第三方 API 散布(downloadUrl=null)而無法自動下載的模組
 // (native-backend R14)。清單經 provision 進度事件(Stage="blocked-mods",Detail=JSON)回報 GUI,
@@ -137,6 +151,30 @@ func NewCurseForgeProvider(client *http.Client, apiBase, apiKey string) *CurseFo
 
 var _ ModProvider = (*CurseForgeProvider)(nil)
 
+// allowedDownloadHosts 回傳本 provider 允許的檔案下載連結網域集合(SSRF 白名單,見
+// validateModpackDownloadURL 與 defaultAllowedCurseForgeDownloadHosts):恆含官方 CDN 網域,另併入
+// 本 provider 設定的 apiBase host——正式部署 apiBase 恆為官方網域(已在預設集合內,併入為 no-op);
+// 自架相容代理或測試以 httptest 假伺服器指定 apiBase 時,其 host 隨之納入白名單(apiBase 由部署端
+// 明確設定,非第三方內容可控,信任層級與白名單本身相同,同 ModrinthProvider.allowedDownloadHosts)。
+func (c *CurseForgeProvider) allowedDownloadHosts() map[string]struct{} {
+	hosts := make(map[string]struct{}, len(defaultAllowedCurseForgeDownloadHosts)+1)
+	for h := range defaultAllowedCurseForgeDownloadHosts {
+		hosts[h] = struct{}{}
+	}
+	if u, err := url.Parse(c.apiBase); err == nil && u.Hostname() != "" {
+		hosts[u.Hostname()] = struct{}{}
+	}
+	return hosts
+}
+
+// allowInsecureDownload 回報是否放行 http(非 https)下載連結:僅當本 provider 的 apiBase 本身即以
+// http 設定時(非正式部署——官方 apiBase 恆為 https;此為 httptest 假伺服器等場景)才放行,且放行
+// 對象仍受 allowedDownloadHosts 限制,不等同全面放寬(同 ModrinthProvider.allowInsecureDownload)。
+func (c *CurseForgeProvider) allowInsecureDownload() bool {
+	u, err := url.Parse(c.apiBase)
+	return err == nil && u.Scheme == "http"
+}
+
 // InstallModpack 安裝一個 CurseForge 模組包:req.ArchivePath 非空時直接安裝該本機 cfzip(手動上傳
 // 路徑,略過遠端解析);否則依 req.Ref 取得 cfzip(見 obtainArchive 的 Ref 語意)後安裝。
 func (c *CurseForgeProvider) InstallModpack(ctx context.Context, req ModpackInstallRequest, progress ProgressFunc) error {
@@ -172,12 +210,13 @@ func (c *CurseForgeProvider) obtainArchive(ctx context.Context, ref string, prog
 	var dlURL string
 	var sum checksumSpec
 	if isHTTPURL(ref) {
-		// 直接下載 URL 為使用者提供,強制 https:明文 http 可被中間人竄改且此路徑無 sha 校驗
-		// (下方 sum 為零值 = 跳過校驗),故拒絕非 https(雙審 #12)。API 查得的 downloadUrl
-		// 走 else 分支,由 CF 官方 API(https)回傳,不經此檢查。
-		if !isHTTPSURL(ref) {
+		// 直接下載 URL 為使用者提供,經與 mrpack 下載連結相同的白名單/scheme 檢查(SSRF 防禦,見
+		// defaultAllowedCurseForgeDownloadHosts):此路徑無 sha 校驗(下方 sum 為零值=跳過校驗),故
+		// 不放寬 allowInsecure,一律強制 https(雙審 #12 的既有要求併入本檢查)。API 查得的
+		// downloadUrl 走 else 分支,另以 c.allowInsecureDownload() 檢查(供測試 httptest 使用)。
+		if verr := validateModpackDownloadURL(ref, c.allowedDownloadHosts(), false); verr != nil {
 			cleanup()
-			return "", func() {}, fmt.Errorf("provision: CurseForge 直接下載 URL 必須為 https(拒絕不安全的 %q)", ref)
+			return "", func() {}, verr
 		}
 		dlURL = ref
 	} else {
@@ -194,6 +233,10 @@ func (c *CurseForgeProvider) obtainArchive(ctx context.Context, ref string, prog
 		if f.DownloadURL == nil {
 			cleanup()
 			return "", func() {}, fmt.Errorf("provision: CurseForge 模組包檔案(project %d file %d)本身停用第三方散布,無法自動下載", projID, fileID)
+		}
+		if verr := validateModpackDownloadURL(*f.DownloadURL, c.allowedDownloadHosts(), c.allowInsecureDownload()); verr != nil {
+			cleanup()
+			return "", func() {}, verr
 		}
 		dlURL = *f.DownloadURL
 		sum = cfChecksum(f.Hashes)
@@ -242,6 +285,10 @@ func (c *CurseForgeProvider) installArchive(ctx context.Context, archivePath str
 				URL:        c.blockedModURL(ctx, mf.ProjectID, mf.FileID),
 			})
 			continue
+		}
+		// 逐檔下載連結同樣經白名單/scheme 檢查(SSRF 防禦,見 defaultAllowedCurseForgeDownloadHosts)。
+		if verr := validateModpackDownloadURL(*f.DownloadURL, c.allowedDownloadHosts(), c.allowInsecureDownload()); verr != nil {
+			return verr
 		}
 		dest, derr := safeModpackFilePath(req.TargetDir, path.Join("mods", f.FileName))
 		if derr != nil {
@@ -473,9 +520,4 @@ func parseCurseForgeRef(ref string) (projectID, fileID int, err error) {
 // isHTTPURL 回報 s 是否為 http(s) URL(供辨識「直接 URL vs projectID:fileID」)。
 func isHTTPURL(s string) bool {
 	return strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")
-}
-
-// isHTTPSURL 回報 s 是否為 https URL(直接下載 URL 強制 https,拒絕明文 http)。
-func isHTTPSURL(s string) bool {
-	return strings.HasPrefix(s, "https://")
 }
