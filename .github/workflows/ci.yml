@@ -40,7 +40,7 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./internal/... ./cmd/... -cover
+        run: go test ./... -cover
 
   frontend:
     name: Frontend (build + svelte-check)
